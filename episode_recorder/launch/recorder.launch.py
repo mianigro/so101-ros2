@@ -19,7 +19,7 @@ import lifecycle_msgs.msg
 def generate_launch_description():
 
     default_params = PathJoinSubstitution(
-        [FindPackageShare("episode_recorder"), "config", "default_config.yaml"]
+        [FindPackageShare("episode_recorder"), "config", "recorder.yaml"]
     )
     default_root_dir = PathJoinSubstitution(
         [
@@ -37,7 +37,13 @@ def generate_launch_description():
     params_file = DeclareLaunchArgument(
         "params_file",
         default_value=default_params,
-        description="YAML with episode_recorder parameters (topics, storage_id, etc.)",
+        description="YAML with episode_recorder storage and timing parameters",
+    )
+
+    camera_profile = DeclareLaunchArgument(
+        "camera_profile",
+        description="Required camera profile: single_overhead or dual_overhead",
+        choices=["single_overhead", "dual_overhead"],
     )
 
     root_dir = DeclareLaunchArgument(
@@ -73,6 +79,7 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration("params_file"),
             {
+                "camera_profile": LaunchConfiguration("camera_profile"),
                 "root_dir": LaunchConfiguration("root_dir"),
                 "experiment_name": LaunchConfiguration("experiment_name"),
                 "task": LaunchConfiguration("task"),
@@ -114,6 +121,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             params_file,
+            camera_profile,
             root_dir,
             experiment_name,
             task,

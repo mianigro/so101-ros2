@@ -20,14 +20,18 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     args = [
-        DeclareLaunchArgument("repo_id", default_value="legalaspro/act_so101_pnp_microsanity_20_50hz_v0"),
+        DeclareLaunchArgument("repo_id", description="Hugging Face policy repo ID or local path"),
+        DeclareLaunchArgument(
+            "camera_profile",
+            description="Required camera profile: single_overhead or dual_overhead",
+        ),
+        DeclareLaunchArgument("policy_type", default_value="act"),
+        DeclareLaunchArgument("task", default_value="Put the green cube in the cup."),
         DeclareLaunchArgument("fps", default_value="50.0"),
         DeclareLaunchArgument("max_age_s", default_value="0.2"),
         # Topics
         DeclareLaunchArgument("fwd_topic", default_value="/follower/forward_controller/commands"),
         DeclareLaunchArgument("joints_topic", default_value="/follower/joint_states"),
-        DeclareLaunchArgument("top_camera_topic", default_value="/static_camera/image_raw"),
-        DeclareLaunchArgument("wrist_camera_topic", default_value="/follower/image_raw"),
     ]
 
     node = Node(
@@ -37,12 +41,13 @@ def generate_launch_description():
         parameters=[
             {
                 "repo_id": LaunchConfiguration("repo_id"),
+                "camera_profile": LaunchConfiguration("camera_profile"),
+                "policy_type": LaunchConfiguration("policy_type"),
+                "task": LaunchConfiguration("task"),
                 "fps": LaunchConfiguration("fps"),
                 "max_age_s": LaunchConfiguration("max_age_s"),
                 "fwd_topic": LaunchConfiguration("fwd_topic"),
                 "joints_topic": LaunchConfiguration("joints_topic"),
-                "top_camera_topic": LaunchConfiguration("top_camera_topic"),
-                "wrist_camera_topic": LaunchConfiguration("wrist_camera_topic"),
             }
         ],
         output="screen",

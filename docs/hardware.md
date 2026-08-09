@@ -1,7 +1,9 @@
 # Hardware Setup
 
 > **Required before running on real hardware.**
-> The config files shipped in this repo are examples from one specific robot and **will not match yours**.
+> The joint override examples shipped in this repo came from one specific
+> robot and **will not match yours**. Physical camera calibration is not
+> checked in at all.
 
 This document focuses on **ROS-side hardware integration**:
 
@@ -39,12 +41,16 @@ ls -l /dev/video* 2>/dev/null || true
 
 This stack assumes stable device symlinks created by udev:
 
-| Device          | Default path          |
-| --------------- | --------------------- |
-| Leader arm      | `/dev/so101_leader`   |
-| Follower arm    | `/dev/so101_follower` |
-| Wrist camera    | `/dev/cam_wrist`      |
-| Overhead camera | `/dev/cam_overhead`   |
+| Device                     | Default path             | Membership |
+| -------------------------- | ------------------------ | ---------- |
+| Leader arm                 | `/dev/so101_leader`      | Required |
+| Follower arm               | `/dev/so101_follower`    | Required |
+| Wrist camera               | `/dev/cam_wrist`         | Both camera profiles |
+| Overhead camera 1          | `/dev/cam_overhead_1`    | Both camera profiles |
+| Overhead camera 2          | `/dev/cam_overhead_2`    | `dual_overhead` |
+
+Camera membership is never inferred. Select exactly `single_overhead` or
+`dual_overhead`; every camera in the selected profile is required.
 
 ### 3.1 Query Device Properties
 
@@ -55,14 +61,16 @@ udevadm info --query=property --name=/dev/ttyACM0 | \
 ```
 
 ```bash
-# Cameras:
+# Cameras — query each physical camera separately:
 ls -l /dev/v4l/by-id/
 # pick the node you want, then:
 udevadm info --query=property --name=/dev/videoX | \
   egrep 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH'
 ```
 
-> If `ID_SERIAL_SHORT` is missing (some devices), match on `ID_PATH` instead.
+> If `ID_SERIAL_SHORT` is missing or identical across cameras, match on
+> `ID_PATH` instead. `ID_PATH` identifies the physical USB port, so reconnect
+> that camera to the same port to retain its stable name.
 
 ### 3.2 Edit the Example Rules File
 
@@ -80,11 +88,20 @@ SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SE
 
 ```
 ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_WRIST",    ATTR{index}=="0", SYMLINK+="cam_wrist",    GROUP="video", MODE="0660"
-ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD", ATTR{index}=="0", SYMLINK+="cam_overhead", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_1", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_2", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"
 ```
 
 > Many USB cameras expose multiple `/dev/video*` devices (video + metadata).
 > `ATTR{index}=="0"` selects the main video stream.
+
+When serials are unavailable, replace the `ENV{ID_SERIAL_SHORT}==...` match for
+that camera with its queried path, for example:
+
+```
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_PATH}=="PATH_OVERHEAD_1", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_PATH}=="PATH_OVERHEAD_2", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"
+```
 
 ### 3.3 Install and Reload
 
@@ -98,7 +115,8 @@ Verify:
 
 ```bash
 ls -l /dev/so101_leader /dev/so101_follower
-ls -l /dev/cam_wrist /dev/cam_overhead   # if you added camera rules
+ls -l /dev/cam_wrist /dev/cam_overhead_1
+ls -l /dev/cam_overhead_2  # required for dual_overhead
 ```
 
 ---
@@ -172,15 +190,106 @@ The YAML files in this repo are examples of override files, while the included `
 
 ## 6. Camera Configuration
 
-Camera config: `so101_bringup/config/cameras/so101_usb_cam.yaml`
+The repository owns exactly two immutable logical profiles:
 
-Set `video_device` to your udev symlink:
+| Profile | Required cameras | LeRobot image features |
+| ------- | ---------------- | ---------------------- |
+| `single_overhead` | wrist, overhead 1 | `observation.images.wrist`, `observation.images.overhead_1` |
+| `dual_overhead` | wrist, overhead 1, overhead 2 | the single profile plus `observation.images.overhead_2` |
+
+Their ROS contract is fixed:
+
+| Camera | Node | Raw image | CameraInfo | Optical frame |
+| ------ | ---- | --------- | ---------- | ------------- |
+| Wrist | `/follower/cam_wrist` | `/follower/image_raw` | `/follower/camera_info` | `follower/wrist_camera_optical_frame` |
+| Overhead 1 | `/static_camera_1/cam_overhead_1` | `/static_camera_1/image_raw` | `/static_camera_1/camera_info` | `follower/static_camera_1_optical_frame` |
+| Overhead 2 | `/static_camera_2/cam_overhead_2` | `/static_camera_2/image_raw` | `/static_camera_2/camera_info` | `follower/static_camera_2_optical_frame` |
+
+### 6.1 External physical rig file
+
+The profiles do not contain machine-specific device paths or calibration.
+Create one external YAML file for the physical rig and pass its absolute path
+at every camera-enabled launch. No physical calibration file is shipped in the
+repository.
 
 ```yaml
-/follower/cam_wrist:
-  ros__parameters:
-    video_device: "/dev/cam_wrist"
+schema_version: 1
+cameras:
+  wrist:
+    device: /dev/cam_wrist
+    camera_info_url: file:///absolute/path/to/wrist_camera_info.yaml
+  overhead_1:
+    device: /dev/cam_overhead_1
+    camera_info_url: file:///absolute/path/to/overhead_1_camera_info.yaml
+    transform:
+      parent_frame: base_link
+      translation: [CALIBRATED_X, CALIBRATED_Y, CALIBRATED_Z]
+      rotation_xyzw: [CALIBRATED_QX, CALIBRATED_QY, CALIBRATED_QZ, CALIBRATED_QW]
+  overhead_2:
+    device: /dev/cam_overhead_2
+    camera_info_url: file:///absolute/path/to/overhead_2_camera_info.yaml
+    transform:
+      parent_frame: base_link
+      translation: [CALIBRATED_X, CALIBRATED_Y, CALIBRATED_Z]
+      rotation_xyzw: [CALIBRATED_QX, CALIBRATED_QY, CALIBRATED_QZ, CALIBRATED_QW]
 ```
+
+The capitalized values are placeholders, not defaults. Generate independent
+intrinsics and extrinsics for each physical camera with
+[`so101_camera_calibration`](../so101_camera_calibration/README.md). The loader
+requires positive focal lengths, an absolute `file://` URL, and a normalized
+quaternion. It does not accept a copied camera-1 calibration for camera 2 as a
+substitute for measuring camera 2.
+
+### 6.2 Launching a profile
+
+Both arguments are required whenever `use_cameras:=true`:
+
+```bash
+ros2 launch so101_bringup teleop.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+```
+
+Before any driver starts, launch validates the profile, rig schema, selected
+device nodes, per-camera calibration, and overhead transforms. It then requires
+every selected Image and valid nonzero CameraInfo stream within 10 seconds and
+keeps checking them with a one-second stale limit. A driver, TF publisher, or
+supervisor exit shuts down the whole launch. There is no camera discovery,
+fallback topic, or partial-profile operation.
+
+The standard backend is `gscam`; its pipeline is constructed from each
+camera's `device`. A machine that needs a different backend must declare that
+driver's package, executable, parameters, parameter-name mapping, and remaps in
+the external rig entry. There are no built-in alternate-driver presets.
+
+The same `camera_profile` selects recorder topics, Rerun subscriptions,
+conversion features, and inference inputs. Converter timing is the only choice
+left to its two configs: `so101_30hz.yaml` or `so101_50hz.yaml`.
+
+### 6.3 Calibration bootstrap
+
+Production does not start with missing calibration. The dedicated bootstrap is
+the one exception and launches only the selected physical camera:
+
+```bash
+ros2 launch so101_bringup camera_calibration_bootstrap.launch.py \
+  camera_profile:=dual_overhead \
+  camera_id:=overhead_2 \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+```
+
+Use it only while producing the CameraInfo and transform blocks, then return to
+the strict production launch.
+
+### 6.4 Hard-cutover boundary
+
+Old-format bags and checkpoints are not stored in this repository and are not
+modified by this change. Recorder output normally lives under
+`~/.ros/so101_episodes`; downloaded datasets and policies normally live under
+the Hugging Face cache or in their Hub repositories. Anything using the former
+topics or feature schema needs historical tooling outside this repository. No
+aliases, remaps, or migration utilities are provided here.
 
 ---
 
@@ -192,17 +301,24 @@ Before launching teleop:
 - [ ] Leader / follower udev symlinks exist
 - [ ] User is in `dialout` and `video` groups
 - [ ] If using `joint_config_file`, it points to the intended override YAML with correct joint IDs
-- [ ] Camera `video_device` paths are correct (if using cameras)
+- [ ] `/dev/cam_wrist` and `/dev/cam_overhead_1` exist
+- [ ] `/dev/cam_overhead_2` exists for `dual_overhead`
+- [ ] Every selected camera has its own intrinsic CameraInfo YAML
+- [ ] Every selected overhead camera has its own measured quaternion transform
+- [ ] `camera_profile` and the absolute external rig path are supplied
 
 Sanity checks:
 
 ```bash
 ls -l /dev/so101_leader /dev/so101_follower 2>/dev/null || true
-ls -l /dev/cam_wrist /dev/cam_overhead 2>/dev/null || true
+ls -l /dev/cam_wrist /dev/cam_overhead_1 2>/dev/null || true
+ls -l /dev/cam_overhead_2 2>/dev/null || true
 ```
 
 Then run:
 
 ```bash
-ros2 launch so101_bringup teleop.launch.py hardware_type:=real
+ros2 launch so101_bringup teleop.launch.py hardware_type:=real \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
 ```

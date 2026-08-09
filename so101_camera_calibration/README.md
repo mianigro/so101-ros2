@@ -18,22 +18,48 @@ calibration can be done headlessly without a desktop GUI.
 
 > **Frame naming.** In this README `base_link` refers to the robot base
 > frame; in the running system this is typically `follower/base_link`.
-> The camera frames form a chain `static_camera_link → static_camera_optical_frame`
-> where the optical frame is the one OpenCV (and the calibration output)
-> talks about.
+> The validated rig publishes each overhead transform directly to its
+> canonical optical frame, such as `static_camera_1_optical_frame`, which is
+> also the frame used by OpenCV and the calibration output.
 
 ## Prerequisites
 
-Before running either calibration, bring up the follower arm with its
-camera stack in a separate terminal:
+Create an external physical rig file. During calibration the selected camera
+may omit `camera_info_url`, and an overhead camera may omit `transform`:
 
-```bash
-ros2 launch so101_bringup follower_vision.launch.py
+```yaml
+schema_version: 1
+cameras:
+  wrist:
+    device: /dev/cam_wrist
+  overhead_1:
+    device: /dev/cam_overhead_1
+  overhead_2:
+    device: /dev/cam_overhead_2
 ```
 
-This publishes `/static_camera/image_raw`, `/static_camera/camera_info`,
-`/follower/joint_states`, and the TF tree that the calibration nodes
-consume.
+The production camera launcher is intentionally stricter: every selected
+camera needs its own valid intrinsic YAML, and every selected overhead camera
+needs a calibrated quaternion transform. The file must be outside the
+repository and supplied by absolute path.
+
+Start the follower without cameras when the arm is needed for hand-eye
+calibration:
+
+```bash
+ros2 launch so101_bringup follower_vision.launch.py use_cameras:=false
+```
+
+In another terminal, start exactly the camera being calibrated. Use
+`single_overhead` for `wrist` or `overhead_1`; `overhead_2` belongs to the
+`dual_overhead` profile:
+
+```bash
+ros2 launch so101_bringup camera_calibration_bootstrap.launch.py \
+  camera_profile:=dual_overhead \
+  camera_id:=overhead_2 \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+```
 
 You also need a printed ChArUco board — see
 [Printing a Target](#printing-a-target).
@@ -46,8 +72,8 @@ Calibrates focal lengths, principal point, and distortion.
 
 
 ```bash
-ros2 run so101_camera_calibration camera_intrinsic_calibration_node \
-  --ros-args -p image_topic:=/static_camera/image_raw
+ros2 launch so101_camera_calibration intrinsic_calibration.launch.py \
+  camera_role:=overhead_1
 ```
 
 Open `http://localhost:8080`. Move the board around and vary tilt:
@@ -58,15 +84,36 @@ Open `http://localhost:8080`. Move the board around and vary tilt:
 
 Outputs:
 
-- `/tmp/camera_cal.yaml` — ROS `camera_info` format
-- `/tmp/camera_cal.npz` — NumPy archive
+- `/tmp/overhead_1_camera_info.yaml` — ROS CameraInfo format
+- `/tmp/overhead_1_camera_info.npz` — NumPy archive
+
+Calibrate overhead camera 2 in a separate run by selecting its topic and name:
+
+```bash
+ros2 launch so101_camera_calibration intrinsic_calibration.launch.py \
+  camera_role:=overhead_2
+```
+
+Calibrate `wrist` the same way with `camera_role:=wrist`. Do not reuse one
+physical camera's intrinsic YAML for another camera. Copy each resulting YAML
+to a persistent machine-local location and add its absolute `file://` URL to
+the corresponding rig entry:
+
+```yaml
+camera_info_url: file:///absolute/path/to/overhead_1_camera_info.yaml
+```
 
 ## 2. Hand-Eye (Extrinsic) Calibration
 
-Estimates the transform `base_link → static_camera_optical_frame`.
+Estimates the transform from `base_link` to the selected overhead optical
+frame. Calibrate each overhead camera independently:
 
 ```bash
-ros2 launch so101_camera_calibration handeye_calibration.launch.py
+ros2 launch so101_camera_calibration handeye_calibration.launch.py \
+  camera_role:=overhead_1
+
+ros2 launch so101_camera_calibration handeye_calibration.launch.py \
+  camera_role:=overhead_2
 ```
 
 ### Manual Calibration (Recommended)
@@ -81,7 +128,9 @@ ros2 launch so101_camera_calibration handeye_calibration.launch.py
 6. Verify **Park** and **Horaud** agree closely (for example within ~1 cm)
 7. Click **✅ Save Calibration**
 
-Saved to `~/.ros2/robokin_calibrations/so101_eye_on_base.yaml`.
+The results are saved separately under
+`~/.ros2/robokin_calibrations/overhead_1_transform.yaml` and
+`overhead_2_transform.yaml`.
 
 > **Tip:** Rotational variety is critical. Pure translations give degenerate
 > solutions — always tilt the gripper at different angles between samples.
@@ -98,67 +147,26 @@ because of servo repeatability and lighting sensitivity. Click
 
 ### Applying the Result
 
-The calibration outputs the optical-frame transform. The URDF chain is:
+The saved file is already a valid fragment of the external rig schema. Merge
+the selected camera's `transform` block into the same camera entry that holds
+its device and intrinsic URL:
 
-```
-base_link ──(A)──▸ static_camera_link ──(B)──▸ static_camera_optical_frame
-```
-
-- **(A)** = `cam_static_xyz / cam_static_rpy` (what you pass to the launch file)
-- **(B)** = fixed URDF rotation `rpy=(-π/2, 0, -π/2)`, **zero translation**
-
-Calibration gives `A × B`. To recover `A`:
-
-```python
-import numpy as np
-from scipy.spatial.transform import Rotation
-
-# Replace with your calibration result (optical frame)
-t = [0.1752, 0.0255, 0.5618]
-rpy_deg = [-176.0, -1.0, -87.2]
-
-T_cal = np.eye(4)
-T_cal[:3, :3] = Rotation.from_euler('xyz', rpy_deg, degrees=True).as_matrix()
-T_cal[:3, 3] = t
-
-T_opt = np.eye(4)
-T_opt[:3, :3] = Rotation.from_euler('xyz', [-np.pi/2, 0, -np.pi/2]).as_matrix()
-
-T_link = T_cal @ np.linalg.inv(T_opt)
-print(f'cam_static_xyz:="{T_link[0,3]:.4f} {T_link[1,3]:.4f} {T_link[2,3]:.4f}"')
-rpy = Rotation.from_matrix(T_link[:3,:3]).as_euler('xyz')
-print(f'cam_static_rpy:="{rpy[0]:.4f} {rpy[1]:.4f} {rpy[2]:.4f}"')
+```yaml
+schema_version: 1
+cameras:
+  overhead_1:
+    device: /dev/cam_overhead_1
+    camera_info_url: file:///absolute/path/to/overhead_1_camera_info.yaml
+    transform:
+      parent_frame: base_link
+      translation: [0.1752, 0.0255, 0.5618]
+      rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 ```
 
-Because `T_opt` has **zero translation**, this conversion changes only the
-rotation — the `xyz` is identical before and after.
-
-Then pass to the launch file:
-
-```bash
-ros2 launch so101_bringup follower_vision.launch.py \
-  cam_static_xyz:="0.1752 0.0255 0.5618" \
-  cam_static_rpy:="-0.2452 1.4988 -0.1957"
-```
-
-#### Gimbal Lock Note
-
-The `static_camera_link` pitch is near 90°, which causes **gimbal lock** —
-roll and yaw Euler angles become unstable across runs even when the actual
-rotation is nearly identical. Example from two calibration runs:
-
-| Run             | Optical-frame rpy   | `static_camera_link` rpy | Rotation diff |
-|-----------------|---------------------|--------------------------|---------------|
-| v1 (27 samples) | (-176°, -1°, -87°)  | (-14°, 86°, -11°)        | —             |
-| v2 (24 samples) | (-176°,  2°, -90°)  | ( 20°, 86°,  20°)        | **3.6°**      |
-
-Roll and yaw swing by ~30° but the underlying rotations differ by only 3.6°.
-The optical-frame rpy is near pitch = 0° and stays stable, while the
-`static_camera_link` rpy is near pitch ≈ 90° and is not. TF uses quaternions
-internally, so gimbal lock does not affect runtime behaviour.
-
-> Use the result from a single good calibration run. **Do not average
-> Euler angles near pitch ≈ 90°.**
+The values above only illustrate the schema; they are not a usable physical
+calibration. The production loader rejects a missing or non-normalized
+quaternion. Keeping the quaternion directly avoids the Euler-angle gimbal-lock
+failure that affected the removed launch-argument interface.
 
 ## Printing a Target
 
@@ -193,11 +201,10 @@ the generated board.
 ```
 so101_camera_calibration/
 ├── config/
-│   ├── calibration_poses.yaml          # Joint poses for auto-calibrate
-│   ├── so101_eye_on_base.yaml          # Reference calibration result
-│   └── so101_eye_on_base.samples.yaml  # Reference samples
+│   └── calibration_poses.yaml          # Joint poses for auto-calibrate
 ├── launch/
-│   └── handeye_calibration.launch.py
+│   ├── handeye_calibration.launch.py
+│   └── intrinsic_calibration.launch.py
 ├── scripts/
 │   ├── gen_charuco_handeye.py
 │   └── gen_charuco_intrinsic.py

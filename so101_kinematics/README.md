@@ -33,7 +33,7 @@ end-effector in real time; the solver streams joint commands to the arm.
 <video src="https://github.com/user-attachments/assets/ca9ddc47-adbd-4dd0-8c6e-e57ba177ee6b" controls width="100%"></video>
 
 ```bash
-ros2 launch so101_bringup follower_vision.launch.py
+ros2 launch so101_bringup follower_vision.launch.py use_cameras:=false
 ros2 run so101_kinematics so101_ik_control_node
 ```
 
@@ -44,8 +44,22 @@ ros2 run so101_kinematics so101_ik_control_node
 | `joints_topic`        | `/follower/joint_states`                 | Joint-state feedback topic   |
 | `cmd_topic`           | `/follower/forward_controller/commands`  | Joint-command output topic   |
 | `use_cameras`         | `false`                                  | Show camera feeds in Viser   |
-| `cam_wrist_topic`     | `/follower/image_raw`                    | Wrist camera image topic     |
-| `cam_overhead_topic`  | `/static_camera/image_raw`               | Overhead camera image topic  |
+| `camera_profile`      | empty                                    | Required when `use_cameras=true`: `single_overhead` or `dual_overhead` |
+
+The selected profile owns the canonical camera topics; per-camera topic
+overrides and legacy aliases are not supported.
+
+To show camera panels, launch the camera stack with its required physical rig
+and pass the same profile to the node:
+
+```bash
+ros2 launch so101_bringup follower_vision.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+
+ros2 run so101_kinematics so101_ik_control_node --ros-args \
+  -p use_cameras:=true -p camera_profile:=dual_overhead
+```
 
 ### `so101_planned_control_node`
 
@@ -54,7 +68,7 @@ every tick) and **planned mode** for smooth, pre-computed trajectories
 (joint-quintic or Cartesian-interpolated).
 
 ```bash
-ros2 launch so101_bringup follower_vision.launch.py
+ros2 launch so101_bringup follower_vision.launch.py use_cameras:=false
 ros2 run so101_kinematics so101_planned_control_node
 ```
 

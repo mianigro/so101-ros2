@@ -8,24 +8,25 @@ version = "0.1.0"
 description = "GPU-side policy inference server for SO-101 (LeRobot). Supports ZMQ and gRPC transports."
 readme = {text = "GPU-side policy inference server that loads LeRobot policies and serves action predictions over ZMQ or gRPC.", content-type = "text/plain"}
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     {name = "Dmitri Manajev", email = "dmitri@manajev.com"},
 ]
 
 dependencies = [
-    "torch>=2.0",
-    "numpy>=1.24",
-    "pyzmq>=25.0",
-    "msgpack>=1.0",
-    "grpcio>=1.60",
+    "lerobot[async,pi,smolvla]==0.6.1",
+    "torch>=2.7,<2.12.0",
+    "numpy>=2.0,<2.3",
+    "opencv-python-headless>=4.9,<4.14",
+    "pyzmq>=26.2.1,<28.0.0",
+    "msgpack>=1,<2",
+    "grpcio>=1.73.1,<2.0",
 ]
 
-[project.optional-dependencies]
-# lerobot must be installed separately (from source or git):
-#   pip install -e ./lerobot
-#   pip install "lerobot[async]"
-#   pip install "lerobot[smolvla]"
+[dependency-groups]
+dev = [
+    "pytest>=8.1,<10",
+]
 
 [project.scripts]
 policy-server = "policy_server.server:main"

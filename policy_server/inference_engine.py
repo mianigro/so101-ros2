@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Transport-independent LeRobot 0.6.1 policy loading and inference."""
+
 from __future__ import annotations
 
 import gc
-import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any
 
@@ -27,11 +28,18 @@ import numpy as np
 import torch
 from lerobot.async_inference.constants import SUPPORTED_POLICIES
 from lerobot.async_inference.helpers import (
-    FPSTracker, Observation, RemotePolicyConfig, TimedAction, TimedObservation,
-    extract_state_from_raw_observation, get_logger, is_image_key,
-    make_lerobot_observation)
-from lerobot.policies.factory import get_policy_class, make_pre_post_processors
-from lerobot.processor import PolicyAction, PolicyProcessorPipeline
+    FPSTracker,
+    Observation,
+    RemotePolicyConfig,
+    TimedAction,
+    TimedObservation,
+    extract_state_from_raw_observation,
+    get_logger,
+    is_image_key,
+    make_lerobot_observation,
+)
+from lerobot.policies import get_policy_class, make_pre_post_processors
+from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import OBS_STATE
 
 logger = get_logger("inference_engine", log_to_file=False)
@@ -61,6 +69,46 @@ def _decode_compressed_images(raw_obs: dict) -> dict:
         if isinstance(value, (bytes, bytearray)):
             raw_obs[key] = _decode_jpeg_to_rgb(value)
     return raw_obs
+
+
+def validate_policy_input_features(
+    policy_input_features: dict[str, Any] | None,
+    client_features: dict[str, dict],
+    state_dimension: int = 6,
+) -> None:
+    """Require the loaded policy schema to exactly match the ROS client schema."""
+    if not policy_input_features:
+        raise ValueError("Loaded policy does not declare input_features")
+
+    policy_images = {
+        key for key in policy_input_features if key.startswith("observation.images.")
+    }
+    client_images = {
+        key for key in client_features if key.startswith("observation.images.")
+    }
+    if policy_images != client_images:
+        missing = sorted(client_images - policy_images)
+        unexpected = sorted(policy_images - client_images)
+        raise ValueError(
+            "Policy camera schema does not match the client camera_profile; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+    state_feature = policy_input_features.get(OBS_STATE)
+    if state_feature is None:
+        raise ValueError(f"Policy input schema is missing {OBS_STATE}")
+    state_shape = getattr(state_feature, "shape", None)
+    if tuple(state_shape or ()) != (state_dimension,):
+        raise ValueError(
+            f"Policy {OBS_STATE} shape must be ({state_dimension},), got {state_shape}"
+        )
+
+    client_state = client_features.get(OBS_STATE)
+    client_state_shape = client_state.get("shape") if client_state else None
+    if tuple(client_state_shape or ()) != (state_dimension,):
+        raise ValueError(
+            f"Client {OBS_STATE} shape must be ({state_dimension},), got {client_state_shape}"
+        )
 
 
 def _raw_observation_to_observation(
@@ -219,33 +267,39 @@ class InferenceEngine:
     def load_policy(self, config: RemotePolicyConfig) -> None:
         if config.policy_type not in SUPPORTED_POLICIES:
             raise ValueError(f"Unsupported policy type {config.policy_type}. Supported: {SUPPORTED_POLICIES}")
+        if not config.pretrained_name_or_path.strip():
+            raise ValueError("pretrained_name_or_path must not be empty")
+        if config.rename_map:
+            raise ValueError(
+                "Client-provided rename_map is not supported; policy inputs must use "
+                "canonical camera keys"
+            )
 
         if self.policy is not None:
             logger.info("Replacing existing policy; unloading previous model first")
             self.unload_policy()
 
+        policy_class = get_policy_class(config.policy_type)
+        start = time.perf_counter()
+        policy = policy_class.from_pretrained(config.pretrained_name_or_path)
+        validate_policy_input_features(policy.config.input_features, config.lerobot_features)
+        policy.to(config.device)
+        policy.eval()
+
+        device_override = {"device": config.device}
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy.config,
+            pretrained_path=config.pretrained_name_or_path,
+            preprocessor_overrides={"device_processor": device_override},
+            postprocessor_overrides={"device_processor": device_override},
+        )
         self.device = config.device
         self.policy_type = config.policy_type
         self.lerobot_features = config.lerobot_features
         self.actions_per_chunk = config.actions_per_chunk
-
-        policy_class = get_policy_class(self.policy_type)
-        start = time.perf_counter()
-        self.policy = policy_class.from_pretrained(config.pretrained_name_or_path)
-        self.policy.to(self.device)
-
-        device_override = {"device": self.device}
-        preprocessor_overrides = {"device_processor": device_override}
-        # Only override the rename_map if the client actually provides one.
-        # This prevents wiping out a rename_map that might already be in the repo.
-        if config.rename_map:
-            preprocessor_overrides["rename_observations_processor"] = {"rename_map": config.rename_map}
-        self.preprocessor, self.postprocessor = make_pre_post_processors(
-            self.policy.config,
-            pretrained_path=config.pretrained_name_or_path,
-            preprocessor_overrides=preprocessor_overrides,
-            postprocessor_overrides={"device_processor": device_override},
-        )
+        self.policy = policy
+        self.preprocessor = preprocessor
+        self.postprocessor = postprocessor
         elapsed = time.perf_counter() - start
         logger.info(f"Policy loaded on {self.device} in {elapsed:.2f}s")
 

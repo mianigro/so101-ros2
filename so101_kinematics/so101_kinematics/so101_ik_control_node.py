@@ -46,6 +46,8 @@ from robokin.transformations import (
 )
 from robokin.ui.viser_app import ViserRobotUI
 
+from so101_kinematics.camera_profiles import camera_topics
+
 
 EE_FRAME = "gripper_frame_link"
 DT = 1.0 / 50.0
@@ -71,13 +73,15 @@ class IKViserSO101Node(Node):
         self.declare_parameter("joints_topic", "/follower/joint_states")
         self.declare_parameter("cmd_topic", "/follower/forward_controller/commands")
         self.declare_parameter("use_cameras", False)
-        self.declare_parameter("cam_wrist_topic", "/follower/image_raw")
-        self.declare_parameter("cam_overhead_topic", "/static_camera/image_raw")
+        self.declare_parameter("camera_profile", "")
         joints_topic = self.get_parameter("joints_topic").value
         cmd_topic = self.get_parameter("cmd_topic").value
         self.use_cameras = self.get_parameter("use_cameras").value
-        cam_wrist_topic = self.get_parameter("cam_wrist_topic").value
-        cam_overhead_topic = self.get_parameter("cam_overhead_topic").value
+        profile_topics = {}
+        if self.use_cameras:
+            profile_topics = camera_topics(
+                str(self.get_parameter("camera_profile").value)
+            )
 
         # -- Load robot model --
         model = load_robot_description("so_arm101_description")
@@ -171,10 +175,13 @@ class IKViserSO101Node(Node):
             self._start_segment(self.T_REST)
 
         # Camera image panels in Viser
-        self._cam_wrist_handle = None
-        self._cam_overhead_handle = None
+        self._wrist_handle = None
+        self._overhead_1_handle = None
+        self._overhead_2_handle = None
         if self.use_cameras:
-            self.get_logger().info(f"  Cameras enabled: {cam_wrist_topic}, {cam_overhead_topic}")
+            self.get_logger().info(
+                f"  Cameras enabled: {', '.join(profile_topics.values())}"
+            )
 
         # -- Latest arm state from hardware --
         self.q_measured = q_init.copy()
@@ -196,12 +203,16 @@ class IKViserSO101Node(Node):
         )
 
         if self.use_cameras:
-            self.cam_wrist_sub = self.create_subscription(
-                Image, cam_wrist_topic, self._cam_wrist_cb, sensor_qos
+            self.wrist_sub = self.create_subscription(
+                Image, profile_topics["wrist"], self._wrist_cb, sensor_qos
             )
-            self.cam_overhead_sub = self.create_subscription(
-                Image, cam_overhead_topic, self._cam_overhead_cb, sensor_qos
+            self.overhead_1_sub = self.create_subscription(
+                Image, profile_topics["overhead_1"], self._overhead_1_cb, sensor_qos
             )
+            if "overhead_2" in profile_topics:
+                self.overhead_2_sub = self.create_subscription(
+                    Image, profile_topics["overhead_2"], self._overhead_2_cb, sensor_qos
+                )
 
         # -- ROS2 publisher for arm commands --
         self.cmd_pub = self.create_publisher(Float64MultiArray, cmd_topic, 10)
@@ -229,27 +240,38 @@ class IKViserSO101Node(Node):
             self._initialized_from_arm = True
             self.get_logger().info("Initialized from arm — http://localhost:8080")
 
-    def _cam_wrist_cb(self, msg: Image):
+    def _wrist_cb(self, msg: Image):
         img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
             msg.height, msg.width, -1
         )
-        if self._cam_wrist_handle is None:
-            self._cam_wrist_handle = self.server.gui.add_image(
+        if self._wrist_handle is None:
+            self._wrist_handle = self.server.gui.add_image(
                 img, label="Wrist Camera", format="jpeg", jpeg_quality=75,
             )
         else:
-            self._cam_wrist_handle.image = img
+            self._wrist_handle.image = img
 
-    def _cam_overhead_cb(self, msg: Image):
+    def _overhead_1_cb(self, msg: Image):
         img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
             msg.height, msg.width, -1
         )
-        if self._cam_overhead_handle is None:
-            self._cam_overhead_handle = self.server.gui.add_image(
-                img, label="Overhead Camera", format="jpeg", jpeg_quality=75,
+        if self._overhead_1_handle is None:
+            self._overhead_1_handle = self.server.gui.add_image(
+                img, label="Overhead Camera 1", format="jpeg", jpeg_quality=75,
             )
         else:
-            self._cam_overhead_handle.image = img
+            self._overhead_1_handle.image = img
+
+    def _overhead_2_cb(self, msg: Image):
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+            msg.height, msg.width, -1
+        )
+        if self._overhead_2_handle is None:
+            self._overhead_2_handle = self.server.gui.add_image(
+                img, label="Overhead Camera 2", format="jpeg", jpeg_quality=75,
+            )
+        else:
+            self._overhead_2_handle.image = img
 
     def _start_segment(self, T_goal: np.ndarray):
         """Start a smooth trajectory from current pose to T_goal."""

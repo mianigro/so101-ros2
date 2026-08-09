@@ -6,13 +6,19 @@ package_name = "so101_inference"
 setup(
     name=package_name,
     version="0.0.0",
+    python_requires=">=3.12",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
     ],
-    install_requires=["setuptools"],
+    install_requires=[
+        "setuptools",
+        "lerobot[async,smolvla]==0.6.1",
+        "msgpack>=1,<2",
+        "pyzmq>=26.2.1,<28.0.0",
+    ],
     zip_safe=True,
     maintainer="Dmitri Manajev",
     maintainer_email="dmitri@manajev.com",

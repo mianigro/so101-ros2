@@ -20,11 +20,11 @@ corners can be detected even when the board is partially off-frame or
 heavily tilted, so coverage at the image edges (where distortion matters
 most) is easier to fill.
 
-Open http://localhost:8080 once running. Outputs to /tmp/camera_cal.npz
-and /tmp/camera_cal.yaml (ROS camera_info format), same as chessboard node.
+Open http://localhost:8080 once running. Outputs role-specific NumPy and ROS
+CameraInfo YAML files under /tmp.
 
 Parameters:
-    image_topic     Camera topic (default: /static_camera/image_raw).
+    camera_role     Required canonical role: wrist, overhead_1, or overhead_2.
     squares_x       ChArUco grid squares along X (default: 8).
     squares_y       ChArUco grid squares along Y (default: 6).
     square_length   Physical square size in metres (default: 0.025).
@@ -222,7 +222,7 @@ class CameraIntrinsicCalibrationNode(Node):
     def __init__(self):
         super().__init__("camera_intrinsic_calibration_node")
 
-        self.declare_parameter("image_topic", "/static_camera/image_raw")
+        self.declare_parameter("camera_role", "")
         self.declare_parameter("squares_x", 8)
         self.declare_parameter("squares_y", 6)
         self.declare_parameter("square_length", 0.025)
@@ -289,7 +289,18 @@ class CameraIntrinsicCalibrationNode(Node):
         self._captured_params = []
         self.image_size = None
 
-        topic = self.get_parameter("image_topic").value
+        camera_role = str(self.get_parameter("camera_role").value)
+        camera_contract = {
+            "wrist": ("/follower/image_raw", "cam_wrist"),
+            "overhead_1": ("/static_camera_1/image_raw", "cam_overhead_1"),
+            "overhead_2": ("/static_camera_2/image_raw", "cam_overhead_2"),
+        }
+        if camera_role not in camera_contract:
+            raise ValueError(
+                "camera_role must be one of: wrist, overhead_1, overhead_2"
+            )
+        topic, self.camera_name = camera_contract[camera_role]
+        self.output_stem = f"/tmp/{camera_role}_camera_info"
         self.create_subscription(Image, topic, self._image_cb, 1)
         self.create_timer(0.1, self._process)
 
@@ -325,7 +336,7 @@ class CameraIntrinsicCalibrationNode(Node):
         self._reset_btn = gui.add_button("Reset captures")
         self._reset_btn.on_click(lambda _: self._reset())
 
-        self._save_btn = gui.add_button("Save to /tmp/camera_cal.npz")
+        self._save_btn = gui.add_button(f"Save to {self.output_stem}.yaml")
         self._save_btn.on_click(lambda _: self._save())
 
         gui.add_markdown("### Status")
@@ -619,8 +630,8 @@ class CameraIntrinsicCalibrationNode(Node):
         if self._K is None:
             self.get_logger().warn("Run Calibrate first")
             return
-        npz_path = "/tmp/camera_cal.npz"
-        yaml_path = "/tmp/camera_cal.yaml"
+        npz_path = f"{self.output_stem}.npz"
+        yaml_path = f"{self.output_stem}.yaml"
         np.savez(
             npz_path,
             camera_matrix=self._K,
@@ -640,7 +651,7 @@ class CameraIntrinsicCalibrationNode(Node):
         info = {
             "image_width": int(self.image_size[0]),
             "image_height": int(self.image_size[1]),
-            "camera_name": "cam_overhead",
+            "camera_name": self.camera_name,
             "camera_matrix": {
                 "rows": 3, "cols": 3,
                 "data": self._K.flatten().tolist(),

@@ -14,8 +14,8 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
-from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
 
 
 def generate_launch_description():
@@ -31,14 +31,13 @@ def generate_launch_description():
     arm_controller = LaunchConfiguration(
         "arm_controller"
     )  # trajectory_controller|forward_controller
-    cameras_config_file = LaunchConfiguration("cameras_config_file")
-
     # Inference toggles + policy params
     use_inference = LaunchConfiguration("use_inference")
     inference_delay_s = LaunchConfiguration("inference_delay_s")
 
     repo_id = LaunchConfiguration("repo_id")
     fps = LaunchConfiguration("fps")
+    camera_profile = LaunchConfiguration("camera_profile")
     # device = LaunchConfiguration("device")
 
     use_rerun = LaunchConfiguration("use_rerun")
@@ -65,14 +64,7 @@ def generate_launch_description():
     )
 
     # --- Include cameras launch ---
-    cameras_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"]
-            )
-        ),
-        launch_arguments={"cameras_config": cameras_config_file}.items(),
-    )
+    cameras_launch = include_cameras(follower_ns, follower_frame_prefix)
 
     # --- Inference node ---
     # Inference process: runs inside pixi env
@@ -89,6 +81,8 @@ def generate_launch_description():
             ["repo_id:=", repo_id],
             "-p",
             ["fps:=", fps],
+            "-p",
+            ["camera_profile:=", camera_profile],
             # "-p",
             # ["device:=", device],
         ],
@@ -111,6 +105,8 @@ def generate_launch_description():
             "run",
             "bridge",
             "--",
+            "--camera-profile",
+            camera_profile,
         ],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
@@ -134,10 +130,6 @@ def generate_launch_description():
             "follower_controllers.yaml",
         ]
     )
-    default_cameras_cfg = PathJoinSubstitution(
-        [FindPackageShare("so101_bringup"), "config", "cameras", "so101_cameras.yaml"]
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
@@ -154,13 +146,11 @@ def generate_launch_description():
                 default_value=default_follower_ctrl_cfg,
             ),
             DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
-            DeclareLaunchArgument(
-                "cameras_config_file", default_value=default_cameras_cfg
-            ),
+            *declare_camera_arguments(),
             DeclareLaunchArgument("use_inference", default_value="false"),
             DeclareLaunchArgument("inference_delay_s", default_value="2.0"),
             DeclareLaunchArgument(
-                "repo_id", default_value="legalaspro/act-so101-pick-place-cube-30hz-v1"
+                "repo_id", description="Required Hugging Face policy repo ID or local path"
             ),
             DeclareLaunchArgument("fps", default_value="30.0"),
             # DeclareLaunchArgument("device", default_value="cuda"),

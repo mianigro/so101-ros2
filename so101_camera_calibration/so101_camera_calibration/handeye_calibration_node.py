@@ -17,7 +17,8 @@
 Subscribes to a calibrated camera (image + camera_info), detects a ChArUco
 board, runs `solvePnP` to estimate board pose in the camera optical frame,
 and broadcasts the resulting transform on TF as
-`<camera_frame> -> <target_frame>` (default: `cam_overhead -> handeye_target`).
+`<camera_frame> -> <target_frame>` (for example,
+`static_camera_1_optical_frame -> handeye_target`).
 
 Viser UI on :8080 provides:
 - Live detection overlay with charuco corner visualization
@@ -157,8 +158,9 @@ class HandeyeCalibrationNode(Node):
         super().__init__("handeye_calibration_node")
 
         # ── Parameters ──
-        self.declare_parameter("image_topic", "/static_camera/image_raw")
-        self.declare_parameter("camera_info_topic", "/static_camera/camera_info")
+        self.declare_parameter("image_topic", "/static_camera_1/image_raw")
+        self.declare_parameter("camera_info_topic", "/static_camera_1/camera_info")
+        self.declare_parameter("camera_role", "")
         # Leave camera_frame empty to adopt the frame_id from incoming
         # CameraInfo/Image headers (recommended). Set a string to override.
         self.declare_parameter("camera_frame", "")
@@ -190,6 +192,9 @@ class HandeyeCalibrationNode(Node):
         self._robot_effector_frame = str(
             self.get_parameter("robot_effector_frame").value)
         self._calib_name = str(self.get_parameter("calibration_name").value)
+        self._camera_role = str(self.get_parameter("camera_role").value)
+        if self._camera_role not in {"overhead_1", "overhead_2"}:
+            raise ValueError("camera_role must be overhead_1 or overhead_2")
 
         self._aruco_dict, self._board = _make_board(
             int(self.get_parameter("squares_x").value),
@@ -629,17 +634,17 @@ class HandeyeCalibrationNode(Node):
             self._last_calibration[:3, :3]).as_quat()  # xyzw
 
         data = {
-            "calibration_type": "eye_on_base",
-            "tracking_base_frame": self._camera_frame,
-            "tracking_marker_frame": self._target_frame,
-            "robot_base_frame": self._robot_base_frame,
-            "robot_effector_frame": self._robot_effector_frame,
-            "transform": {
-                "translation": {"x": float(t[0]),
-                                "y": float(t[1]),
-                                "z": float(t[2])},
-                "rotation": {"x": float(q[0]), "y": float(q[1]),
-                             "z": float(q[2]), "w": float(q[3])},
+            "schema_version": 1,
+            "cameras": {
+                self._camera_role: {
+                    "transform": {
+                        "parent_frame": "base_link",
+                        "translation": [float(t[0]), float(t[1]), float(t[2])],
+                        "rotation_xyzw": [
+                            float(q[0]), float(q[1]), float(q[2]), float(q[3])
+                        ],
+                    }
+                }
             },
         }
         with open(filepath, "w") as f:

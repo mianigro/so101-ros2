@@ -12,14 +12,16 @@
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>so101_description</depend>
 
-  <!-- cameras.launch.py spawns nodes from these packages -->
-  <exec_depend>usb_cam</exec_depend>
-  <exec_depend>realsense2_camera</exec_depend>
+  <!-- Canonical profiles use gscam; custom rigs own alternate backend dependencies. -->
   <exec_depend>gscam</exec_depend>
-  <exec_depend>camera_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros2launch</exec_depend>
@@ -29,6 +31,8 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

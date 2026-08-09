@@ -12,29 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-SO101 LeRobot ROS2 Inference Node
-"""
+"""SO101 LeRobot ROS2 inference node."""
 
+from copy import copy
+from functools import partial
 import ssl  # Preload pixi/conda OpenSSL before rclpy loads system libcrypto.
+import time
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64MultiArray
 
-import time
 import torch
-import numpy as np
-from copy import copy
 
+from so101_inference.camera_config import (
+    camera_topics_for_profile,
+    streams_fresh,
+    streams_ready,
+    validate_policy_input_features,
+)
 from so101_inference.utils import ros2_image_to_numpy
 
-from lerobot.policies.act.modeling_act import ACTPolicy
-from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.factory import make_pre_post_processors
+from lerobot.configs import PreTrainedConfig
+from lerobot.policies import get_policy_class, make_pre_post_processors
 
 
 class LeRobotInferenceNode(Node):
@@ -44,10 +47,8 @@ class LeRobotInferenceNode(Node):
         # --------------------
         # Parameters
         # --------------------
-        self.declare_parameter(
-            "repo_id",
-            "legalaspro/act_so101_pnp_microsanity_20_50hz_v0",
-        )
+        self.declare_parameter("repo_id", "")
+        self.declare_parameter("camera_profile", "")
         self.declare_parameter("policy_type", "act")
         self.declare_parameter("task", "Put the green cube in the cup.")
         self.declare_parameter("fps", 50.0)
@@ -55,12 +56,6 @@ class LeRobotInferenceNode(Node):
 
         self.declare_parameter("fwd_topic", "/follower/forward_controller/commands")
         self.declare_parameter("joints_topic", "/follower/joint_states")
-        self.declare_parameter("top_camera_topic", "/static_camera/image_raw")
-        self.declare_parameter("wrist_camera_topic", "/follower/image_raw")
-
-        # Camera names as the policy expects them in observation keys
-        self.declare_parameter("camera_top_name", "top")
-        self.declare_parameter("camera_wrist_name", "wrist")
 
         self.declare_parameter(
             "arm_joints",
@@ -75,7 +70,8 @@ class LeRobotInferenceNode(Node):
         )
 
         # Read parameters
-        self.repo_id = str(self.get_parameter("repo_id").value)
+        self.repo_id = str(self.get_parameter("repo_id").value).strip()
+        self.camera_profile = str(self.get_parameter("camera_profile").value).strip()
         self.policy_type = str(self.get_parameter("policy_type").value)
         self.task = str(self.get_parameter("task").value)
         self.fps = float(self.get_parameter("fps").value)
@@ -83,13 +79,11 @@ class LeRobotInferenceNode(Node):
 
         self.fwd_topic = str(self.get_parameter("fwd_topic").value)
         self.joints_topic = str(self.get_parameter("joints_topic").value)
-        self.top_camera_topic = str(self.get_parameter("top_camera_topic").value)
-        self.wrist_camera_topic = str(self.get_parameter("wrist_camera_topic").value)
+        if not self.repo_id:
+            raise ValueError("repo_id is required and must not be empty")
+        self.camera_topics = camera_topics_for_profile(self.camera_profile)
 
         self.arm_joints = list(self.get_parameter("arm_joints").value)
-
-        self._cam_top = str(self.get_parameter("camera_top_name").value)
-        self._cam_wrist = str(self.get_parameter("camera_wrist_name").value)
 
         if self.fps <= 0:
             self.get_logger().warn(f"Invalid fps={self.fps}; forcing 30.0")
@@ -102,12 +96,11 @@ class LeRobotInferenceNode(Node):
         self.get_logger().info(f"🚀 Using device: {self.device}")
         self.get_logger().info(f"Loading LeRobot policy from repo_id: {self.repo_id}")
         config = PreTrainedConfig.from_pretrained(self.repo_id)
+        validate_policy_input_features(config.input_features, self.camera_profile)
         # config.n_action_steps = 50
         # config.temporal_ensemble_coeff = 0.01
-        if self.policy_type == "act":
-            self.policy = ACTPolicy.from_pretrained(self.repo_id, config=config).to(self.device)
-        else:
-            self.policy = SmolVLAPolicy.from_pretrained(self.repo_id, config=config).to(self.device)
+        policy_class = get_policy_class(self.policy_type)
+        self.policy = policy_class.from_pretrained(self.repo_id, config=config).to(self.device)
         self.policy.eval()
         self.policy.reset()
 
@@ -123,11 +116,11 @@ class LeRobotInferenceNode(Node):
         # Runtime state
         # --------------------
 
-        self._latest_top_img: Image | None = None
-        self._latest_wrist_img: Image | None = None
+        self._latest_camera_images: dict[str, Image | None] = {
+            camera_name: None for camera_name in self.camera_topics
+        }
         self._latest_joints_msg: JointState | None = None
-        self._rx_top = None
-        self._rx_wrist = None
+        self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
         self._rx_joints = None
 
         # Joint ordering cache
@@ -138,13 +131,13 @@ class LeRobotInferenceNode(Node):
         # --------------------
         #  ROS2 Subscribers, Publishers, Timers
         # --------------------
-        self.create_subscription(Image, self.top_camera_topic, self._on_top_image_cb, qos_profile_sensor_data)
-        self.create_subscription(
-            Image,
-            self.wrist_camera_topic,
-            self._on_wrist_image_cb,
-            qos_profile_sensor_data,
-        )
+        for camera_name, camera_topic in self.camera_topics.items():
+            self.create_subscription(
+                Image,
+                camera_topic,
+                partial(self._on_camera_image_cb, camera_name),
+                qos_profile_sensor_data,
+            )
         self.create_subscription(JointState, self.joints_topic, self._on_joints_cb, qos_profile_sensor_data)
 
         self.forward_pub = self.create_publisher(Float64MultiArray, self.fwd_topic, 10)
@@ -161,20 +154,17 @@ class LeRobotInferenceNode(Node):
 
         # Startup logs
         self.get_logger().info("LeRobotInferenceNode READY")
-        self.get_logger().info(f"  top_camera_topic:   {self.top_camera_topic}")
-        self.get_logger().info(f"  wrist_camera_topic: {self.wrist_camera_topic}")
+        self.get_logger().info(f"  camera_profile:     {self.camera_profile}")
+        for camera_name, camera_topic in self.camera_topics.items():
+            self.get_logger().info(f"  camera {camera_name}: {camera_topic}")
         self.get_logger().info(f"  joints_topic:       {self.joints_topic}")
         self.get_logger().info(f"  fwd_topic:          {self.fwd_topic}")
         self.get_logger().info(f"  fps:                {self.fps:.1f}")
         self.get_logger().info(f"  max_age_s:          {self.max_age_s:.3f}")
 
-    def _on_top_image_cb(self, msg: Image):
-        self._latest_top_img = msg
-        self._rx_top = self.get_clock().now()
-
-    def _on_wrist_image_cb(self, msg: Image):
-        self._latest_wrist_img = msg
-        self._rx_wrist = self.get_clock().now()
+    def _on_camera_image_cb(self, camera_name: str, msg: Image):
+        self._latest_camera_images[camera_name] = msg
+        self._rx_cameras[camera_name] = self.get_clock().now()
 
     def _on_joints_cb(self, msg: JointState):
         # Initialize mapping once (or retry until it works)
@@ -210,39 +200,30 @@ class LeRobotInferenceNode(Node):
 
     def _data_ready(self) -> bool:
         return (
-            self._latest_top_img is not None
-            and self._latest_wrist_img is not None
+            streams_ready(
+                self.camera_topics,
+                self._latest_camera_images,
+                self._rx_cameras,
+            )
             and self._latest_joints_vec is not None
-            and self._rx_top is not None
-            and self._rx_wrist is not None
             and self._rx_joints is not None
         )
 
     def _is_data_fresh(self) -> bool:
         now = self.get_clock().now()
 
-        def age_s(t) -> float:
-            return (now - t).nanoseconds * 1e-9
-
-        return (
-            age_s(self._rx_top) <= self.max_age_s
-            and age_s(self._rx_wrist) <= self.max_age_s
-            and age_s(self._rx_joints) <= self.max_age_s
-        )
+        received_at = {**self._rx_cameras, "joints": self._rx_joints}
+        return streams_fresh(received_at, now, self.max_age_s)
 
     def _build_observation(self) -> dict:
-        """
-        Return a dict with raw numpy images (uint8 RGB) and ordered joint state.
-        """
-
-        top_rgb = ros2_image_to_numpy(self._latest_top_img)  # HxWx3 uint8 RGB
-        wrist_rgb = ros2_image_to_numpy(self._latest_wrist_img)  # HxWx3 uint8 RGB
-        return {
+        """Return raw RGB camera images and ordered joint state."""
+        observation = {
             "observation.state": self._latest_joints_vec,  # (6,) float32
-            f"observation.images.{self._cam_top}": top_rgb,
-            f"observation.images.{self._cam_wrist}": wrist_rgb,
             "task": self.task,
         }
+        for camera_name, image in self._latest_camera_images.items():
+            observation[f"observation.images.{camera_name}"] = ros2_image_to_numpy(image)
+        return observation
 
     def inference_loop(self):
         # Require data

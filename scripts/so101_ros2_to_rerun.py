@@ -19,6 +19,8 @@ from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
 from trajectory_msgs.msg import JointTrajectory
 
+from so101_camera_profiles import PROFILE_CAMERA_NAMES, image_topics
+
 # LeRobot-style constants
 OBS_STR = "observation"
 ACTION_STR = "action"
@@ -55,7 +57,8 @@ def log_scalar(path: str, value: float) -> None:
 @dataclass
 class Topics:
     wrist: str
-    overhead: str
+    overhead_1: str
+    overhead_2: Optional[str]
     joint_states: str
     forward_commands: Optional[str] = None
     joint_trajectory: Optional[str] = None
@@ -80,7 +83,8 @@ class So101Ros2ToRerun(Node):
 
         # Separate callback groups so heavy-ish callbacks don't block each other.
         self._cg_img_wrist = ReentrantCallbackGroup()
-        self._cg_img_over = ReentrantCallbackGroup()
+        self._cg_img_overhead_1 = ReentrantCallbackGroup()
+        self._cg_img_overhead_2 = ReentrantCallbackGroup()
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
         self._cg_traj = ReentrantCallbackGroup()
@@ -102,22 +106,40 @@ class So101Ros2ToRerun(Node):
                 callback_group=self._cg_img_wrist,
             )
 
-        if self._is_compressed(topics.overhead):
+        if self._is_compressed(topics.overhead_1):
             self.create_subscription(
                 CompressedImage,
-                topics.overhead,
-                self._on_overhead_img,
+                topics.overhead_1,
+                self._on_overhead_1_img,
                 qos_profile_sensor_data,
-                callback_group=self._cg_img_over,
+                callback_group=self._cg_img_overhead_1,
             )
         else:
             self.create_subscription(
                 Image,
-                topics.overhead,
-                self._on_overhead_img_raw,
+                topics.overhead_1,
+                self._on_overhead_1_img_raw,
                 qos_profile_sensor_data,
-                callback_group=self._cg_img_over,
+                callback_group=self._cg_img_overhead_1,
             )
+
+        if topics.overhead_2:
+            if self._is_compressed(topics.overhead_2):
+                self.create_subscription(
+                    CompressedImage,
+                    topics.overhead_2,
+                    self._on_overhead_2_img,
+                    qos_profile_sensor_data,
+                    callback_group=self._cg_img_overhead_2,
+                )
+            else:
+                self.create_subscription(
+                    Image,
+                    topics.overhead_2,
+                    self._on_overhead_2_img_raw,
+                    qos_profile_sensor_data,
+                    callback_group=self._cg_img_overhead_2,
+                )
 
         self.create_subscription(
             JointState,
@@ -164,29 +186,37 @@ class So101Ros2ToRerun(Node):
         rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
         mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
         rr.log(
-            "cameras/cam_wrist",
+            "cameras/wrist",
             rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
         )
 
     def _on_wrist_img_raw(self, img: Image) -> None:
         rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
-        # img_cv = self.cv_bridge.imgmsg_to_cv2(img, desired_encoding="passthrough")  # usually RGB
-        # rr.log("cameras/cam_wrist", rr.Image(cv_img, color_model="RGB"))
-        rr.log("cameras/cam_wrist", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+        rr.log("cameras/wrist", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
 
-    def _on_overhead_img(self, msg: CompressedImage) -> None:
+    def _on_overhead_1_img(self, msg: CompressedImage) -> None:
         rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
         mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
         rr.log(
-            "cameras/cam_overhead",
+            "cameras/overhead_1",
             rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
         )
 
-    def _on_overhead_img_raw(self, img: Image) -> None:
+    def _on_overhead_1_img_raw(self, img: Image) -> None:
         rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
-        # img_cv = self.cv_bridge.imgmsg_to_cv2(img, desired_encoding="passthrough")
-        # rr.log("cameras/cam_overhead", rr.Image(cv_img, color_model="RGB"))
-        rr.log("cameras/cam_overhead", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+        rr.log("cameras/overhead_1", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+
+    def _on_overhead_2_img(self, msg: CompressedImage) -> None:
+        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
+        mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
+        rr.log(
+            "cameras/overhead_2",
+            rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
+        )
+
+    def _on_overhead_2_img_raw(self, img: Image) -> None:
+        rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
+        rr.log("cameras/overhead_2", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
 
     def _on_joint_states(self, msg: JointState) -> None:
         ts = stamp_to_datetime64(msg.header.stamp)
@@ -250,8 +280,12 @@ class So101Ros2ToRerun(Node):
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 ROS2 to Rerun bridge")
-    p.add_argument("--wrist", default="/follower/image_raw/compressed")
-    p.add_argument("--overhead", default="/static_camera/image_raw/compressed")
+    p.add_argument(
+        "--camera-profile",
+        required=True,
+        choices=tuple(PROFILE_CAMERA_NAMES),
+        help="Required canonical camera profile",
+    )
     p.add_argument("--joint-states", default="/follower/joint_states")
     p.add_argument("--forward-commands", default="/follower/forward_controller/commands")
     p.add_argument(
@@ -302,12 +336,20 @@ def main() -> None:
         rr.serve_web_viewer(connect_to=server_uri)
 
     # ──  # Blueprint: cameras left, plots right (state + action)
+    camera_views = [
+        rrb.Spatial2DView(name="Wrist Camera", origin="cameras/wrist"),
+        rrb.Spatial2DView(name="Overhead Camera 1", origin="cameras/overhead_1"),
+    ]
+    if args.camera_profile == "dual_overhead":
+        camera_views.append(
+            rrb.Spatial2DView(name="Overhead Camera 2", origin="cameras/overhead_2")
+        )
+
     blueprint = rrb.Blueprint(
         rrb.Horizontal(
             rrb.Vertical(
-                rrb.Spatial2DView(name="Wrist Camera", origin="cameras/cam_wrist"),
-                rrb.Spatial2DView(name="Overhead Camera", origin="cameras/cam_overhead"),
-                row_shares=[1, 1],
+                *camera_views,
+                row_shares=[1] * len(camera_views),
             ),
             rrb.Vertical(
                 rrb.TimeSeriesView(
@@ -324,9 +366,11 @@ def main() -> None:
     rr.send_blueprint(blueprint)
 
     rclpy.init(args=unknownargs)
+    camera_topics = image_topics(args.camera_profile, compressed=True)
     topics = Topics(
-        wrist=args.wrist,
-        overhead=args.overhead,
+        wrist=camera_topics["wrist"],
+        overhead_1=camera_topics["overhead_1"],
+        overhead_2=camera_topics.get("overhead_2"),
         joint_states=args.joint_states,
         forward_commands=args.forward_commands or None,
         joint_trajectory=args.joint_trajectory or None,

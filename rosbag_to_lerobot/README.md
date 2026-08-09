@@ -8,7 +8,13 @@
   </a>
 </p>
 
-Convert ROS 2 rosbag episodes (MCAP) into [LeRobot v3.0](https://github.com/huggingface/lerobot) datasets — locally or pushed straight to the Hugging Face Hub.
+Convert ROS 2 rosbag episode directories recorded as MCAP into [LeRobot v3.0](https://github.com/huggingface/lerobot) datasets — locally or pushed straight to the Hugging Face Hub.
+
+## Scope and Dataset Version
+
+This is a one-way source conversion: **ROS 2 MCAP episodes → a new LeRobot v3.0 dataset**. The input must be episode directories produced by the ROS recorder, not an existing LeRobot dataset. LeRobot v2/v2.1 input is unsupported, and this package does not migrate v2 datasets or append them to v3 datasets.
+
+Each run creates a fresh dataset. If the resolved target already exists, conversion stops and preserves it unless `--overwrite` is supplied. With `--overwrite`, the converter deletes the entire resolved output directory—the explicit `--output-dir`, or LeRobot's cache path for `--repo-id` when no output directory is given—then rebuilds it from the MCAP source episodes. It does not append, merge, or resume an existing dataset.
 
 ## How It Works
 
@@ -22,7 +28,7 @@ Non-reference features are sampled as-of the reference timestamp using the lates
 
 ## Prerequisites
 
-This package runs inside the **`lerobot` Pixi environment** shipped with the repo (see `pixi.toml` at the repo root). The environment bundles LeRobot, ffmpeg, and all Python dependencies so nothing else needs to be installed manually.
+This package runs inside the **`lerobot` Pixi environment** defined by the root `pixi.toml` and lockfile. That is the authoritative conversion environment on both `linux-64` and `linux-aarch64`: it pins LeRobot 0.6.1 and provides ffmpeg, `[dataset]`, and `[dataset-viz]` alongside the ROS-aware task wrapper. Run `pixi install -e lerobot` at the repository root before using the converter. A bare LeRobot or standalone `uv` installation is not the supported path for MCAP conversion because it does not provision the complete ROS/native environment.
 
 ```bash
 # Make sure Pixi is installed — https://pixi.sh
@@ -40,9 +46,16 @@ No Hugging Face account required. Use `local/` as the repo-id prefix to keep eve
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101.yaml \
+  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --camera-profile single_overhead \
   --repo-id    local/so101_test
 ```
+
+`--camera-profile` is required. `single_overhead` emits `wrist` and
+`overhead_1`; `dual_overhead` additionally emits `overhead_2`. The converter
+checks every episode for the exact selected camera set before it deletes or
+creates output. Use `config/so101_50hz.yaml` when controller commands, rather
+than wrist frames, should drive the dataset at 50 Hz.
 
 If `--output-dir` is omitted, LeRobot writes to its default cache location (typically `~/.cache/huggingface/lerobot/<repo-id>/`).
 
@@ -50,9 +63,9 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 
 | Flag | Description |
 |------|-------------|
-| `--overwrite` | Delete any existing dataset at the target path before writing |
+| `--overwrite` | Delete the complete resolved output directory and rebuild it; never append or resume |
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
-| `--vcodec <codec>` | Video codec (`libsvtav1` default, `libx264`, `h264_nvenc`, …) |
+| `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
 
 ---
@@ -82,7 +95,8 @@ pixi run -e lerobot -- hf auth whoami
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place_2 \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101.yaml \
+  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --camera-profile dual_overhead \
   --repo-id    <hf-username>/so101-pick-and-place \
   --push-hub
 ```
@@ -116,7 +130,10 @@ For a live example, see [legalaspro/so101-ros-physical-ai-test](https://huggingf
 
 ## Configuration
 
-Conversion is driven by a YAML file (see [`config/so101.yaml`](config/so101.yaml) for the default). Key fields:
+Conversion uses a timing/non-camera YAML such as
+[`config/so101_30hz.yaml`](config/so101_30hz.yaml), plus the required camera
+profile. Camera schemas are built in code so 30 Hz and 50 Hz modes cannot
+silently disagree about camera membership.
 
 | Field | Purpose |
 |-------|---------|
@@ -125,7 +142,7 @@ Conversion is driven by a YAML file (see [`config/so101.yaml`](config/so101.yaml
 | `reference_topic` | ROS topic whose messages drive frame emission |
 | `task` | Task label written to every frame |
 | `default_max_age_s` | Default freshness window for feature sampling |
-| `features[]` | List of features — each entry has: `key`, `topic`, `msg_type`, `stamp_src`, `shape`, `names`, `max_age_s` |
+| `features[]` | Non-camera features; camera entries are rejected because `--camera-profile` owns them |
 
 ### `stamp_src` — Timestamp Source
 
@@ -151,17 +168,19 @@ pixi run -e lerobot convert -- --help
 ```
 
 ```
-usage: convert --input-dir DIR --config FILE --repo-id ID [options]
+usage: convert --input-dir DIR --config FILE --camera-profile PROFILE --repo-id ID [options]
 
   --input-dir       Directory containing episode bag subdirectories
   --config          Path to YAML config file
+  --camera-profile  single_overhead or dual_overhead
   --repo-id         HuggingFace repo ID (e.g. user/dataset_name or local/name)
   --output-dir      Override default output location
   --use-videos      Store as MP4 video (default) / --no-use-videos for images
-  --vcodec          Video codec (libsvtav1 | libx264 | h264 | hevc | h264_nvenc)
+  --vcodec          LeRobot RGB encoder (libsvtav1 | libaom-av1 | h264 |
+                    hevc | auto | a supported hardware encoder)
   --push-hub        Push final dataset to HuggingFace Hub
   --sync-p95        Collect p95 sync stats
-  --overwrite       Delete existing dataset directory before writing
+  --overwrite       Delete the complete output directory and rebuild from MCAP
 ```
 
 ---
@@ -169,4 +188,3 @@ usage: convert --input-dir DIR --config FILE --repo-id ID [options]
 ## License
 
 Apache License 2.0 — see [LICENSE](../LICENSE) for details.
-

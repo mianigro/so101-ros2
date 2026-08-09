@@ -15,6 +15,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.substitutions import FindPackageShare
+from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
 
 
 def generate_launch_description():
@@ -38,12 +39,9 @@ def generate_launch_description():
     arm_controller = LaunchConfiguration(
         "arm_controller"
     )  # trajectory_controller|forward_controller
-    cameras_config_file = LaunchConfiguration("cameras_config_file")
-
     teleop_params_file = LaunchConfiguration("teleop_params_file")
     teleop_delay_s = LaunchConfiguration("teleop_delay_s")
 
-    recording_config_file = LaunchConfiguration("recording_config_file")
     root_dir = LaunchConfiguration("root_dir")
     experiment_name = LaunchConfiguration("experiment_name")
     task = LaunchConfiguration("task")
@@ -90,16 +88,7 @@ def generate_launch_description():
     )
 
     # --- Include cameras launch ---
-    cameras_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"]
-            )
-        ),
-        launch_arguments={
-            "cameras_config": cameras_config_file,
-        }.items(),
-    )
+    cameras_launch = include_cameras(follower_ns, follower_frame_prefix)
 
     # --- Include teleop launch ---
     teleop_include = IncludeLaunchDescription(
@@ -129,7 +118,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "params_file": recording_config_file,
+            "camera_profile": LaunchConfiguration("camera_profile"),
             "root_dir": root_dir,
             "experiment_name": experiment_name,
             "task": task,
@@ -143,11 +132,8 @@ def generate_launch_description():
             "run",
             "bridge",
             "--",
-            # "--wrist", rerun_wrist,
-            # "--overhead", rerun_overhead,
-            # "--joint-states", rerun_joint_states,
-            # "--forward-commands", rerun_forward_cmds,
-            # "--joint-trajectory", rerun_joint_traj,
+            "--camera-profile",
+            LaunchConfiguration("camera_profile"),
         ],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
@@ -181,19 +167,8 @@ def generate_launch_description():
             "follower_controllers.yaml",
         ]
     )
-    default_cameras_cfg = PathJoinSubstitution(
-        [FindPackageShare("so101_bringup"), "config", "cameras", "so101_cameras.yaml"]
-    )
     default_teleop_params = PathJoinSubstitution(
         [FindPackageShare("so101_teleop"), "config", "teleop.yaml"]
-    )
-    default_recording_cfg = PathJoinSubstitution(
-        [
-            FindPackageShare("so101_bringup"),
-            "config",
-            "recording",
-            "episode_recorder_so101.yaml",
-        ]
     )
     default_root_dir = PathJoinSubstitution(
         [
@@ -230,16 +205,11 @@ def generate_launch_description():
                 default_value=default_follower_ctrl_cfg,
             ),
             DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
-            DeclareLaunchArgument(
-                "cameras_config_file", default_value=default_cameras_cfg
-            ),
+            *declare_camera_arguments(),
             DeclareLaunchArgument(
                 "teleop_params_file", default_value=default_teleop_params
             ),
             DeclareLaunchArgument("teleop_delay_s", default_value="2.0"),
-            DeclareLaunchArgument(
-                "recording_config_file", default_value=default_recording_cfg
-            ),
             DeclareLaunchArgument("root_dir", default_value=default_root_dir),
             DeclareLaunchArgument("experiment_name", default_value="pick_and_place"),
             DeclareLaunchArgument("task", default_value=""),

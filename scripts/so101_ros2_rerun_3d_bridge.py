@@ -23,6 +23,12 @@ from std_msgs.msg import Float64MultiArray, String
 from tf2_msgs.msg import TFMessage
 import xml.etree.ElementTree as ET
 
+from so101_camera_profiles import (
+    PROFILE_CAMERA_NAMES,
+    image_topics,
+    tf_frames,
+)
+
 
 def stamp_to_datetime64(stamp) -> np.datetime64:
     t = Time.from_msg(stamp)
@@ -306,15 +312,12 @@ class So101Ros2ToRerun3DBridge(Node):
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 ROS2→Rerun 3D bridge")
-    # Camera args
-    p.add_argument("--wrist-image", default="/follower/image_raw/compressed",
-                   help="Wrist camera image topic")
-    p.add_argument("--wrist-tf-frame", default="follower/wrist_camera_link",
-                   help="TF frame name for wrist camera")
-    p.add_argument("--overhead-image", default="/static_camera/image_raw/compressed",
-                   help="Overhead camera image topic")
-    p.add_argument("--overhead-tf-frame", default="follower/static_camera_link",
-                   help="TF frame name for overhead camera")
+    p.add_argument(
+        "--camera-profile",
+        required=True,
+        choices=tuple(PROFILE_CAMERA_NAMES),
+        help="Required canonical camera profile",
+    )
     # Other topics
     p.add_argument("--joint-states", default="/follower/joint_states")
     p.add_argument("--robot-description", default="/follower/robot_description",
@@ -342,11 +345,21 @@ def main() -> None:
     rr.log("/", rr.CoordinateFrame(frame=args.tf_root_frame), static=True)
 
     # ── Build camera configs ──
+    camera_topics = image_topics(args.camera_profile, compressed=True)
+    camera_frames = tf_frames(args.camera_profile, prefix=args.tf_prefix)
     cameras = [
-        CameraCfg(name="cam_wrist", image_topic=args.wrist_image,
-                  tf_frame=args.wrist_tf_frame),
-        CameraCfg(name="cam_overhead", image_topic=args.overhead_image,
-                  tf_frame=args.overhead_tf_frame),
+        CameraCfg(name=name, image_topic=topic, tf_frame=camera_frames[name])
+        for name, topic in camera_topics.items()
+    ]
+
+    view_names = {
+        "wrist": "Wrist",
+        "overhead_1": "Overhead 1",
+        "overhead_2": "Overhead 2",
+    }
+    camera_views = [
+        rrb.Spatial2DView(name=view_names[cam.name], origin=f"cameras/{cam.name}/image")
+        for cam in cameras
     ]
 
     # ── Blueprint: single 3D view + camera 2D views + time-series plots ──
@@ -355,9 +368,8 @@ def main() -> None:
             rrb.Horizontal(
                 rrb.Spatial3DView(name="3D Scene", origin="/"),
                 rrb.Vertical(
-                    rrb.Spatial2DView(name="Wrist", origin="cameras/cam_wrist/image"),
-                    rrb.Spatial2DView(name="Overhead", origin="cameras/cam_overhead/image"),
-                    row_shares=[1, 1],
+                    *camera_views,
+                    row_shares=[1] * len(camera_views),
                 ),
                 column_shares=[2, 1],
             ),

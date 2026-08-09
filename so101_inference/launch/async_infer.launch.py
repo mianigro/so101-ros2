@@ -24,7 +24,11 @@ def generate_launch_description():
         DeclareLaunchArgument("transport_type", default_value="zmq"),
         DeclareLaunchArgument("server_address", default_value="127.0.0.1:8090"),
         DeclareLaunchArgument("policy_type", default_value="act"),
-        DeclareLaunchArgument("repo_id", default_value="legalaspro/act_so101_pnp_microsanity_20_50hz_v0"),
+        DeclareLaunchArgument("repo_id", description="Hugging Face policy repo ID or local path"),
+        DeclareLaunchArgument(
+            "camera_profile",
+            description="Required camera profile: single_overhead or dual_overhead",
+        ),
         DeclareLaunchArgument("policy_device", default_value="cuda"),
         DeclareLaunchArgument("client_device", default_value="cpu"),
         DeclareLaunchArgument("actions_per_chunk", default_value="100"),
@@ -33,15 +37,10 @@ def generate_launch_description():
         DeclareLaunchArgument("max_age_s", default_value="0.2"),
         DeclareLaunchArgument("task", default_value="Put the green cube in the cup."),
         DeclareLaunchArgument("aggregate_fn_name", default_value="weighted_average"),
-        DeclareLaunchArgument("rename_map_json", default_value=""),
         # Topics
         DeclareLaunchArgument("fwd_topic", default_value="/follower/forward_controller/commands"),
         DeclareLaunchArgument("joints_topic", default_value="/follower/joint_states"),
-        DeclareLaunchArgument("top_camera_topic", default_value="/static_camera/image_raw"),
-        DeclareLaunchArgument("wrist_camera_topic", default_value="/follower/image_raw"),
-        # Camera names as the policy expects them in observation keys
-        DeclareLaunchArgument("camera_top_name", default_value="top"),
-        DeclareLaunchArgument("camera_wrist_name", default_value="wrist"),
+        DeclareLaunchArgument("use_compressed", default_value="false"),
     ]
 
     node = Node(
@@ -54,6 +53,7 @@ def generate_launch_description():
                 "server_address": LaunchConfiguration("server_address"),
                 "policy_type": LaunchConfiguration("policy_type"),
                 "repo_id": LaunchConfiguration("repo_id"),
+                "camera_profile": LaunchConfiguration("camera_profile"),
                 "policy_device": LaunchConfiguration("policy_device"),
                 "client_device": LaunchConfiguration("client_device"),
                 "actions_per_chunk": LaunchConfiguration("actions_per_chunk"),
@@ -62,13 +62,9 @@ def generate_launch_description():
                 "max_age_s": LaunchConfiguration("max_age_s"),
                 "task": LaunchConfiguration("task"),
                 "aggregate_fn_name": LaunchConfiguration("aggregate_fn_name"),
-                "rename_map_json": LaunchConfiguration("rename_map_json"),
                 "fwd_topic": LaunchConfiguration("fwd_topic"),
                 "joints_topic": LaunchConfiguration("joints_topic"),
-                "top_camera_topic": LaunchConfiguration("top_camera_topic"),
-                "wrist_camera_topic": LaunchConfiguration("wrist_camera_topic"),
-                "camera_top_name": LaunchConfiguration("camera_top_name"),
-                "camera_wrist_name": LaunchConfiguration("camera_wrist_name"),
+                "use_compressed": LaunchConfiguration("use_compressed"),
             }
         ],
         output="screen",

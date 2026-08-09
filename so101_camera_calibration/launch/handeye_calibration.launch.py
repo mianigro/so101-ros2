@@ -28,7 +28,7 @@ already running, e.g. via follower_vision.launch.py.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution
@@ -36,8 +36,19 @@ from launch.substitutions import PathJoinSubstitution
 
 def generate_launch_description():
     # ── Launch arguments ──
-    image_topic = LaunchConfiguration("image_topic")
-    camera_info_topic = LaunchConfiguration("camera_info_topic")
+    camera_role = LaunchConfiguration("camera_role")
+    image_topic = PythonExpression([
+        "'/static_camera_1/image_raw' if '", camera_role,
+        "' == 'overhead_1' else '/static_camera_2/image_raw'",
+    ])
+    camera_info_topic = PythonExpression([
+        "'/static_camera_1/camera_info' if '", camera_role,
+        "' == 'overhead_1' else '/static_camera_2/camera_info'",
+    ])
+    calibration_name = PythonExpression([
+        "'overhead_1_transform' if '", camera_role,
+        "' == 'overhead_1' else 'overhead_2_transform'",
+    ])
     joint_states_topic = LaunchConfiguration("joint_states_topic")
     cmd_topic = LaunchConfiguration("cmd_topic")
     base_frame = LaunchConfiguration("base_frame")
@@ -54,6 +65,8 @@ def generate_launch_description():
         parameters=[{
             "image_topic": image_topic,
             "camera_info_topic": camera_info_topic,
+            "camera_role": camera_role,
+            "calibration_name": calibration_name,
             "joint_states_topic": joint_states_topic,
             "base_frame": base_frame,
             "robot_effector_frame": robot_effector_frame,
@@ -79,12 +92,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            "image_topic",
-            default_value="/static_camera/image_raw",
-        ),
-        DeclareLaunchArgument(
-            "camera_info_topic",
-            default_value="/static_camera/camera_info",
+            "camera_role",
+            description="Required overhead camera role to calibrate",
+            choices=["overhead_1", "overhead_2"],
         ),
         DeclareLaunchArgument(
             "joint_states_topic",

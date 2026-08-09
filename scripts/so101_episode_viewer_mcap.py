@@ -14,6 +14,8 @@ from gradio_rerun import Rerun
 import rerun as rr
 import rerun.blueprint as rrb
 
+from so101_camera_profiles import detect_recorded_profile, image_topics
+
 # ==============================================================================
 # CONFIGURATION & STYLING
 # ==============================================================================
@@ -45,25 +47,28 @@ class Episode:
     name: str
     folder: Path
     mcaps: list[Path]
+    camera_profile: str
 
 # ==============================================================================
 # BLUEPRINT DEFINITION
 # ==============================================================================
 
-def build_so101_blueprint() -> rrb.Blueprint:
+def build_so101_blueprint(camera_profile: str) -> rrb.Blueprint:
+    camera_view_names = {
+        "wrist": "Wrist Camera",
+        "overhead_1": "Overhead Camera 1",
+        "overhead_2": "Overhead Camera 2",
+    }
+    camera_views = [
+        rrb.Spatial2DView(origin=topic, name=camera_view_names[name])
+        for name, topic in image_topics(camera_profile, compressed=False).items()
+    ]
     return rrb.Blueprint(
         rrb.Vertical(
             # Top Row: Images
             rrb.Horizontal(
-                rrb.Spatial2DView(
-                    origin="/follower/image_raw",
-                    name="Follower Camera"
-                ),
-                rrb.Spatial2DView(
-                    origin="/static_camera/image_raw",
-                    name="Static Camera"
-                ),
-                column_shares=[1, 1]
+                *camera_views,
+                column_shares=[1] * len(camera_views),
             ),
             # Bottom Row: Time Series
             rrb.Horizontal(
@@ -108,7 +113,15 @@ def index_episodes(root: Path) -> list[Episode]:
     for folder, files in sorted(by_folder.items()):
         # Name is relative to root
         rel_name = str(folder.relative_to(root)) if folder != root else folder.name
-        episodes.append(Episode(name=rel_name, folder=folder, mcaps=sorted(files)))
+        camera_profile = detect_recorded_profile(folder)
+        episodes.append(
+            Episode(
+                name=rel_name,
+                folder=folder,
+                mcaps=sorted(files),
+                camera_profile=camera_profile,
+            )
+        )
 
     return episodes
 
@@ -126,6 +139,7 @@ def make_labels(episodes: list[Episode]) -> list[str]:
         label = (
             f"📁 {ep.name}\n"
             f"{len(ep.mcaps)} MCAP(s) · {_human_bytes(total_size)}\n"
+            f"Profile: {ep.camera_profile}\n"
             f"Last mod: {time_str}"
         )
         labels.append(label)
@@ -155,6 +169,7 @@ def stream_episode(
     ep_data = episodes_state[dataset_index]
     mcaps = [Path(p) for p in ep_data["mcaps"]]
     ep_name = ep_data["name"]
+    camera_profile = ep_data["camera_profile"]
 
     # 2. Setup Rerun Streaming
     # Create a unique ID so the viewer knows this is a new session
@@ -165,7 +180,7 @@ def stream_episode(
     stream = rec.binary_stream()
 
     # Send the custom Blueprint immediately
-    bp = build_so101_blueprint()
+    bp = build_so101_blueprint(camera_profile)
     rec.send_blueprint(bp)
 
     # 3. Threaded Loading
@@ -229,7 +244,12 @@ def main():
     episodes = index_episodes(root)
     # Convert to simple dicts for Gradio State
     ep_state_init = [
-        {"name": e.name, "folder": str(e.folder), "mcaps": [str(p) for p in e.mcaps]}
+        {
+            "name": e.name,
+            "folder": str(e.folder),
+            "mcaps": [str(p) for p in e.mcaps],
+            "camera_profile": e.camera_profile,
+        }
         for e in episodes
     ]
     labels_init = make_labels(episodes)

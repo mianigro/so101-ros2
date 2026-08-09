@@ -1,0 +1,12 @@
+episode_recorder:
+  ros__parameters:
+    # Camera and robot topics are selected exclusively by camera_profile.
+    root_dir: /tmp/episode_recorder
+    storage_id: mcap
+    max_episode_duration: 0.0
+    start_gate_max_age_s: 0.5
+    experiment_name: "pick_and_place"
+
+    # Optional MCAP writer settings. Set at most one.
+    # storage_preset_profile: "zstd_fast"
+    # storage_config_uri: ""

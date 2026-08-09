@@ -24,6 +24,7 @@ class EpisodeRecorder : public rclcpp_lifecycle::LifecycleNode
 {
 public:
   explicit EpisodeRecorder(const rclcpp::NodeOptions &options);
+  ~EpisodeRecorder() override;
 
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -40,6 +41,7 @@ public:
 
 private:
   // ROS2 Parameters
+  std::string camera_profile_;
   std::string root_dir_;
   std::string storage_id_;
   std::vector<std::string> topics_;
@@ -110,7 +112,8 @@ private:
   bool patch_metadata_yaml_after_close(const std::filesystem::path &episode_dir,
                                       uint32_t episode_index,
                                       const std::string &task,
-                                      const std::string &experiment_name);
+                                      const std::string &experiment_name,
+                                      const std::string &camera_profile);
   #endif
 };
 

@@ -11,10 +11,10 @@ from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
     PathJoinSubstitution,
-    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
 
 
 def generate_launch_description():
@@ -42,10 +42,6 @@ def generate_launch_description():
 
     teleop_params_file = LaunchConfiguration("teleop_params_file")
     teleop_delay_s = LaunchConfiguration("teleop_delay_s")
-
-    use_cameras = LaunchConfiguration("use_cameras")
-    cameras_config_file = LaunchConfiguration("cameras_config_file")
-    use_camera_tf = LaunchConfiguration("use_camera_tf")
 
     use_teleop_rviz = LaunchConfiguration("use_teleop_rviz")
 
@@ -105,23 +101,7 @@ def generate_launch_description():
     )
 
     # --- Include cameras launch ---
-    cameras_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"])
-        ),
-        condition=IfCondition(use_cameras),
-        launch_arguments={
-            "cameras_config": cameras_config_file,
-        }.items(),
-    )
-
-    camera_tf_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("so101_bringup"), "launch", "camera_tf.launch.py"])
-        ),
-        condition=IfCondition(use_camera_tf),
-        launch_arguments={}.items(),
-    )
+    cameras_launch = include_cameras(follower_ns, follower_frame_prefix)
 
     # --- Include layout launch tf
     layout_tf_launch = IncludeLaunchDescription(
@@ -151,11 +131,8 @@ def generate_launch_description():
             "run",
             "bridge",
             "--",
-            # "--wrist", rerun_wrist,
-            # "--overhead", rerun_overhead,
-            # "--joint-states", rerun_joint_states,
-            # "--forward-commands", rerun_forward_cmds,
-            # "--joint-trajectory", rerun_joint_traj,
+            "--camera-profile",
+            LaunchConfiguration("camera_profile"),
         ],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
@@ -190,10 +167,6 @@ def generate_launch_description():
         ]
     )
     default_teleop_params = PathJoinSubstitution([FindPackageShare("so101_teleop"), "config", "teleop.yaml"])
-    default_cameras_cfg = PathJoinSubstitution(
-        [FindPackageShare("so101_bringup"), "config", "cameras", "so101_cameras.yaml"]
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
@@ -215,9 +188,7 @@ def generate_launch_description():
             DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             DeclareLaunchArgument("teleop_params_file", default_value=default_teleop_params),
             DeclareLaunchArgument("teleop_delay_s", default_value="2.0"),
-            DeclareLaunchArgument("use_cameras", default_value="true"),
-            DeclareLaunchArgument("cameras_config_file", default_value=default_cameras_cfg),
-            DeclareLaunchArgument("use_camera_tf", default_value="true"),
+            *declare_camera_arguments(),
             DeclareLaunchArgument("use_teleop_rviz", default_value="true"),
             DeclareLaunchArgument("use_rerun", default_value="false"),
             DeclareLaunchArgument(
@@ -231,7 +202,6 @@ def generate_launch_description():
             follower_launch,
             layout_tf_launch,
             cameras_launch,
-            camera_tf_launch,
             rviz_node,
             rerun_start,
             teleop_start,

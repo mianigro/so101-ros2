@@ -16,7 +16,9 @@ Recommended full-stack launch:
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 launch so101_bringup teleop.launch.py
+ros2 launch so101_bringup teleop.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
 ```
 
 This uses `forward_controller` (ROS 2 `ForwardCommandController`) by default, and that is the recommended mode.
@@ -24,7 +26,10 @@ This uses `forward_controller` (ROS 2 `ForwardCommandController`) by default, an
 Optional override if you want trajectory commands instead:
 
 ```bash
-ros2 launch so101_bringup teleop.launch.py arm_controller:=trajectory_controller
+ros2 launch so101_bringup teleop.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml \
+  arm_controller:=trajectory_controller
 ```
 
 ## Package-only launch

@@ -19,10 +19,31 @@
 
 namespace episode_recorder {
 
+namespace {
+
+std::vector<std::string> topics_for_profile(const std::string &camera_profile) {
+  std::vector<std::string> topics{
+    "/follower/image_raw/compressed",
+    "/static_camera_1/image_raw/compressed",
+  };
+
+  if (camera_profile == "dual_overhead") {
+    topics.emplace_back("/static_camera_2/image_raw/compressed");
+  } else if (camera_profile != "single_overhead") {
+    return {};
+  }
+
+  topics.emplace_back("/follower/joint_states");
+  topics.emplace_back("/follower/forward_controller/commands");
+  return topics;
+}
+
+}  // namespace
+
 EpisodeRecorder::EpisodeRecorder(const rclcpp::NodeOptions &options)
     : rclcpp_lifecycle::LifecycleNode("episode_recorder", options) {
   // Declare parameters
-  this->declare_parameter<std::vector<std::string>>("topics", std::vector<std::string>{});
+  this->declare_parameter<std::string>("camera_profile", "");
   this->declare_parameter<std::string>("root_dir", "/tmp/episode_recorder");
   this->declare_parameter<std::string>("storage_id", "mcap");
   this->declare_parameter<double>("max_episode_duration", 0.0);
@@ -35,6 +56,15 @@ EpisodeRecorder::EpisodeRecorder(const rclcpp::NodeOptions &options)
   RCLCPP_INFO(get_logger(), "EpisodeRecorder node create (unconfigured)");
 }
 
+EpisodeRecorder::~EpisodeRecorder() {
+  if (is_recording_.load()) {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Recorder exited while an episode was active; discarding the incomplete episode");
+    (void)discard_episode();
+  }
+}
+
 // --------------------------------------------------------
 // Lifecycle
 // --------------------------------------------------------
@@ -44,7 +74,8 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Configuring... ");
 
   // Read parameter values
-  topics_ = this->get_parameter("topics").as_string_array();
+  camera_profile_ = this->get_parameter("camera_profile").as_string();
+  topics_ = topics_for_profile(camera_profile_);
   root_dir_ = this->get_parameter("root_dir").as_string();
   storage_id_ = this->get_parameter("storage_id").as_string();
   max_episode_duration_ = this->get_parameter("max_episode_duration").as_double();
@@ -67,7 +98,10 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
     return CallbackReturn::FAILURE;
   }
   if (topics_.empty()) {
-    RCLCPP_ERROR(get_logger(), "Parameter 'topics' is empty - nothing to record");
+    RCLCPP_ERROR(
+      get_logger(),
+      "Parameter 'camera_profile' must be 'single_overhead' or 'dual_overhead' (got '%s')",
+      camera_profile_.c_str());
     return CallbackReturn::FAILURE;
   }
   if (root_dir_.empty()) {
@@ -110,7 +144,8 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   subs_by_topic_.clear();
   cleaned_up_ = false;
 
-  RCLCPP_INFO(get_logger(), "Configuration complete. %zu topics requested.", topics_.size());
+  RCLCPP_INFO(get_logger(), "Configuration complete. profile=%s, %zu topics required.",
+              camera_profile_.c_str(), topics_.size());
   return CallbackReturn::SUCCESS;
 }
 
@@ -350,6 +385,7 @@ bool EpisodeRecorder::start_episode() {
     }
     storage_options.custom_data["episode_index"] = std::to_string(next_episode_index_);
     storage_options.custom_data["task"] = task_;
+    storage_options.custom_data["camera_profile"] = camera_profile_;
   #endif
 
   try {
@@ -410,7 +446,8 @@ bool EpisodeRecorder::stop_episode() {
   if (!patch_metadata_yaml_after_close(current_episode_dir_,
                                        next_episode_index_,
                                        task_,
-                                       experiment_name_)) {
+                                       experiment_name_,
+                                       camera_profile_)) {
     RCLCPP_ERROR(get_logger(),
                  "Failed to write episode metadata — bag saved but metadata is incomplete: %s",
                  current_episode_dir_.string().c_str());
@@ -637,7 +674,8 @@ bool EpisodeRecorder::patch_metadata_yaml_after_close(
     const std::filesystem::path &episode_dir,
     uint32_t episode_index,
     const std::string &task,
-    const std::string &experiment_name) {
+    const std::string &experiment_name,
+    const std::string &camera_profile) {
   const auto meta_path = episode_dir / "metadata.yaml";
 
   if (!std::filesystem::exists(meta_path)) {
@@ -663,6 +701,7 @@ bool EpisodeRecorder::patch_metadata_yaml_after_close(
 
     custom["episode_index"] = std::to_string(episode_index);
     custom["task"] = task;
+    custom["camera_profile"] = camera_profile;
     if (!experiment_name.empty()) {
       custom["experiment_name"] = experiment_name;
     }

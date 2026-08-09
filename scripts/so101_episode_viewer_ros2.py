@@ -28,6 +28,12 @@ from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
 from trajectory_msgs.msg import JointTrajectory
 
+from so101_camera_profiles import (
+    PROFILE_CAMERA_NAMES,
+    detect_recorded_profile,
+    image_topics,
+)
+
 # ---------------------------------------------------------------------------
 # Constants & Styling
 # ---------------------------------------------------------------------------
@@ -75,7 +81,8 @@ def stamp_to_datetime64(stamp) -> np.datetime64:
 @dataclass
 class Topics:
     wrist: str = "/follower/image_raw"
-    overhead: str = "/static_camera/image_raw"
+    overhead_1: str = "/static_camera_1/image_raw"
+    overhead_2: str | None = None
     joint_states: str = "/follower/joint_states"
     forward_commands: str | None = "/follower/forward_controller/commands"
     joint_trajectory: str | None = None
@@ -96,12 +103,19 @@ DEFAULT_CMD_JOINTS: list[str] = [
 # ---------------------------------------------------------------------------
 
 
-def make_blueprint() -> rr.blueprint.Blueprint:
+def make_blueprint(include_overhead_2: bool = False) -> rr.blueprint.Blueprint:
+    camera_views = [
+        rr.blueprint.Spatial2DView(name="Wrist", origin="cameras/wrist"),
+        rr.blueprint.Spatial2DView(name="Overhead 1", origin="cameras/overhead_1"),
+    ]
+    if include_overhead_2:
+        camera_views.append(
+            rr.blueprint.Spatial2DView(name="Overhead 2", origin="cameras/overhead_2")
+        )
     return rr.blueprint.Blueprint(
         rr.blueprint.Horizontal(
             rr.blueprint.Vertical(
-                rr.blueprint.Spatial2DView(name="Wrist", origin="cameras/wrist"),
-                rr.blueprint.Spatial2DView(name="Overhead", origin="cameras/overhead"),
+                *camera_views,
             ),
             rr.blueprint.Vertical(
                 rr.blueprint.TimeSeriesView(name="Joint States", origin="state"),
@@ -123,6 +137,7 @@ class So101Ros2ToRerun(Node):
     def __init__(self, topics: Topics, cmd_joint_order: list[str]) -> None:
         super().__init__("so101_ros2_to_rerun")
         self._cmd_joint_order = list(cmd_joint_order)
+        self.has_overhead_2 = bool(topics.overhead_2)
 
         # -- Swappable RecordingStream --
         self._rec: rr.RecordingStream | None = None
@@ -136,7 +151,8 @@ class So101Ros2ToRerun(Node):
 
         # -- Callback groups --
         self._cg_img_wrist = ReentrantCallbackGroup()
-        self._cg_img_over = ReentrantCallbackGroup()
+        self._cg_img_overhead_1 = ReentrantCallbackGroup()
+        self._cg_img_overhead_2 = ReentrantCallbackGroup()
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
         self._cg_traj = ReentrantCallbackGroup()
@@ -153,16 +169,28 @@ class So101Ros2ToRerun(Node):
                 qos_profile_sensor_data, callback_group=self._cg_img_wrist,
             )
 
-        if self._is_compressed(topics.overhead):
+        if self._is_compressed(topics.overhead_1):
             self.create_subscription(
-                CompressedImage, topics.overhead, self._on_overhead_img,
-                qos_profile_sensor_data, callback_group=self._cg_img_over,
+                CompressedImage, topics.overhead_1, self._on_overhead_1_img,
+                qos_profile_sensor_data, callback_group=self._cg_img_overhead_1,
             )
         else:
             self.create_subscription(
-                Image, topics.overhead, self._on_overhead_img_raw,
-                qos_profile_sensor_data, callback_group=self._cg_img_over,
+                Image, topics.overhead_1, self._on_overhead_1_img_raw,
+                qos_profile_sensor_data, callback_group=self._cg_img_overhead_1,
             )
+
+        if topics.overhead_2:
+            if self._is_compressed(topics.overhead_2):
+                self.create_subscription(
+                    CompressedImage, topics.overhead_2, self._on_overhead_2_img,
+                    qos_profile_sensor_data, callback_group=self._cg_img_overhead_2,
+                )
+            else:
+                self.create_subscription(
+                    Image, topics.overhead_2, self._on_overhead_2_img_raw,
+                    qos_profile_sensor_data, callback_group=self._cg_img_overhead_2,
+                )
 
         self.create_subscription(
             JointState, topics.joint_states, self._on_joint_states,
@@ -240,20 +268,35 @@ class So101Ros2ToRerun(Node):
         rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
         rec.log("cameras/wrist", rr.Image(rgb8_to_numpy(msg), color_model="RGB"))
 
-    def _on_overhead_img(self, msg: CompressedImage) -> None:
+    def _on_overhead_1_img(self, msg: CompressedImage) -> None:
         rec = self._get_rec()
         if rec is None:
             return
         mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
         rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        rec.log("cameras/overhead", rr.EncodedImage(contents=bytes(msg.data), media_type=mt))
+        rec.log("cameras/overhead_1", rr.EncodedImage(contents=bytes(msg.data), media_type=mt))
 
-    def _on_overhead_img_raw(self, msg: Image) -> None:
+    def _on_overhead_1_img_raw(self, msg: Image) -> None:
         rec = self._get_rec()
         if rec is None:
             return
         rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        rec.log("cameras/overhead", rr.Image(rgb8_to_numpy(msg), color_model="RGB"))
+        rec.log("cameras/overhead_1", rr.Image(rgb8_to_numpy(msg), color_model="RGB"))
+
+    def _on_overhead_2_img(self, msg: CompressedImage) -> None:
+        rec = self._get_rec()
+        if rec is None:
+            return
+        mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
+        rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
+        rec.log("cameras/overhead_2", rr.EncodedImage(contents=bytes(msg.data), media_type=mt))
+
+    def _on_overhead_2_img_raw(self, msg: Image) -> None:
+        rec = self._get_rec()
+        if rec is None:
+            return
+        rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
+        rec.log("cameras/overhead_2", rr.Image(rgb8_to_numpy(msg), color_model="RGB"))
 
     # -- joint state callback --
 
@@ -303,11 +346,17 @@ class So101Ros2ToRerun(Node):
 # ---------------------------------------------------------------------------
 
 
-def index_episodes(root: Path) -> list[tuple[str, str]]:
+def index_episodes(root: Path, camera_profile: str) -> list[tuple[str, str]]:
     """Find all *.mcap files under *root*, return [(label, path_str), ...]."""
     mcaps = sorted(root.rglob("*.mcap"))
     choices: list[tuple[str, str]] = []
     for p in mcaps:
+        detected = detect_recorded_profile(p.parent)
+        if detected != camera_profile:
+            raise ValueError(
+                f"{p.parent}: selected profile {camera_profile!r}, "
+                f"recorded profile is {detected!r}"
+            )
         label = str(p.relative_to(root))
         choices.append((label, str(p)))
     return choices
@@ -397,7 +446,7 @@ def stream_episode(
     stream = rec.binary_stream()
 
     # Send blueprint on this stream
-    rec.send_blueprint(make_blueprint())
+    rec.send_blueprint(make_blueprint(node.has_overhead_2))
 
     # Hot-swap the recording on the ROS2 node
     node.set_recording(rec)
@@ -507,12 +556,10 @@ def parse_args() -> argparse.Namespace:
         help="Root directory containing MCAP episode files",
     )
     p.add_argument(
-        "--wrist", type=str, default="/follower/image_raw",
-        help="Wrist camera topic",
-    )
-    p.add_argument(
-        "--overhead", type=str, default="/static_camera/image_raw",
-        help="Overhead camera topic",
+        "--camera-profile",
+        required=True,
+        choices=tuple(PROFILE_CAMERA_NAMES),
+        help="Required canonical camera profile",
     )
     p.add_argument(
         "--joint-states", type=str, default="/follower/joint_states",
@@ -550,16 +597,18 @@ def main() -> None:
         sys.exit(1)
 
     # -- Index episodes --
-    episodes = index_episodes(episodes_root)
+    episodes = index_episodes(episodes_root, args.camera_profile)
     print(f"Found {len(episodes)} MCAP episode(s) under {episodes_root}")
     for label, _ in episodes:
         print(f"  • {label}")
 
     # -- Init ROS2 --
     rclpy.init()
+    camera_topics = image_topics(args.camera_profile, compressed=False)
     topics = Topics(
-        wrist=args.wrist,
-        overhead=args.overhead,
+        wrist=camera_topics["wrist"],
+        overhead_1=camera_topics["overhead_1"],
+        overhead_2=camera_topics.get("overhead_2"),
         joint_states=args.joint_states,
         forward_commands=args.forward_commands or None,
         joint_trajectory=args.joint_trajectory or None,
