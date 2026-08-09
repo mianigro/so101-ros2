@@ -69,12 +69,12 @@ After the [hardware setup guide](docs/hardware.md) and [installation](#installat
 > **Important**
 > Before using the real arms with ROS 2, you must first complete the LeRobot motor setup and calibration steps for both arms. These steps write the required persistent values to the servo motors, including IDs and calibration-related settings stored in EEPROM.
 >
-> Do **not** teleoperate, plan, or command the real arms from ROS until this is done. After calibration, `joint_config_file` is optional and mainly useful for explicit overrides or extra tuning.
+> Do **not** teleoperate, plan, or command the real arms from ROS until this is done. ROS uses the motor calibration completed through LeRobot.
 >
-> **[→ See `docs/hardware.md` → `5. Calibration, EEPROM, and Optional Joint Config Overrides`](docs/hardware.md#5-calibration-eeprom-and-optional-joint-config-overrides)**
+> **[→ See `docs/hardware.md` → `5. Motor Calibration`](docs/hardware.md#5-motor-calibration)**
 
-Choose one camera profile and point at the external, calibrated rig file you
-created during hardware setup:
+Choose one camera profile and point at the external device rig file you created
+during hardware setup:
 
 ```bash
 export SO101_CAMERA_PROFILE=dual_overhead
@@ -226,7 +226,7 @@ There is deliberately no repository-wide `uv` project or root `pyproject.toml`; 
 >
 > 1. Complete LeRobot motor setup + calibration for both arms so the required persistent values are written to the motors.
 > 2. Set up udev rules so your devices appear as `/dev/so101_leader`, `/dev/so101_follower`, `/dev/cam_wrist`, and `/dev/cam_overhead_1`; `dual_overhead` also requires `/dev/cam_overhead_2`.
-> 3. Calibrate every selected camera independently and create the external physical-rig YAML.
+> 3. Create the external physical-rig YAML with the stable camera device paths.
 >
 > **[→ Full hardware setup guide (docs/hardware.md)](docs/hardware.md)**
 
@@ -237,21 +237,8 @@ Follow the [LeRobot SO-101 guide](https://huggingface.co/docs/lerobot/so101) to 
 | **1. Motor setup**           | Run the LeRobot "setup motors" routine (writes servo IDs and baudrate to EEPROM)                    | One-time per arm                                        |
 | **2. Calibrate**             | Run LeRobot calibration for both arms (`calibrate` command for follower and leader)                  | Required per robot; stores calibration-related values   |
 | **3. Udev rules**            | Create stable device symlinks using the [example template](docs/assets/99-so101.rules.example)      | See [docs/hardware.md](docs/hardware.md)                |
-| **4. Camera calibration**    | Generate per-camera intrinsics and per-overhead quaternion transforms in an external rig YAML       | Required for every selected camera                      |
-| **5. Optional ROS overrides**| Provide `joint_config_file` only if you want explicit per-robot overrides or extra tuning            | See precedence notes in [docs/hardware.md](docs/hardware.md) |
-| **6. Launch ROS**            | Pass `camera_profile` and the absolute `camera_rig_config_file`                                      | Only after steps 1-5                                    |
-
-**Config files the driver reads at launch:**
-
-```
-so101_bringup/config/hardware/
-├── leader_joints.yaml          # optional joint override example
-├── follower_joints.yaml        # optional joint override example
-├── lerobot_leader_arm.json     # reference: LeRobot calibration output example
-└── lerobot_follower_arm.json   # reference: LeRobot calibration output example
-```
-
-The YAML files use a `joints:` top-level key with per-joint parameters such as `id`, `homing_offset`, `range_min`, `range_max`, `return_delay_time`, and `acceleration` (the follower also supports `p_coefficient`, `i_coefficient`, `d_coefficient`, and torque/protection values for the gripper). These files are optional override examples; the included `lerobot_*.json` files show raw LeRobot calibration output for reference.
+| **4. Camera rig**            | Map the canonical camera roles to their stable `/dev/cam_*` paths                                   | No camera calibration is used                           |
+| **5. Launch ROS**            | Pass `camera_profile` and the absolute `camera_rig_config_file`                                      | Only after steps 1-4                                    |
 
 ---
 
@@ -508,7 +495,7 @@ ros2 launch so101_bringup follower_moveit_demo.launch.py
 | `camera_profile`         | required              | `single_overhead` or `dual_overhead`              |
 | `camera_rig_config_file` | required              | Absolute external physical-rig YAML              |
 | `camera_startup_timeout_s` | `10.0`              | Deadline for every selected camera stream        |
-| `camera_stale_timeout_s` | `1.0`                 | Runtime Image/CameraInfo stale limit              |
+| `camera_stale_timeout_s` | `1.0`                 | Runtime image-stream stale limit                  |
 | `use_teleop_rviz`        | `true`                | Launch RViz with teleop config                   |
 | `use_rerun`              | `false`               | Launch profile-matched Rerun bridge              |
 | `leader_usb_port`        | `/dev/so101_leader`   | Leader arm USB device                            |
@@ -530,9 +517,8 @@ ros2 launch so101_bringup follower_moveit_demo.launch.py
 
 ### Hardware Configs
 
-- `so101_bringup/config/hardware/` — joint names, IDs, limits, calibration
 - `so101_bringup/config/ros2_control/` — controller parameters (forward, trajectory, joint_state_broadcaster)
-- `so101_bringup/config/cameras/profiles/` — the only two logical camera profiles; physical devices, intrinsics, driver overrides, and overhead transforms live in the required external rig YAML.
+- `so101_bringup/config/cameras/profiles/` — the only two logical camera profiles; physical devices and driver overrides live in the required external rig YAML.
 
 This is a hard cutover. Repository code no longer understands the former
 camera manifests, topic aliases, feature keys, CLI overrides, or policy

@@ -8,7 +8,6 @@ import yaml
 from so101_camera_profiles import (
     COMPRESSED_IMAGE_TOPICS,
     detect_recorded_profile,
-    tf_frames,
 )
 
 
@@ -46,11 +45,3 @@ def test_rejects_partial_canonical_profile(tmp_path):
 
     with pytest.raises(ValueError, match="complete canonical profile"):
         detect_recorded_profile(partial)
-
-
-def test_dual_profile_uses_published_optical_frames():
-    assert tf_frames("dual_overhead") == {
-        "wrist": "follower/wrist_camera_optical_frame",
-        "overhead_1": "follower/static_camera_1_optical_frame",
-        "overhead_2": "follower/static_camera_2_optical_frame",
-    }

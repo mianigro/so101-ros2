@@ -4,26 +4,20 @@ cameras:
     node_name: cam_wrist
     namespace: "{follower_namespace}"
     image_topic: "/{follower_namespace}/image_raw"
-    camera_info_topic: "/{follower_namespace}/camera_info"
     frame_id: "{frame_prefix}wrist_camera_optical_frame"
     feature: wrist
     default_backend: gscam
-    extrinsics: robot_description
   - id: overhead_1
     node_name: cam_overhead_1
     namespace: static_camera_1
     image_topic: /static_camera_1/image_raw
-    camera_info_topic: /static_camera_1/camera_info
     frame_id: "{frame_prefix}static_camera_1_optical_frame"
     feature: overhead_1
     default_backend: gscam
-    extrinsics: external
   - id: overhead_2
     node_name: cam_overhead_2
     namespace: static_camera_2
     image_topic: /static_camera_2/image_raw
-    camera_info_topic: /static_camera_2/camera_info
     frame_id: "{frame_prefix}static_camera_2_optical_frame"
     feature: overhead_2
     default_backend: gscam
-    extrinsics: external

@@ -25,7 +25,6 @@ def generate_launch_description():
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
 
-    follower_joint_cfg = LaunchConfiguration("follower_joint_config_file")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
 
     arm_controller = LaunchConfiguration(
@@ -56,7 +55,6 @@ def generate_launch_description():
             "hardware_type": hardware_type,
             "usb_port": follower_usb,
             "frame_prefix": follower_frame_prefix,
-            "joint_config_file": follower_joint_cfg,
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": "false",
             "arm_controller": arm_controller,
@@ -120,8 +118,6 @@ def generate_launch_description():
     )
 
     # --- Defaults for files ---
-    default_follower_joint_cfg = ""  # Optional; example default:
-    # PathJoinSubstitution([FindPackageShare("so101_bringup"), "config", "hardware", "follower_joints.yaml"])
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
             FindPackageShare("so101_bringup"),
@@ -137,9 +133,6 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
             DeclareLaunchArgument(
                 "follower_usb_port", default_value="/dev/so101_follower"
-            ),
-            DeclareLaunchArgument(
-                "follower_joint_config_file", default_value=default_follower_joint_cfg
             ),
             DeclareLaunchArgument(
                 "follower_controller_config_file",

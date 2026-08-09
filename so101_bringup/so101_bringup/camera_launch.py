@@ -1,5 +1,6 @@
 """Shared launch-description pieces for the strict camera subsystem."""
 
+import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -13,8 +14,13 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    TextSubstitution,
+)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 from so101_bringup.camera_config import CameraConfigError, load_camera_setup
@@ -33,22 +39,12 @@ def _shutdown_when_process_exits(action, label: str) -> RegisterEventHandler:
     )
 
 
-def spawn_cameras(
-    context,
-    *,
-    calibration_mode: bool = False,
-    camera_id_argument: str = "",
-):
-    """Create validated driver, TF, and supervisor actions for one profile."""
+def spawn_cameras(context):
+    """Create validated driver and supervisor actions for one profile."""
     profile_name = LaunchConfiguration("camera_profile").perform(context).strip()
     rig_path = LaunchConfiguration("camera_rig_config_file").perform(context).strip()
     follower_namespace = LaunchConfiguration("follower_namespace").perform(context)
     frame_prefix = LaunchConfiguration("follower_frame_prefix").perform(context)
-    calibration_camera_id = (
-        LaunchConfiguration(camera_id_argument).perform(context).strip()
-        if camera_id_argument
-        else ""
-    )
     startup_timeout = float(
         LaunchConfiguration("camera_startup_timeout_s").perform(context)
     )
@@ -70,8 +66,6 @@ def spawn_cameras(
         rig_path,
         follower_namespace,
         frame_prefix,
-        calibration_mode=calibration_mode,
-        calibration_camera_id=calibration_camera_id,
         validate_devices=True,
     )
 
@@ -90,57 +84,24 @@ def spawn_cameras(
             [driver, _shutdown_when_process_exits(driver, camera.camera_id)]
         )
 
-        if camera.transform is not None:
-            transform = camera.transform
-            translation = transform["translation"]
-            rotation = transform["rotation_xyzw"]
-            static_tf = Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name=f"{camera.camera_id}_static_tf",
-                arguments=[
-                    "--x",
-                    str(translation[0]),
-                    "--y",
-                    str(translation[1]),
-                    "--z",
-                    str(translation[2]),
-                    "--qx",
-                    str(rotation[0]),
-                    "--qy",
-                    str(rotation[1]),
-                    "--qz",
-                    str(rotation[2]),
-                    "--qw",
-                    str(rotation[3]),
-                    "--frame-id",
-                    transform["parent_frame"],
-                    "--child-frame-id",
-                    camera.frame_id,
-                ],
-                output="screen",
-            )
-            actions.extend(
-                [
-                    static_tf,
-                    _shutdown_when_process_exits(
-                        static_tf, f"{camera.camera_id} static TF"
-                    ),
-                ]
-            )
-
     supervisor = Node(
         package="so101_bringup",
         executable="camera_supervisor",
         name="camera_supervisor",
         parameters=[
             {
-                "camera_names": [camera.camera_id for camera in cameras],
-                "camera_topics": [camera.image_topic for camera in cameras],
-                "camera_info_topics": [
-                    camera.camera_info_topic for camera in cameras
-                ],
-                "require_camera_info": not calibration_mode,
+                "camera_names": ParameterValue(
+                    TextSubstitution(
+                        text=json.dumps([camera.camera_id for camera in cameras])
+                    ),
+                    value_type=list[str],
+                ),
+                "camera_topics": ParameterValue(
+                    TextSubstitution(
+                        text=json.dumps([camera.image_topic for camera in cameras])
+                    ),
+                    value_type=list[str],
+                ),
                 "startup_timeout_s": startup_timeout,
                 "stale_timeout_s": stale_timeout,
             }

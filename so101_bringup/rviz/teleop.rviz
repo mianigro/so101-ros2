@@ -130,10 +130,6 @@ Visualization Manager:
           Value: false
         leader/wrist_link:
           Value: false
-        follower/static_camera_1_optical_frame:
-          Value: true
-        follower/static_camera_2_optical_frame:
-          Value: true
         world:
           Value: true
       Marker Scale: 0.5
@@ -165,10 +161,6 @@ Visualization Manager:
                         {}
                       leader/trigger_so101_v1_link:
                         {}
-          follower/static_camera_1_optical_frame:
-            {}
-          follower/static_camera_2_optical_frame:
-            {}
       Update Interval: 0
       Value: true
     - Alpha: 1

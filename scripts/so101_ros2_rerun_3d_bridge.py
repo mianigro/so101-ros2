@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SO-101 ROS 2 → Rerun bridge: single 3-D view with URDF, TF & camera frustums."""
+"""SO-101 ROS 2 → Rerun bridge with robot TF and profile-matched camera views."""
 from __future__ import annotations
 
 import argparse
@@ -26,7 +26,6 @@ import xml.etree.ElementTree as ET
 from so101_camera_profiles import (
     PROFILE_CAMERA_NAMES,
     image_topics,
-    tf_frames,
 )
 
 
@@ -56,11 +55,6 @@ class CameraCfg:
     """Per-camera configuration."""
     name: str               # short label, e.g. "wrist"
     image_topic: str        # ROS compressed image topic
-    tf_frame: str           # TF frame name the camera lives in
-    width: int = 640        # default resolution
-    height: int = 480
-    focal_length: float = 300.0  # default focal length px
-    image_plane_distance: float = 0.05  # default image plane distance (m)
 
 
 @dataclass
@@ -92,8 +86,6 @@ class So101Ros2ToRerun3DBridge(Node):
         self._last_ros_time: np.datetime64 | None = None
         self._last_action_time = np.datetime64(0, "ns")
         self._clear_state_gap = np.timedelta64(max(0, int(clear_state_gap_s * 1e9)), "ns")
-        self._camera_cfgs: dict[str, CameraCfg] = {}  # name → cfg
-
         # Shared callback groups
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
@@ -102,29 +94,13 @@ class So101Ros2ToRerun3DBridge(Node):
 
         # ── Camera subscriptions (dynamic, based on CameraCfg list) ──
         for cam in topics.cameras:
-            self._camera_cfgs[cam.name] = cam
             cg = ReentrantCallbackGroup()
             # Image subscription (compressed only)
             self.create_subscription(
                 CompressedImage, cam.image_topic,
                 partial(self._on_camera_compressed, cam_name=cam.name),
                 qos_profile_sensor_data, callback_group=cg)
-            # Static pinhole frustum tied to camera's TF frame
-            # rr.log(
-            #     f"cameras/{cam.name}/camera_info",
-            #     rr.Pinhole(
-            #         focal_length=cam.focal_length,
-            #         width=cam.width,
-            #         height=cam.height,
-            #         camera_xyz=rr.ViewCoordinates.FLU,
-            #         image_plane_distance=cam.image_plane_distance,
-            #         parent_frame=cam.tf_frame,
-            #         child_frame=cam.tf_frame + "_image_plane",
-            #     ),
-            #     static=True,
-            # )
-            self.get_logger().info(
-                f"Camera '{cam.name}': image={cam.image_topic}  tf_frame={cam.tf_frame}")
+            self.get_logger().info(f"Camera '{cam.name}': image={cam.image_topic}")
 
         # ── Joint states ──
         self.create_subscription(JointState, topics.joint_states, self._on_joint_states,
@@ -262,12 +238,8 @@ class So101Ros2ToRerun3DBridge(Node):
     def _on_camera_compressed(self, msg: CompressedImage, *, cam_name: str) -> None:
         rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
         mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
-        cam = self._camera_cfgs[cam_name]
         rr.log(f"cameras/{cam_name}/image",
                rr.EncodedImage(contents=bytes(msg.data), media_type=mt))
-        # Image plane frame must match Pinhole's child_frame
-        # rr.log(f"cameras/{cam_name}/image",
-        #        rr.CoordinateFrame(frame=cam.tf_frame + "_image_plane"))
 
     # ── Joint-state callback ─────────────────────────────────────────
     def _on_joint_states(self, msg: JointState) -> None:
@@ -346,9 +318,8 @@ def main() -> None:
 
     # ── Build camera configs ──
     camera_topics = image_topics(args.camera_profile, compressed=True)
-    camera_frames = tf_frames(args.camera_profile, prefix=args.tf_prefix)
     cameras = [
-        CameraCfg(name=name, image_topic=topic, tf_frame=camera_frames[name])
+        CameraCfg(name=name, image_topic=topic)
         for name, topic in camera_topics.items()
     ]
 

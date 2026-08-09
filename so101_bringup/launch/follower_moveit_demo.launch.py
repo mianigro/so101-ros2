@@ -12,7 +12,6 @@ from so101_bringup.camera_launch import declare_camera_arguments, include_camera
 def _launch_setup(context):
     hardware_type = LaunchConfiguration("hardware_type").perform(context)
     namespace = LaunchConfiguration("namespace").perform(context)
-    joint_config_file = LaunchConfiguration("joint_config_file").perform(context)
     use_rviz = LaunchConfiguration("use_rviz").perform(context)
 
     use_sim_time = "true" if hardware_type == "mujoco" else "false"
@@ -29,7 +28,6 @@ def _launch_setup(context):
         launch_arguments={
             "namespace": namespace,
             "hardware_type": hardware_type,
-            "joint_config_file": joint_config_file,
             "use_rviz": "false",  # MoveIt RViz is launched separately below
         }.items(),
     )
@@ -78,7 +76,6 @@ def generate_launch_description():
                 "hardware_type", default_value="real"
             ),  # real|mock|mujoco
             DeclareLaunchArgument("namespace", default_value="follower"),
-            DeclareLaunchArgument("joint_config_file", default_value=""),
             *declare_camera_arguments(use_cameras_default="false"),
             DeclareLaunchArgument(
                 "use_rviz",

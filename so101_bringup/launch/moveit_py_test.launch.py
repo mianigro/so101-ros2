@@ -25,8 +25,6 @@ from so101_bringup.camera_launch import declare_camera_arguments, include_camera
 def generate_launch_description():
     hardware_type = LaunchConfiguration("hardware_type")
     namespace = LaunchConfiguration("namespace")
-    joint_config_file = LaunchConfiguration("joint_config_file")
-
     use_sim_time = PythonExpression(["'", hardware_type, "' == 'mujoco'"])
 
     xacro_path = os.path.join(
@@ -74,7 +72,6 @@ def generate_launch_description():
         launch_arguments={
             "namespace": namespace,
             "hardware_type": hardware_type,
-            "joint_config_file": joint_config_file,
             "use_rviz": "false",
             "use_sim_time": use_sim_time,
         }.items(),
@@ -107,7 +104,6 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
             DeclareLaunchArgument("namespace", default_value="follower"),
-            DeclareLaunchArgument("joint_config_file", default_value=""),
             *declare_camera_arguments(use_cameras_default="false"),
             follower_bringup,
             cameras_launch,

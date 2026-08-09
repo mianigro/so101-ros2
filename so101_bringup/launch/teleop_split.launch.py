@@ -19,9 +19,6 @@ def generate_launch_description():
     leader_usb = LaunchConfiguration("leader_usb_port")
     follower_usb = LaunchConfiguration("follower_usb_port")
 
-    leader_joint_cfg = LaunchConfiguration("leader_joint_config_file")
-    follower_joint_cfg = LaunchConfiguration("follower_joint_config_file")
-
     leader_ctrl_cfg = LaunchConfiguration("leader_controller_config_file")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
 
@@ -42,7 +39,6 @@ def generate_launch_description():
             "namespace": leader_ns,
             "hardware_type": hardware_type,
             "usb_port": leader_usb,
-            "joint_config_file": leader_joint_cfg,
             "controller_config_file": leader_ctrl_cfg,
             "use_rviz": leader_rviz,
         }.items(),
@@ -63,7 +59,6 @@ def generate_launch_description():
             "namespace": follower_ns,
             "hardware_type": hardware_type,
             "usb_port": follower_usb,
-            "joint_config_file": follower_joint_cfg,
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": follower_rviz,
             "arm_controller": arm_controller,
@@ -90,10 +85,6 @@ def generate_launch_description():
     )
 
     # --- Defaults for files ---
-    default_leader_joint_cfg = ""  # Optional; example default:
-    # PathJoinSubstitution([FindPackageShare("so101_bringup"), "config", "hardware", "leader_joints.yaml"])
-    default_follower_joint_cfg = ""  # Optional; example default:
-    # PathJoinSubstitution([FindPackageShare("so101_bringup"), "config", "hardware", "follower_joints.yaml"])
     default_leader_ctrl_cfg = PathJoinSubstitution(
         [
             FindPackageShare("so101_bringup"),
@@ -119,8 +110,6 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
             DeclareLaunchArgument("leader_usb_port", default_value="/dev/so101_leader"),
             DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
-            DeclareLaunchArgument("leader_joint_config_file", default_value=default_leader_joint_cfg),
-            DeclareLaunchArgument("follower_joint_config_file", default_value=default_follower_joint_cfg),
             DeclareLaunchArgument("leader_controller_config_file", default_value=default_leader_ctrl_cfg),
             DeclareLaunchArgument(
                 "follower_controller_config_file",

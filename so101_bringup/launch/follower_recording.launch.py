@@ -29,7 +29,6 @@ def generate_launch_description():
     follower_ns = LaunchConfiguration("follower_namespace")
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
-    follower_joint_cfg = LaunchConfiguration("follower_joint_config_file")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
     arm_controller = LaunchConfiguration("arm_controller")
     root_dir = LaunchConfiguration("root_dir")
@@ -52,7 +51,6 @@ def generate_launch_description():
             "follower_namespace": follower_ns,
             "follower_frame_prefix": follower_frame_prefix,
             "follower_usb_port": follower_usb,
-            "follower_joint_config_file": follower_joint_cfg,
             "follower_controller_config_file": follower_ctrl_cfg,
             "arm_controller": arm_controller,
             "use_cameras": LaunchConfiguration("use_cameras"),
@@ -97,7 +95,6 @@ def generate_launch_description():
     )
 
     # ── Defaults ─────────────────────────────────────────────────
-    default_follower_joint_cfg = ""
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
             FindPackageShare("so101_bringup"),
@@ -123,7 +120,6 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
             DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
             DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
-            DeclareLaunchArgument("follower_joint_config_file", default_value=default_follower_joint_cfg),
             DeclareLaunchArgument("follower_controller_config_file", default_value=default_follower_ctrl_cfg),
             DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             *declare_camera_arguments(),

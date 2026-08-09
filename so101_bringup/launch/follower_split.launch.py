@@ -13,7 +13,6 @@ def generate_launch_description():
     namespace = LaunchConfiguration("namespace")
     hardware_type = LaunchConfiguration("hardware_type")
     usb_port = LaunchConfiguration("usb_port")
-    joint_config_file = LaunchConfiguration("joint_config_file")
     controller_config_file = LaunchConfiguration("controller_config_file")
     arm_controller = LaunchConfiguration("arm_controller")
 
@@ -34,8 +33,6 @@ def generate_launch_description():
                 hardware_type,
                 " usb_port:=",
                 usb_port,
-                " joint_config_file:=",
-                joint_config_file,
             ]
         ),
         value_type=str,
@@ -95,10 +92,6 @@ def generate_launch_description():
             DeclareLaunchArgument("namespace", default_value="follower"),
             DeclareLaunchArgument("hardware_type", default_value="real"),  # real | mock
             DeclareLaunchArgument("usb_port", default_value="/dev/so101_follower"),
-            DeclareLaunchArgument(
-                "joint_config_file",
-                default_value="",
-            ),
             DeclareLaunchArgument(
                 "controller_config_file",
                 default_value=PathJoinSubstitution(

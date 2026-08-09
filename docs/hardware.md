@@ -1,16 +1,12 @@
 # Hardware Setup
 
 > **Required before running on real hardware.**
-> The joint override examples shipped in this repo came from one specific
-> robot and **will not match yours**. Physical camera calibration is not
-> checked in at all.
 
 This document focuses on **ROS-side hardware integration**:
 
 - stable device naming (serial + cameras),
 - permissions,
-- LeRobot motor setup and calibration as prerequisites,
-- optional ROS-side joint overrides when you explicitly want them.
+- LeRobot motor setup and calibration as prerequisites.
 
 ---
 
@@ -115,8 +111,9 @@ Verify:
 
 ```bash
 ls -l /dev/so101_leader /dev/so101_follower
-ls -l /dev/cam_wrist /dev/cam_overhead_1
-ls -l /dev/cam_overhead_2  # required for dual_overhead
+ls -l /dev/cam_wrist
+ls -l /dev/cam_overhead_1
+ls -l /dev/cam_overhead_2
 ```
 
 ---
@@ -139,52 +136,17 @@ groups | grep -E 'dialout|video'
 
 ---
 
-## 5. Calibration, EEPROM, and Optional Joint Config Overrides
+## 5. Motor Calibration
 
 Before using the real arms from ROS, complete the LeRobot motor setup and calibration steps for both arms. Those steps write the required persistent values to the servo motors, including IDs and calibration-related settings stored in EEPROM.
 
 Servo motors keep persistent values in EEPROM, so those settings survive power cycles and only change when a tool explicitly writes new ones. That means calibration values already stored on the motors can remain the source of truth instead of being duplicated into multiple ROS config files.
-
-### Parameter precedence
-
-**Precedence:** `joint_config_file` overrides `URDF/Xacro` defaults.
-
-On initialization, the driver writes the resulting values for supported parameters to the motors. If you provide a `joint_config_file`, those values override the URDF/Xacro defaults and replace the older stored values for the same registers.
-
-If you use a `joint_config_file`, each joint entry must:
-
-- include the correct `id`
-- match a joint defined in the `ros2_control` / xacro description
-
-Common parameters:
-
-- `id`: motor ID on the bus
-- `homing_offset`: joint zero alignment, written to the servo EEPROM
-- `range_min` / `range_max`: joint travel limits, written to the servo EEPROM
-- `p_coefficient` / `i_coefficient` / `d_coefficient`, `return_delay_time`, `max_torque_limit`, `protection_current`, `overload_torque`: optional tuning and protection settings written to the servo EEPROM
-- `acceleration`: optional motion parameter used by the driver and not part of LeRobot calibration output
 
 For the follower gripper, this project sets these protection values by default in `so101_description/urdf/ros2_control/so101_ros2_control.xacro` to reduce the risk of overloading or damaging the motor:
 
 - `max_torque_limit: 500`
 - `protection_current: 250`
 - `overload_torque: 25`
-
-LeRobot calibration does not produce these safety values. If needed, you can still override them per robot through `joint_config_file`.
-
-Use `joint_config_file` when you want explicit per-robot overrides, to reapply known-good values during bringup, or to set extra tuning/protection parameters not produced by LeRobot.
-
-Optional override examples live here:
-
-```text
-so101_bringup/config/hardware/
-├── leader_joints.yaml
-├── follower_joints.yaml
-├── lerobot_leader_arm.json
-└── lerobot_follower_arm.json
-```
-
-The YAML files in this repo are examples of override files, while the included `lerobot_*.json` files show raw LeRobot calibration output for reference.
 
 ---
 
@@ -197,49 +159,34 @@ The repository owns exactly two immutable logical profiles:
 | `single_overhead` | wrist, overhead 1 | `observation.images.wrist`, `observation.images.overhead_1` |
 | `dual_overhead` | wrist, overhead 1, overhead 2 | the single profile plus `observation.images.overhead_2` |
 
-Their ROS contract is fixed:
+Their image contract is fixed:
 
-| Camera | Node | Raw image | CameraInfo | Optical frame |
-| ------ | ---- | --------- | ---------- | ------------- |
-| Wrist | `/follower/cam_wrist` | `/follower/image_raw` | `/follower/camera_info` | `follower/wrist_camera_optical_frame` |
-| Overhead 1 | `/static_camera_1/cam_overhead_1` | `/static_camera_1/image_raw` | `/static_camera_1/camera_info` | `follower/static_camera_1_optical_frame` |
-| Overhead 2 | `/static_camera_2/cam_overhead_2` | `/static_camera_2/image_raw` | `/static_camera_2/camera_info` | `follower/static_camera_2_optical_frame` |
+| Camera | Node | Raw image |
+| ------ | ---- | --------- |
+| Wrist | `/follower/cam_wrist` | `/follower/image_raw` |
+| Overhead 1 | `/static_camera_1/cam_overhead_1` | `/static_camera_1/image_raw` |
+| Overhead 2 | `/static_camera_2/cam_overhead_2` | `/static_camera_2/image_raw` |
 
 ### 6.1 External physical rig file
 
-The profiles do not contain machine-specific device paths or calibration.
-Create one external YAML file for the physical rig and pass its absolute path
-at every camera-enabled launch. No physical calibration file is shipped in the
-repository.
+The profiles do not contain machine-specific device paths. Create one external
+YAML file for the physical rig and pass its absolute path at every
+camera-enabled launch.
 
 ```yaml
 schema_version: 1
 cameras:
   wrist:
     device: /dev/cam_wrist
-    camera_info_url: file:///absolute/path/to/wrist_camera_info.yaml
   overhead_1:
     device: /dev/cam_overhead_1
-    camera_info_url: file:///absolute/path/to/overhead_1_camera_info.yaml
-    transform:
-      parent_frame: base_link
-      translation: [CALIBRATED_X, CALIBRATED_Y, CALIBRATED_Z]
-      rotation_xyzw: [CALIBRATED_QX, CALIBRATED_QY, CALIBRATED_QZ, CALIBRATED_QW]
   overhead_2:
     device: /dev/cam_overhead_2
-    camera_info_url: file:///absolute/path/to/overhead_2_camera_info.yaml
-    transform:
-      parent_frame: base_link
-      translation: [CALIBRATED_X, CALIBRATED_Y, CALIBRATED_Z]
-      rotation_xyzw: [CALIBRATED_QX, CALIBRATED_QY, CALIBRATED_QZ, CALIBRATED_QW]
 ```
 
-The capitalized values are placeholders, not defaults. Generate independent
-intrinsics and extrinsics for each physical camera with
-[`so101_camera_calibration`](../so101_camera_calibration/README.md). The loader
-requires positive focal lengths, an absolute `file://` URL, and a normalized
-quaternion. It does not accept a copied camera-1 calibration for camera 2 as a
-substitute for measuring camera 2.
+Camera calibration is not part of this stack. The rig schema does not accept
+intrinsics, CameraInfo URLs, or camera transforms. Overhead cameras publish
+images but are not placed in the robot TF tree.
 
 ### 6.2 Launching a profile
 
@@ -251,12 +198,11 @@ ros2 launch so101_bringup teleop.launch.py \
   camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
 ```
 
-Before any driver starts, launch validates the profile, rig schema, selected
-device nodes, per-camera calibration, and overhead transforms. It then requires
-every selected Image and valid nonzero CameraInfo stream within 10 seconds and
-keeps checking them with a one-second stale limit. A driver, TF publisher, or
-supervisor exit shuts down the whole launch. There is no camera discovery,
-fallback topic, or partial-profile operation.
+Before any driver starts, launch validates the profile, rig schema, and selected
+device nodes. It then requires every selected image stream within 10 seconds and
+keeps checking them with a one-second stale limit. A driver or supervisor exit
+shuts down the whole launch. There is no camera discovery, fallback topic, or
+partial-profile operation.
 
 The standard backend is `gscam`; its pipeline is constructed from each
 camera's `device`. A machine that needs a different backend must declare that
@@ -267,30 +213,6 @@ The same `camera_profile` selects recorder topics, Rerun subscriptions,
 conversion features, and inference inputs. Converter timing is the only choice
 left to its two configs: `so101_30hz.yaml` or `so101_50hz.yaml`.
 
-### 6.3 Calibration bootstrap
-
-Production does not start with missing calibration. The dedicated bootstrap is
-the one exception and launches only the selected physical camera:
-
-```bash
-ros2 launch so101_bringup camera_calibration_bootstrap.launch.py \
-  camera_profile:=dual_overhead \
-  camera_id:=overhead_2 \
-  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
-```
-
-Use it only while producing the CameraInfo and transform blocks, then return to
-the strict production launch.
-
-### 6.4 Hard-cutover boundary
-
-Old-format bags and checkpoints are not stored in this repository and are not
-modified by this change. Recorder output normally lives under
-`~/.ros/so101_episodes`; downloaded datasets and policies normally live under
-the Hugging Face cache or in their Hub repositories. Anything using the former
-topics or feature schema needs historical tooling outside this repository. No
-aliases, remaps, or migration utilities are provided here.
-
 ---
 
 ## 7. Verification Checklist
@@ -300,11 +222,8 @@ Before launching teleop:
 - [ ] LeRobot motor setup and calibration were completed for both arms before first ROS use
 - [ ] Leader / follower udev symlinks exist
 - [ ] User is in `dialout` and `video` groups
-- [ ] If using `joint_config_file`, it points to the intended override YAML with correct joint IDs
 - [ ] `/dev/cam_wrist` and `/dev/cam_overhead_1` exist
 - [ ] `/dev/cam_overhead_2` exists for `dual_overhead`
-- [ ] Every selected camera has its own intrinsic CameraInfo YAML
-- [ ] Every selected overhead camera has its own measured quaternion transform
 - [ ] `camera_profile` and the absolute external rig path are supplied
 
 Sanity checks:
