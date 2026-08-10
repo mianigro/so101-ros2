@@ -172,7 +172,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "policy_type",
                 default_value="act",
-                description="Synchronous policy architecture: act or smolvla",
+                description=(
+                    "Policy architecture registered with LeRobot 0.6.1 "
+                    "(act, smolvla, diffusion, pi0, pi05, xvla, vqbet, tdmpc, groot, ...). "
+                    "ACT/SmolVLA are recommended for this sync node; heavy VLAs (pi05, xvla) "
+                    "are better served by the async node + policy_server."
+                ),
             ),
             DeclareLaunchArgument(
                 "task",

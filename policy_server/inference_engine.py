@@ -26,7 +26,21 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
-from lerobot.async_inference.constants import SUPPORTED_POLICIES
+# Policy types this server runs through the async chunking loop. Mirrors
+# lerobot.async_inference.constants.SUPPORTED_POLICIES and adds "xvla",
+# which implements the same predict_action_chunk / select_action / reset
+# contract (see modeling_xvla.py).
+SUPPORTED_POLICIES = [
+    "act",
+    "smolvla",
+    "diffusion",
+    "tdmpc",
+    "vqbet",
+    "pi0",
+    "pi05",
+    "groot",
+    "xvla",
+]
 from lerobot.async_inference.helpers import (
     FPSTracker,
     Observation,
