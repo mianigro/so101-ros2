@@ -26,7 +26,6 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
-from trajectory_msgs.msg import JointTrajectory
 
 from so101_camera_profiles import (
     PROFILE_CAMERA_NAMES,
@@ -80,12 +79,11 @@ def stamp_to_datetime64(stamp) -> np.datetime64:
 
 @dataclass
 class Topics:
-    wrist: str = "/follower/image_raw"
-    overhead_1: str = "/static_camera_1/image_raw"
+    wrist: str = "/follower/image_raw/compressed"
+    overhead_1: str = "/static_camera_1/image_raw/compressed"
     overhead_2: str | None = None
     joint_states: str = "/follower/joint_states"
     forward_commands: str | None = "/follower/forward_controller/commands"
-    joint_trajectory: str | None = None
 
 
 DEFAULT_CMD_JOINTS: list[str] = [
@@ -155,7 +153,6 @@ class So101Ros2ToRerun(Node):
         self._cg_img_overhead_2 = ReentrantCallbackGroup()
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
-        self._cg_traj = ReentrantCallbackGroup()
 
         # -- Subscriptions --
         if self._is_compressed(topics.wrist):
@@ -202,12 +199,6 @@ class So101Ros2ToRerun(Node):
             self.create_subscription(
                 Float64MultiArray, topics.forward_commands, self._on_forward_commands,
                 qos_cmd, callback_group=self._cg_cmd,
-            )
-
-        if topics.joint_trajectory:
-            self.create_subscription(
-                JointTrajectory, topics.joint_trajectory, self._on_joint_trajectory,
-                qos_profile_sensor_data, callback_group=self._cg_traj,
             )
 
         self.get_logger().info("Rerun bridge started (stream-aware).")
@@ -326,19 +317,6 @@ class So101Ros2ToRerun(Node):
         rec.set_time("ros_time", timestamp=ts)
         for name, val in zip(self._cmd_joint_order, msg.data):
             rec.log(f"action/position/{name}", rr.Scalars(float(val)))
-
-    # -- joint trajectory callback --
-
-    def _on_joint_trajectory(self, msg: JointTrajectory) -> None:
-        rec = self._get_rec()
-        if rec is None:
-            return
-        rec.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        if msg.points:
-            pt = msg.points[0]
-            for name, pos in zip(msg.joint_names, pt.positions):
-                rec.log(f"action/position/{name}", rr.Scalars(float(pos)))
-
 
 
 # ---------------------------------------------------------------------------
@@ -571,10 +549,6 @@ def parse_args() -> argparse.Namespace:
         help="Forward commands topic (set empty to disable)",
     )
     p.add_argument(
-        "--joint-trajectory", type=str, default=None,
-        help="Joint trajectory topic (optional)",
-    )
-    p.add_argument(
         "--cmd-joints", type=str, nargs="+",
         default=DEFAULT_CMD_JOINTS,
         help="Joint names for forward commands (order matters)",
@@ -604,14 +578,13 @@ def main() -> None:
 
     # -- Init ROS2 --
     rclpy.init()
-    camera_topics = image_topics(args.camera_profile, compressed=False)
+    camera_topics = image_topics(args.camera_profile, compressed=True)
     topics = Topics(
         wrist=camera_topics["wrist"],
         overhead_1=camera_topics["overhead_1"],
         overhead_2=camera_topics.get("overhead_2"),
         joint_states=args.joint_states,
         forward_commands=args.forward_commands or None,
-        joint_trajectory=args.joint_trajectory or None,
     )
     node = So101Ros2ToRerun(topics, args.cmd_joints)
     executor = MultiThreadedExecutor()

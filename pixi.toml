@@ -10,7 +10,6 @@ python = "3.12.*"
 pyyaml = ">=6.0.3,<7"
 numpy = ">=2.4.2,<3"
 gradio = ">=6.5.1,<7"
-pytz = ">=2026.1.post1,<2027"
 
 [feature.bridge.pypi-dependencies]
 rerun-sdk = ">=0.31.3, <0.32"
@@ -25,11 +24,8 @@ gradio-rerun = ">=0.31.3, <0.32"
 # - forwards all extra args to the Python script
 bridge = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true && exec python scripts/so101_ros2_to_rerun.py \"$@\"' -- " }
 bridge-3d = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true && exec python scripts/so101_ros2_rerun_3d_bridge.py \"$@\"' -- " }
-bridge-3d-moveit = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true && exec python scripts/so101_ros2_rerun_3d_bridge.py --tf-prefix \"\" \"$@\"' -- " }
 replay = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true && exec python scripts/so101_episode_viewer_ros2.py \"$@\"' -- " }
-
-
-# Launch the native Rerun viewer (connect the bridge with --connect)
+# Launch the native Rerun viewer (connect to a bridge with --connect)
 viewer = { cmd = "python -m rerun" }
 
 
@@ -46,7 +42,6 @@ lerobot = { version = "==0.6.1", extras = ["async", "dataset", "dataset-viz", "p
 imageio = ">=2.34,<3"
 msgpack = ">=1,<2"
 pyzmq = ">=26.2.1,<28"
-parquet-tools = ">=0.2.16, <0.3"
 
 [feature.lerobot.tasks]
 lerobot-info = "lerobot-info"

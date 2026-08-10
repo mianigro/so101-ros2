@@ -119,7 +119,6 @@ class LeRobotInferenceNode(Node):
         self._latest_camera_images: dict[str, Image | None] = {
             camera_name: None for camera_name in self.camera_topics
         }
-        self._latest_joints_msg: JointState | None = None
         self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
         self._rx_joints = None
 
@@ -175,7 +174,6 @@ class LeRobotInferenceNode(Node):
         # Cache ordered joints
         pos = msg.position
         self._latest_joints_vec = np.array([pos[i] for i in self._joint_idx], dtype=np.float32)
-        self._latest_joints_msg = msg
         self._rx_joints = self.get_clock().now()
 
     def _initialize_joint_indices(self, msg: JointState) -> bool:

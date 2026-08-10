@@ -51,7 +51,6 @@ class ClientCfg:
     policy_type: str
     repo_id: str
     policy_device: str
-    client_device: str
     actions_per_chunk: int
     chunk_size_threshold: float
     fps: float

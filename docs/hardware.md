@@ -233,11 +233,3 @@ ls -l /dev/so101_leader /dev/so101_follower 2>/dev/null || true
 ls -l /dev/cam_wrist /dev/cam_overhead_1 2>/dev/null || true
 ls -l /dev/cam_overhead_2 2>/dev/null || true
 ```
-
-Then run:
-
-```bash
-ros2 launch so101_bringup teleop.launch.py hardware_type:=real \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
-```

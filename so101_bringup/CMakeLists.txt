@@ -37,6 +37,7 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(camera_config test/test_camera_config.py)
+  ament_add_pytest_test(inference_launch test/test_inference_launch.py)
 endif()
 
 ament_package()

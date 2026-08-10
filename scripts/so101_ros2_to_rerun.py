@@ -17,7 +17,6 @@ from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
-from trajectory_msgs.msg import JointTrajectory
 
 from so101_camera_profiles import PROFILE_CAMERA_NAMES, image_topics
 
@@ -28,10 +27,6 @@ ACTION_STR = "action"
 
 def stamp_to_datetime64(stamp) -> np.datetime64:
     t = Time.from_msg(stamp)
-    return np.datetime64(t.nanoseconds, "ns")
-
-
-def time_to_datetime64(t: Time) -> np.datetime64:
     return np.datetime64(t.nanoseconds, "ns")
 
 
@@ -61,7 +56,6 @@ class Topics:
     overhead_2: Optional[str]
     joint_states: str
     forward_commands: Optional[str] = None
-    joint_trajectory: Optional[str] = None
 
 
 class So101Ros2ToRerun(Node):
@@ -87,7 +81,6 @@ class So101Ros2ToRerun(Node):
         self._cg_img_overhead_2 = ReentrantCallbackGroup()
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
-        self._cg_traj = ReentrantCallbackGroup()
 
         if self._is_compressed(topics.wrist):
             self.create_subscription(
@@ -157,15 +150,6 @@ class So101Ros2ToRerun(Node):
                 self._on_forward_commands,
                 qos_cmd,
                 callback_group=self._cg_cmd,
-            )
-
-        if topics.joint_trajectory:
-            self.create_subscription(
-                JointTrajectory,
-                topics.joint_trajectory,
-                self._on_joint_trajectory,
-                qos_profile_sensor_data,
-                callback_group=self._cg_traj,
             )
 
         self.get_logger().info("Rerun bridge started.")
@@ -261,19 +245,6 @@ class So101Ros2ToRerun(Node):
             jn = self._cmd_joint_order[i]
             log_scalar(f"action/position/{jn}", float(data[i]))
 
-    def _on_joint_trajectory(self, msg: JointTrajectory) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-
-        if not msg.points:
-            return
-
-        # For live viewing, log the first point (the "next commanded setpoint").
-        p0 = msg.points[0]
-        n = min(len(msg.joint_names), len(p0.positions))
-        for i in range(n):
-            jn = msg.joint_names[i]
-            log_scalar(f"action/trajectory/position/{jn}", float(p0.positions[i]))
-
     def _is_compressed(self, topic: str) -> bool:
         return topic.endswith("/compressed")
 
@@ -300,11 +271,6 @@ def main() -> None:
             "gripper",
         ],
         help="Joint name order matching controller 'joints' param",
-    )
-    p.add_argument(
-        "--joint-trajectory",
-        default="",
-        help="e.g. /follower/trajectory_controller/joint_trajectory",
     )
     p.add_argument(
         "--clear-state-gap-s",
@@ -373,7 +339,6 @@ def main() -> None:
         overhead_2=camera_topics.get("overhead_2"),
         joint_states=args.joint_states,
         forward_commands=args.forward_commands or None,
-        joint_trajectory=args.joint_trajectory or None,
     )
 
     node = So101Ros2ToRerun(

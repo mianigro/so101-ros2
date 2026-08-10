@@ -11,37 +11,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(trajectory_msgs REQUIRED)
-find_package(control_msgs REQUIRED)
 
-# Add executables 
-add_executable(teleop_split src/teleop_split.cpp)
+# Add executable
 add_executable(teleop src/teleop.cpp)
 
 # Link dependencies
 ament_target_dependencies(teleop
-	rclcpp
-	std_msgs
-  sensor_msgs
-  trajectory_msgs)
-ament_target_dependencies(teleop_split
-	rclcpp
-  rclcpp_action
-	std_msgs
-  sensor_msgs
-  trajectory_msgs
-  control_msgs)
+  rclcpp
+  std_msgs
+  sensor_msgs)
 
 # Install executables
-install(TARGETS 
+install(TARGETS
   teleop
-	teleop_split
-	DESTINATION lib/${PROJECT_NAME})
+  DESTINATION lib/${PROJECT_NAME})
 
-# Install share files, launch 
+# Install share files, launch
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )

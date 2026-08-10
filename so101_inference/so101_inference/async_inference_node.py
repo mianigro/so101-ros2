@@ -59,7 +59,6 @@ class AsyncRos2InferenceClient(Node):
         self.declare_parameter("repo_id", "")
         self.declare_parameter("camera_profile", "")
         self.declare_parameter("policy_device", "cuda")
-        self.declare_parameter("client_device", "cpu")
         self.declare_parameter("actions_per_chunk", 100)
         self.declare_parameter("chunk_size_threshold", 0.5)
         self.declare_parameter("fps", 50.0)
@@ -91,7 +90,6 @@ class AsyncRos2InferenceClient(Node):
             policy_type=str(self.get_parameter("policy_type").value),
             repo_id=str(self.get_parameter("repo_id").value).strip(),
             policy_device=str(self.get_parameter("policy_device").value),
-            client_device=str(self.get_parameter("client_device").value),
             actions_per_chunk=int(self.get_parameter("actions_per_chunk").value),
             chunk_size_threshold=float(self.get_parameter("chunk_size_threshold").value),
             fps=float(self.get_parameter("fps").value),
@@ -145,7 +143,6 @@ class AsyncRos2InferenceClient(Node):
         self._latest_camera_data: dict[str, Image | bytes | None] = {
             camera_name: None for camera_name in self.camera_topics
         }
-        self._latest_joints_msg: JointState | None = None
         self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
         self._rx_joints = None
 
@@ -184,9 +181,7 @@ class AsyncRos2InferenceClient(Node):
         self._log.info("=" * 60)
         self._log.info(f"  server:             {self.cfg.server_address}")
         self._log.info(f"  policy:             {self.cfg.policy_type} | {self.cfg.repo_id}")
-        self._log.info(
-            f"  device:             server={self.cfg.policy_device}  client={self.cfg.client_device}"
-        )
+        self._log.info(f"  policy_device:      {self.cfg.policy_device}")
         self._log.info(f"  camera_profile:     {self.camera_profile}")
         for camera_name, camera_topic in self.camera_topics.items():
             self._log.info(f"  camera {camera_name}: {camera_topic}")
@@ -218,7 +213,6 @@ class AsyncRos2InferenceClient(Node):
                 return
         pos = msg.position
         self._latest_joints_vec = np.array([pos[i] for i in self._joint_idx], dtype=np.float32)
-        self._latest_joints_msg = msg
         self._rx_joints = self.get_clock().now()
 
     def _initialize_joint_indices(self, msg: JointState) -> bool:

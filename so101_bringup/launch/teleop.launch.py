@@ -35,14 +35,13 @@ def generate_launch_description():
     leader_rviz = LaunchConfiguration("leader_rviz")
     follower_rviz = LaunchConfiguration("follower_rviz")
 
-    arm_controller = LaunchConfiguration("arm_controller")  # trajectory_controller|forward_controller
-
     teleop_params_file = LaunchConfiguration("teleop_params_file")
     teleop_delay_s = LaunchConfiguration("teleop_delay_s")
 
     use_teleop_rviz = LaunchConfiguration("use_teleop_rviz")
 
     use_rerun = LaunchConfiguration("use_rerun")
+    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -73,7 +72,6 @@ def generate_launch_description():
             "frame_prefix": follower_frame_prefix,
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": follower_rviz,
-            "arm_controller": arm_controller,
         }.items(),
     )
 
@@ -85,7 +83,6 @@ def generate_launch_description():
         launch_arguments={
             "leader_namespace": leader_ns,
             "follower_namespace": follower_ns,
-            "arm_controller": arm_controller,
             "params_file": teleop_params_file,
         }.items(),
     )
@@ -140,6 +137,28 @@ def generate_launch_description():
         actions=[rerun_bridge_proc],
     )
 
+    # --- Launch Rerun 3D (animated URDF + TF + cameras + plots) ---
+
+    rerun_3d_bridge_proc = ExecuteProcess(
+        cmd=[
+            "pixi",
+            "run",
+            "bridge-3d",
+            "--",
+            "--camera-profile",
+            LaunchConfiguration("camera_profile"),
+        ],
+        cwd=rerun_env_dir,
+        additional_env={"PYTHONUNBUFFERED": "1"},
+        condition=IfCondition(use_rerun_3d),
+        output="screen",
+    )
+
+    rerun_3d_start = TimerAction(
+        period=rerun_delay_s,
+        actions=[rerun_3d_bridge_proc],
+    )
+
     # --- Defaults for files ---
     default_leader_ctrl_cfg = PathJoinSubstitution(
         [
@@ -174,12 +193,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("leader_rviz", default_value="false"),
             DeclareLaunchArgument("follower_rviz", default_value="false"),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             DeclareLaunchArgument("teleop_params_file", default_value=default_teleop_params),
             DeclareLaunchArgument("teleop_delay_s", default_value="2.0"),
             *declare_camera_arguments(),
             DeclareLaunchArgument("use_teleop_rviz", default_value="true"),
             DeclareLaunchArgument("use_rerun", default_value="false"),
+            DeclareLaunchArgument(
+                "use_rerun_3d",
+                default_value="false",
+                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
+            ),
             DeclareLaunchArgument(
                 "rerun_env_dir",
                 # Best: set env var once, no need to pass each run:
@@ -193,6 +216,7 @@ def generate_launch_description():
             cameras_launch,
             rviz_node,
             rerun_start,
+            rerun_3d_start,
             teleop_start,
         ]
     )

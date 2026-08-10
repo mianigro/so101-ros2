@@ -12,6 +12,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
@@ -47,6 +48,7 @@ add_executable(teleop_episode_keyboard
 )
 ament_target_dependencies(teleop_episode_keyboard
   rclcpp
+  rcl_interfaces
   std_srvs
 )
 
@@ -55,10 +57,6 @@ install(TARGETS
   episode_recorder_node
   teleop_episode_keyboard
   DESTINATION lib/${PROJECT_NAME}
-)
-
-install(DIRECTORY include/
-  DESTINATION include/
 )
 
 # Install share files, launch config

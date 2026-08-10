@@ -6,7 +6,7 @@
   <description>  
     Launch and configuration package for 
     the SO-101 ROS 2 stack (leader/follower bringup, ros2_control, teleop, cameras, 
-    RViz/MoveIt demos, and recording sessions).
+    RViz visualization, inference, and recording sessions).
   </description>
   <maintainer email="dmitri@manajev.com">Dmitri Manajev</maintainer>
   <license>Apache-2.0</license>
@@ -17,6 +17,9 @@
   <depend>so101_description</depend>
 
   <!-- Canonical profiles use gscam; custom rigs own alternate backend dependencies. -->
+  <exec_depend>episode_recorder</exec_depend>
+  <exec_depend>so101_teleop</exec_depend>
+  <exec_depend>feetech_ros2_driver</exec_depend>
   <exec_depend>gscam</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
@@ -27,7 +30,10 @@
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
-  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>forward_command_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

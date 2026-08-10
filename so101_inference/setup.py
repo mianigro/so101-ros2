@@ -5,7 +5,7 @@ package_name = "so101_inference"
 
 setup(
     name=package_name,
-    version="0.0.0",
+    version="0.1.0",
     python_requires=">=3.12",
     packages=find_packages(exclude=["test"]),
     data_files=[

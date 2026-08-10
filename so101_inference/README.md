@@ -61,6 +61,7 @@ pixi run -e lerobot infer -- --ros-args \
     -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
     -p camera_profile:=dual_overhead \
     -p policy_type:=smolvla \
+    -p task:="Pick up the cube and place it in the container." \
     -p fps:=50.0
 ```
 
@@ -73,11 +74,16 @@ pixi run -e lerobot async_infer -- --ros-args \
     -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
     -p camera_profile:=dual_overhead \
     -p policy_type:=smolvla \
+    -p task:="Pick up the cube and place it in the container." \
     -p server_address:=192.168.1.100:8090 \
     -p fps:=50.0 \
     -p actions_per_chunk:=50 \
     -p chunk_size_threshold:=0.6
 ```
+
+For VLA policies, pass a task that matches the requested and trained behaviour.
+The standalone nodes retain a demo fallback, while the combined bringup launch
+requires an explicit task.
 
 ACT policy with ZeroMQ transport (default):
 
@@ -142,7 +148,6 @@ All parameters from the synchronous node plus:
 | `transport_type` | string | `zmq` | Transport backend: `zmq` or `grpc` |
 | `server_address` | string | `127.0.0.1:8090` | Policy server `host:port` |
 | `policy_device` | string | `cuda` | Device for policy inference on the server |
-| `client_device` | string | `cpu` | Device for pre/post-processing on the robot |
 | `actions_per_chunk` | int | `100` | Number of actions requested per inference call |
 | `chunk_size_threshold` | float | `0.5` | Queue fill ratio below which a new observation is sent (0.0–1.0) |
 | `aggregate_fn_name` | string | `weighted_average` | Action aggregation strategy: `weighted_average`, `latest_only`, `average`, `conservative` |

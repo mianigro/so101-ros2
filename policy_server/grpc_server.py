@@ -20,15 +20,8 @@ inference logic.
 
 from __future__ import annotations
 
-import logging
-import os
 import pickle  # nosec
 import time
-from concurrent import futures
-from dataclasses import asdict
-from pprint import pformat
-
-import grpc
 
 from lerobot.async_inference.configs import PolicyServerConfig
 from lerobot.async_inference.helpers import (

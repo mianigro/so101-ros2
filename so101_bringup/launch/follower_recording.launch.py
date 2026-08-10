@@ -30,12 +30,12 @@ def generate_launch_description():
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
-    arm_controller = LaunchConfiguration("arm_controller")
     root_dir = LaunchConfiguration("root_dir")
     experiment_name = LaunchConfiguration("experiment_name")
     task = LaunchConfiguration("task")
 
     use_rerun = LaunchConfiguration("use_rerun")
+    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -52,7 +52,6 @@ def generate_launch_description():
             "follower_frame_prefix": follower_frame_prefix,
             "follower_usb_port": follower_usb,
             "follower_controller_config_file": follower_ctrl_cfg,
-            "arm_controller": arm_controller,
             "use_cameras": LaunchConfiguration("use_cameras"),
             "camera_profile": LaunchConfiguration("camera_profile"),
             "camera_rig_config_file": LaunchConfiguration("camera_rig_config_file"),
@@ -94,6 +93,23 @@ def generate_launch_description():
         actions=[rerun_bridge_proc],
     )
 
+    # ── Optional 3D rerun bridge (animated URDF + TF + cameras + plots) ──
+    rerun_3d_bridge_proc = ExecuteProcess(
+        cmd=[
+            "pixi", "run", "bridge-3d", "--", "--camera-profile",
+            LaunchConfiguration("camera_profile"),
+        ],
+        cwd=rerun_env_dir,
+        additional_env={"PYTHONUNBUFFERED": "1"},
+        condition=IfCondition(use_rerun_3d),
+        output="screen",
+    )
+
+    rerun_3d_start = TimerAction(
+        period=rerun_delay_s,
+        actions=[rerun_3d_bridge_proc],
+    )
+
     # ── Defaults ─────────────────────────────────────────────────
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
@@ -121,7 +137,6 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
             DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
             DeclareLaunchArgument("follower_controller_config_file", default_value=default_follower_ctrl_cfg),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             *declare_camera_arguments(),
             # Recorder
             DeclareLaunchArgument("root_dir", default_value=default_root_dir),
@@ -129,6 +144,11 @@ def generate_launch_description():
             DeclareLaunchArgument("task", default_value=""),
             # Rerun
             DeclareLaunchArgument("use_rerun", default_value="false"),
+            DeclareLaunchArgument(
+                "use_rerun_3d",
+                default_value="false",
+                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
+            ),
             DeclareLaunchArgument(
                 "rerun_env_dir",
                 default_value=EnvironmentVariable("SO101_RERUN_ENV_DIR", default_value=""),
@@ -138,5 +158,6 @@ def generate_launch_description():
             follower_vision_launch,
             recorder_launch,
             rerun_start,
+            rerun_3d_start,
         ]
     )

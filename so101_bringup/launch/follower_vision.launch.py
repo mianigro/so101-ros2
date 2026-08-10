@@ -15,7 +15,6 @@ def generate_launch_description():
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
-    arm_controller = LaunchConfiguration("arm_controller")
 
     use_rviz = LaunchConfiguration("use_rviz")
 
@@ -32,7 +31,6 @@ def generate_launch_description():
             "usb_port": follower_usb,
             "frame_prefix": follower_frame_prefix,
             "controller_config_file": follower_ctrl_cfg,
-            "arm_controller": arm_controller,
             "use_rviz": use_rviz,
         }.items(),
     )
@@ -56,7 +54,6 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
             DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
             DeclareLaunchArgument("follower_controller_config_file", default_value=default_follower_ctrl_cfg),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             *declare_camera_arguments(),
             DeclareLaunchArgument("use_rviz", default_value="false"),
             follower_launch,

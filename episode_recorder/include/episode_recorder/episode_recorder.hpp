@@ -5,7 +5,6 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -69,10 +68,8 @@ private:
   std::string check_topics_alive(double max_age_s) const;
   
   // Recording State
-  std::mutex recording_mutex_;
   std::atomic<bool> is_recording_{false};
   std::unique_ptr<rosbag2_cpp::Writer> writer_;
-  rclcpp::Time episode_start_time_{0, 0, RCL_SYSTEM_TIME};
   std::filesystem::path current_episode_dir_;
   rclcpp::Clock bag_clock_{RCL_SYSTEM_TIME};
 

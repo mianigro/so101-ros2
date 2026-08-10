@@ -27,19 +27,19 @@ def generate_launch_description():
 
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
 
-    arm_controller = LaunchConfiguration(
-        "arm_controller"
-    )  # trajectory_controller|forward_controller
     # Inference toggles + policy params
     use_inference = LaunchConfiguration("use_inference")
     inference_delay_s = LaunchConfiguration("inference_delay_s")
 
     repo_id = LaunchConfiguration("repo_id")
+    policy_type = LaunchConfiguration("policy_type")
+    task = LaunchConfiguration("task")
     fps = LaunchConfiguration("fps")
     camera_profile = LaunchConfiguration("camera_profile")
     # device = LaunchConfiguration("device")
 
     use_rerun = LaunchConfiguration("use_rerun")
+    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -57,7 +57,6 @@ def generate_launch_description():
             "frame_prefix": follower_frame_prefix,
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": "false",
-            "arm_controller": arm_controller,
         }.items(),
     )
 
@@ -77,6 +76,10 @@ def generate_launch_description():
             "--ros-args",
             "-p",
             ["repo_id:=", repo_id],
+            "-p",
+            ["policy_type:=", policy_type],
+            "-p",
+            ["task:=", task],
             "-p",
             ["fps:=", fps],
             "-p",
@@ -117,6 +120,28 @@ def generate_launch_description():
         actions=[rerun_bridge_proc],
     )
 
+    # --- Launch Rerun 3D (animated URDF + TF + cameras + plots) ---
+
+    rerun_3d_bridge_proc = ExecuteProcess(
+        cmd=[
+            "pixi",
+            "run",
+            "bridge-3d",
+            "--",
+            "--camera-profile",
+            camera_profile,
+        ],
+        cwd=rerun_env_dir,
+        additional_env={"PYTHONUNBUFFERED": "1"},
+        condition=IfCondition(use_rerun_3d),
+        output="screen",
+    )
+
+    rerun_3d_start = TimerAction(
+        period=rerun_delay_s,
+        actions=[rerun_3d_bridge_proc],
+    )
+
     # --- Defaults for files ---
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
@@ -138,16 +163,29 @@ def generate_launch_description():
                 "follower_controller_config_file",
                 default_value=default_follower_ctrl_cfg,
             ),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
             *declare_camera_arguments(),
             DeclareLaunchArgument("use_inference", default_value="false"),
             DeclareLaunchArgument("inference_delay_s", default_value="2.0"),
             DeclareLaunchArgument(
                 "repo_id", description="Required Hugging Face policy repo ID or local path"
             ),
+            DeclareLaunchArgument(
+                "policy_type",
+                default_value="act",
+                description="Synchronous policy architecture: act or smolvla",
+            ),
+            DeclareLaunchArgument(
+                "task",
+                description="Required runtime task instruction",
+            ),
             DeclareLaunchArgument("fps", default_value="30.0"),
             # DeclareLaunchArgument("device", default_value="cuda"),
             DeclareLaunchArgument("use_rerun", default_value="false"),
+            DeclareLaunchArgument(
+                "use_rerun_3d",
+                default_value="false",
+                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
+            ),
             DeclareLaunchArgument(
                 "rerun_env_dir",
                 # Best: set env var once, no need to pass each run:
@@ -160,6 +198,7 @@ def generate_launch_description():
             follower_launch,
             cameras_launch,
             rerun_start,
+            rerun_3d_start,
             inference_start,
         ]
     )

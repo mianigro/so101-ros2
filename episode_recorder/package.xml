@@ -12,6 +12,7 @@
 
   <!-- ROS 2 core -->
   <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>lifecycle_msgs</depend>
   <depend>std_srvs</depend>

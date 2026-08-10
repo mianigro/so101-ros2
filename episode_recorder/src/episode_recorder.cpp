@@ -318,10 +318,6 @@ void EpisodeRecorder::handle_discard(
 // --------------------------------------------------------
 
 bool EpisodeRecorder::start_episode() {
-  // NOTE: recording_mutex_ not needed — SingleThreadedExecutor serializes
-  // all service/timer/subscription callbacks on the same thread.
-  // std::lock_guard<std::mutex> lock(recording_mutex_);
-
   // Re-resolve topic types in case publishers appeared since configure
   resolve_topic_types();
 
@@ -408,7 +404,6 @@ bool EpisodeRecorder::start_episode() {
   }
 
   current_episode_dir_ = episode_dir;
-  episode_start_time_ = this->now();
   is_recording_.store(true);
 
   RCLCPP_INFO(get_logger(), "▶ Recording episode %06u → %s", next_episode_index_,
@@ -425,10 +420,6 @@ bool EpisodeRecorder::start_episode() {
 }
 
 bool EpisodeRecorder::stop_episode() {
-  // NOTE: recording_mutex_ not needed — SingleThreadedExecutor serializes
-  // all service/timer/subscription callbacks on the same thread.
-  // std::lock_guard<std::mutex> lock(recording_mutex_);
-
   if (!is_recording_.load()) {
     return false;
   }
@@ -465,10 +456,6 @@ bool EpisodeRecorder::stop_episode() {
 }
 
 bool EpisodeRecorder::discard_episode() {
-  // NOTE: recording_mutex_ not needed — SingleThreadedExecutor serializes
-  // all service/timer/subscription callbacks on the same thread.
-  // std::lock_guard<std::mutex> lock(recording_mutex_);
-
   if (!is_recording_.load()) {
     return false;
   }

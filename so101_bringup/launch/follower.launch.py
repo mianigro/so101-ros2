@@ -15,7 +15,6 @@ def generate_launch_description():
     hardware_type = LaunchConfiguration("hardware_type")
     usb_port = LaunchConfiguration("usb_port")
     controller_config_file = LaunchConfiguration("controller_config_file")
-    arm_controller = LaunchConfiguration("arm_controller")
 
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
@@ -65,11 +64,11 @@ def generate_launch_description():
         output="screen",
     )
 
-    arm_controller_spawner = Node(
+    forward_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
         namespace=namespace,
-        arguments=[arm_controller],
+        arguments=["forward_controller"],
         output="screen",
     )
 
@@ -102,11 +101,6 @@ def generate_launch_description():
                     ]
                 ),
             ),
-            DeclareLaunchArgument(
-                "arm_controller",
-                default_value="forward_controller",
-                description="Arm controller to use: trajectory_controller or forward_controller",
-            ),
             DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument(
                 "rviz_config",
@@ -117,7 +111,7 @@ def generate_launch_description():
             rsp,
             ros2_control_node,
             joint_state_spawner,
-            arm_controller_spawner,
+            forward_controller_spawner,
             rviz_node,
         ]
     )
