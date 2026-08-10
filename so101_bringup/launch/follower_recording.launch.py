@@ -19,6 +19,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.substitutions import FindPackageShare
+from so101_bringup.camera_launch import declare_camera_arguments
 
 
 def generate_launch_description():
@@ -28,22 +29,13 @@ def generate_launch_description():
     follower_ns = LaunchConfiguration("follower_namespace")
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
-    follower_joint_cfg = LaunchConfiguration("follower_joint_config_file")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
-    arm_controller = LaunchConfiguration("arm_controller")
-    cameras_config_file = LaunchConfiguration("cameras_config_file")
-
-    cam_static_xyz = LaunchConfiguration("cam_static_xyz")
-    cam_static_rpy = LaunchConfiguration("cam_static_rpy")
-    cam_wrist_xyz = LaunchConfiguration("cam_wrist_xyz")
-    cam_wrist_rpy = LaunchConfiguration("cam_wrist_rpy")
-
-    recording_config_file = LaunchConfiguration("recording_config_file")
     root_dir = LaunchConfiguration("root_dir")
     experiment_name = LaunchConfiguration("experiment_name")
     task = LaunchConfiguration("task")
 
     use_rerun = LaunchConfiguration("use_rerun")
+    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -59,14 +51,12 @@ def generate_launch_description():
             "follower_namespace": follower_ns,
             "follower_frame_prefix": follower_frame_prefix,
             "follower_usb_port": follower_usb,
-            "follower_joint_config_file": follower_joint_cfg,
             "follower_controller_config_file": follower_ctrl_cfg,
-            "arm_controller": arm_controller,
-            "cameras_config_file": cameras_config_file,
-            "cam_static_xyz": cam_static_xyz,
-            "cam_static_rpy": cam_static_rpy,
-            "cam_wrist_xyz": cam_wrist_xyz,
-            "cam_wrist_rpy": cam_wrist_rpy,
+            "use_cameras": LaunchConfiguration("use_cameras"),
+            "camera_profile": LaunchConfiguration("camera_profile"),
+            "camera_rig_config_file": LaunchConfiguration("camera_rig_config_file"),
+            "camera_startup_timeout_s": LaunchConfiguration("camera_startup_timeout_s"),
+            "camera_stale_timeout_s": LaunchConfiguration("camera_stale_timeout_s"),
             "use_rviz": "false",
         }.items(),
     )
@@ -79,7 +69,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "params_file": recording_config_file,
+            "camera_profile": LaunchConfiguration("camera_profile"),
             "root_dir": root_dir,
             "experiment_name": experiment_name,
             "task": task,
@@ -88,7 +78,10 @@ def generate_launch_description():
 
     # ── Optional rerun bridge ────────────────────────────────────
     rerun_bridge_proc = ExecuteProcess(
-        cmd=["pixi", "run", "bridge", "--"],
+        cmd=[
+            "pixi", "run", "bridge", "--", "--camera-profile",
+            LaunchConfiguration("camera_profile"),
+        ],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
         condition=IfCondition(use_rerun),
@@ -100,25 +93,30 @@ def generate_launch_description():
         actions=[rerun_bridge_proc],
     )
 
+    # ── Optional 3D rerun bridge (animated URDF + TF + cameras + plots) ──
+    rerun_3d_bridge_proc = ExecuteProcess(
+        cmd=[
+            "pixi", "run", "bridge-3d", "--", "--camera-profile",
+            LaunchConfiguration("camera_profile"),
+        ],
+        cwd=rerun_env_dir,
+        additional_env={"PYTHONUNBUFFERED": "1"},
+        condition=IfCondition(use_rerun_3d),
+        output="screen",
+    )
+
+    rerun_3d_start = TimerAction(
+        period=rerun_delay_s,
+        actions=[rerun_3d_bridge_proc],
+    )
+
     # ── Defaults ─────────────────────────────────────────────────
-    default_follower_joint_cfg = ""
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
             FindPackageShare("so101_bringup"),
             "config",
             "ros2_control",
             "follower_controllers.yaml",
-        ]
-    )
-    default_cameras_cfg = PathJoinSubstitution(
-        [FindPackageShare("so101_bringup"), "config", "cameras", "so101_cameras.yaml"]
-    )
-    default_recording_cfg = PathJoinSubstitution(
-        [
-            FindPackageShare("so101_bringup"),
-            "config",
-            "recording",
-            "episode_recorder_so101.yaml",
         ]
     )
     default_root_dir = PathJoinSubstitution(
@@ -138,38 +136,19 @@ def generate_launch_description():
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
             DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
             DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
-            DeclareLaunchArgument("follower_joint_config_file", default_value=default_follower_joint_cfg),
             DeclareLaunchArgument("follower_controller_config_file", default_value=default_follower_ctrl_cfg),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
-            DeclareLaunchArgument("cameras_config_file", default_value=default_cameras_cfg),
-            # Camera TF overrides
-            DeclareLaunchArgument(
-                "cam_static_xyz",
-                default_value="0.2 0.0 0.60",
-                description="Static camera position relative to base_link (x y z meters)",
-            ),
-            DeclareLaunchArgument(
-                "cam_static_rpy",
-                default_value="0.0 1.5708 0.0",
-                description="Static camera orientation relative to base_link (roll pitch yaw radians)",
-            ),
-            DeclareLaunchArgument(
-                "cam_wrist_xyz",
-                default_value="0.0 0.0 -0.02",
-                description="Wrist camera position relative to end-effector link (x y z meters)",
-            ),
-            DeclareLaunchArgument(
-                "cam_wrist_rpy",
-                default_value="-1.5708 0.0 -1.5708",
-                description="Wrist camera orientation relative to end-effector link (roll pitch yaw radians)",
-            ),
+            *declare_camera_arguments(),
             # Recorder
-            DeclareLaunchArgument("recording_config_file", default_value=default_recording_cfg),
             DeclareLaunchArgument("root_dir", default_value=default_root_dir),
             DeclareLaunchArgument("experiment_name", default_value="pick_and_place"),
             DeclareLaunchArgument("task", default_value=""),
             # Rerun
             DeclareLaunchArgument("use_rerun", default_value="false"),
+            DeclareLaunchArgument(
+                "use_rerun_3d",
+                default_value="false",
+                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
+            ),
             DeclareLaunchArgument(
                 "rerun_env_dir",
                 default_value=EnvironmentVariable("SO101_RERUN_ENV_DIR", default_value=""),
@@ -179,5 +158,6 @@ def generate_launch_description():
             follower_vision_launch,
             recorder_launch,
             rerun_start,
+            rerun_3d_start,
         ]
     )

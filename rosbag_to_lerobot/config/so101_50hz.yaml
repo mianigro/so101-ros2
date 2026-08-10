@@ -1,12 +1,9 @@
 robot_type: "so101"
 fps: 50
 
-# Emit one frame per command (50 Hz)
+# Camera schemas come exclusively from --camera-profile. Commands drive frames.
 reference_topic: "/follower/forward_controller/commands"
-
-# Writtent to every frame
 task: "Pick and Place"
-# Default freshness window (seconds) if a feature doesn't override it
 default_max_age_s: 0.1
 
 joint_names: &j
@@ -18,21 +15,6 @@ joint_names: &j
   - gripper
 
 features:
-  # --- Reference wrist camera ---
-  - key: "observation.images.wrist"
-    topic: "/follower/image_raw/compressed"
-    msg_type: "sensor_msgs/msg/CompressedImage"
-    stamp_src: "bag"
-    shape: [480, 640, 3]
-
-  # --- Static camera ---
-  - key: "observation.images.top"
-    topic: "/static_camera/image_raw/compressed"
-    msg_type: "sensor_msgs/msg/CompressedImage"
-    stamp_src: "bag"
-    shape: [480, 640, 3]
-
-  # --- Joint state observation ---
   - key: "observation.state"
     topic: "/follower/joint_states"
     msg_type: "sensor_msgs/msg/JointState"
@@ -40,7 +22,6 @@ features:
     max_age_s: 0.05
     names: *j
 
-  # --- Action (Float64MultiArray.data) ---
   - key: "action"
     topic: "/follower/forward_controller/commands"
     msg_type: "std_msgs/msg/Float64MultiArray"

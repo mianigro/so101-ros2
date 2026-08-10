@@ -14,8 +14,8 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
-from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
 
 
 def generate_launch_description():
@@ -25,23 +25,21 @@ def generate_launch_description():
     follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
     follower_usb = LaunchConfiguration("follower_usb_port")
 
-    follower_joint_cfg = LaunchConfiguration("follower_joint_config_file")
     follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
-
-    arm_controller = LaunchConfiguration(
-        "arm_controller"
-    )  # trajectory_controller|forward_controller
-    cameras_config_file = LaunchConfiguration("cameras_config_file")
 
     # Inference toggles + policy params
     use_inference = LaunchConfiguration("use_inference")
     inference_delay_s = LaunchConfiguration("inference_delay_s")
 
     repo_id = LaunchConfiguration("repo_id")
+    policy_type = LaunchConfiguration("policy_type")
+    task = LaunchConfiguration("task")
     fps = LaunchConfiguration("fps")
+    camera_profile = LaunchConfiguration("camera_profile")
     # device = LaunchConfiguration("device")
 
     use_rerun = LaunchConfiguration("use_rerun")
+    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -57,22 +55,13 @@ def generate_launch_description():
             "hardware_type": hardware_type,
             "usb_port": follower_usb,
             "frame_prefix": follower_frame_prefix,
-            "joint_config_file": follower_joint_cfg,
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": "false",
-            "arm_controller": arm_controller,
         }.items(),
     )
 
     # --- Include cameras launch ---
-    cameras_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"]
-            )
-        ),
-        launch_arguments={"cameras_config": cameras_config_file}.items(),
-    )
+    cameras_launch = include_cameras(follower_ns, follower_frame_prefix)
 
     # --- Inference node ---
     # Inference process: runs inside pixi env
@@ -88,7 +77,13 @@ def generate_launch_description():
             "-p",
             ["repo_id:=", repo_id],
             "-p",
+            ["policy_type:=", policy_type],
+            "-p",
+            ["task:=", task],
+            "-p",
             ["fps:=", fps],
+            "-p",
+            ["camera_profile:=", camera_profile],
             # "-p",
             # ["device:=", device],
         ],
@@ -111,6 +106,8 @@ def generate_launch_description():
             "run",
             "bridge",
             "--",
+            "--camera-profile",
+            camera_profile,
         ],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
@@ -123,9 +120,29 @@ def generate_launch_description():
         actions=[rerun_bridge_proc],
     )
 
+    # --- Launch Rerun 3D (animated URDF + TF + cameras + plots) ---
+
+    rerun_3d_bridge_proc = ExecuteProcess(
+        cmd=[
+            "pixi",
+            "run",
+            "bridge-3d",
+            "--",
+            "--camera-profile",
+            camera_profile,
+        ],
+        cwd=rerun_env_dir,
+        additional_env={"PYTHONUNBUFFERED": "1"},
+        condition=IfCondition(use_rerun_3d),
+        output="screen",
+    )
+
+    rerun_3d_start = TimerAction(
+        period=rerun_delay_s,
+        actions=[rerun_3d_bridge_proc],
+    )
+
     # --- Defaults for files ---
-    default_follower_joint_cfg = ""  # Optional; example default:
-    # PathJoinSubstitution([FindPackageShare("so101_bringup"), "config", "hardware", "follower_joints.yaml"])
     default_follower_ctrl_cfg = PathJoinSubstitution(
         [
             FindPackageShare("so101_bringup"),
@@ -134,10 +151,6 @@ def generate_launch_description():
             "follower_controllers.yaml",
         ]
     )
-    default_cameras_cfg = PathJoinSubstitution(
-        [FindPackageShare("so101_bringup"), "config", "cameras", "so101_cameras.yaml"]
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
@@ -147,24 +160,32 @@ def generate_launch_description():
                 "follower_usb_port", default_value="/dev/so101_follower"
             ),
             DeclareLaunchArgument(
-                "follower_joint_config_file", default_value=default_follower_joint_cfg
-            ),
-            DeclareLaunchArgument(
                 "follower_controller_config_file",
                 default_value=default_follower_ctrl_cfg,
             ),
-            DeclareLaunchArgument("arm_controller", default_value="forward_controller"),
-            DeclareLaunchArgument(
-                "cameras_config_file", default_value=default_cameras_cfg
-            ),
+            *declare_camera_arguments(),
             DeclareLaunchArgument("use_inference", default_value="false"),
             DeclareLaunchArgument("inference_delay_s", default_value="2.0"),
             DeclareLaunchArgument(
-                "repo_id", default_value="legalaspro/act-so101-pick-place-cube-30hz-v1"
+                "repo_id", description="Required Hugging Face policy repo ID or local path"
+            ),
+            DeclareLaunchArgument(
+                "policy_type",
+                default_value="act",
+                description="Synchronous policy architecture: act or smolvla",
+            ),
+            DeclareLaunchArgument(
+                "task",
+                description="Required runtime task instruction",
             ),
             DeclareLaunchArgument("fps", default_value="30.0"),
             # DeclareLaunchArgument("device", default_value="cuda"),
             DeclareLaunchArgument("use_rerun", default_value="false"),
+            DeclareLaunchArgument(
+                "use_rerun_3d",
+                default_value="false",
+                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
+            ),
             DeclareLaunchArgument(
                 "rerun_env_dir",
                 # Best: set env var once, no need to pass each run:
@@ -177,6 +198,7 @@ def generate_launch_description():
             follower_launch,
             cameras_launch,
             rerun_start,
+            rerun_3d_start,
             inference_start,
         ]
     )

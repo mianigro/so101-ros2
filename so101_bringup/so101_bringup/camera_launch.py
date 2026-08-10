@@ -1,0 +1,149 @@
+"""Shared launch-description pieces for the strict camera subsystem."""
+
+import json
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    TextSubstitution,
+)
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
+
+from so101_bringup.camera_config import CameraConfigError, load_camera_setup
+
+
+def _shutdown_when_process_exits(action, label: str) -> RegisterEventHandler:
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=action,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(reason=f"required camera process exited: {label}")
+                )
+            ],
+        )
+    )
+
+
+def spawn_cameras(context):
+    """Create validated driver and supervisor actions for one profile."""
+    profile_name = LaunchConfiguration("camera_profile").perform(context).strip()
+    rig_path = LaunchConfiguration("camera_rig_config_file").perform(context).strip()
+    follower_namespace = LaunchConfiguration("follower_namespace").perform(context)
+    frame_prefix = LaunchConfiguration("follower_frame_prefix").perform(context)
+    startup_timeout = float(
+        LaunchConfiguration("camera_startup_timeout_s").perform(context)
+    )
+    stale_timeout = float(
+        LaunchConfiguration("camera_stale_timeout_s").perform(context)
+    )
+    if startup_timeout <= 0 or stale_timeout <= 0:
+        raise CameraConfigError("camera startup/stale timeouts must be positive")
+
+    profiles_dir = os.path.join(
+        get_package_share_directory("so101_bringup"),
+        "config",
+        "cameras",
+        "profiles",
+    )
+    cameras = load_camera_setup(
+        profile_name,
+        profiles_dir,
+        rig_path,
+        follower_namespace,
+        frame_prefix,
+        validate_devices=True,
+    )
+
+    actions = []
+    for camera in cameras:
+        driver = Node(
+            package=camera.driver_package,
+            executable=camera.driver_executable,
+            name=camera.node_name,
+            namespace=camera.namespace,
+            parameters=[camera.parameters],
+            remappings=list(camera.remappings),
+            output="screen",
+        )
+        actions.extend(
+            [driver, _shutdown_when_process_exits(driver, camera.camera_id)]
+        )
+
+    supervisor = Node(
+        package="so101_bringup",
+        executable="camera_supervisor",
+        name="camera_supervisor",
+        parameters=[
+            {
+                "camera_names": ParameterValue(
+                    TextSubstitution(
+                        text=json.dumps([camera.camera_id for camera in cameras])
+                    ),
+                    value_type=list[str],
+                ),
+                "camera_topics": ParameterValue(
+                    TextSubstitution(
+                        text=json.dumps([camera.image_topic for camera in cameras])
+                    ),
+                    value_type=list[str],
+                ),
+                "startup_timeout_s": startup_timeout,
+                "stale_timeout_s": stale_timeout,
+            }
+        ],
+        output="screen",
+    )
+    actions.extend(
+        [supervisor, _shutdown_when_process_exits(supervisor, "camera supervisor")]
+    )
+    return actions
+
+
+def declare_camera_arguments(*, use_cameras_default: str = "true"):
+    return [
+        DeclareLaunchArgument("use_cameras", default_value=use_cameras_default),
+        DeclareLaunchArgument(
+            "camera_profile",
+            default_value="",
+            description="Required when use_cameras=true: single_overhead or dual_overhead",
+        ),
+        DeclareLaunchArgument(
+            "camera_rig_config_file",
+            default_value="",
+            description="Required absolute path to the external physical camera rig YAML",
+        ),
+        DeclareLaunchArgument("camera_startup_timeout_s", default_value="10.0"),
+        DeclareLaunchArgument("camera_stale_timeout_s", default_value="1.0"),
+    ]
+
+
+def include_cameras(follower_namespace, follower_frame_prefix):
+    return IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([
+            FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"
+        ])),
+        condition=IfCondition(LaunchConfiguration("use_cameras")),
+        launch_arguments={
+            "camera_profile": LaunchConfiguration("camera_profile"),
+            "camera_rig_config_file": LaunchConfiguration("camera_rig_config_file"),
+            "follower_namespace": follower_namespace,
+            "follower_frame_prefix": follower_frame_prefix,
+            "camera_startup_timeout_s": LaunchConfiguration("camera_startup_timeout_s"),
+            "camera_stale_timeout_s": LaunchConfiguration("camera_stale_timeout_s"),
+        }.items(),
+    )

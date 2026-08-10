@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from queue import Queue
 from typing import Optional
 
@@ -51,14 +51,12 @@ class ClientCfg:
     policy_type: str
     repo_id: str
     policy_device: str
-    client_device: str
     actions_per_chunk: int
     chunk_size_threshold: float
     fps: float
     max_age_s: float
     task: str
     aggregate_fn_name: str = "weighted_average"
-    rename_map: dict[str, str] = field(default_factory=dict)
 
 
 class AsyncInferenceClient:
@@ -86,6 +84,9 @@ class AsyncInferenceClient:
         self.cfg = cfg
         self.lerobot_features = lerobot_features
         self._log = logger or log
+
+        if not cfg.repo_id.strip():
+            raise ValueError("repo_id is required and must not be empty")
 
         # --- threading primitives ---
         self.shutdown_event = threading.Event()
@@ -134,12 +135,11 @@ class AsyncInferenceClient:
             raise RuntimeError("Transport handshake() failed")
 
         policy_config = RemotePolicyConfig(
-            self.cfg.policy_type,
-            self.cfg.repo_id,
-            self.lerobot_features,
-            self.cfg.actions_per_chunk,
-            self.cfg.policy_device,
-            rename_map=self.cfg.rename_map,
+            policy_type=self.cfg.policy_type,
+            pretrained_name_or_path=self.cfg.repo_id,
+            lerobot_features=self.lerobot_features,
+            actions_per_chunk=self.cfg.actions_per_chunk,
+            device=self.cfg.policy_device,
         )
         if not self._transport.send_policy_config(policy_config):
             raise RuntimeError("Transport send_policy_config() failed")

@@ -8,13 +8,13 @@
   </a>
 </p>
 
-ROS 2 inference package for the SO-101 robot arm. Runs [LeRobot](https://github.com/huggingface/lerobot) policies (ACT, SmolVLA) directly on the robot, consuming camera images and joint states and publishing joint commands at high frequency.
+ROS 2 inference package for the SO-101 robot arm. Runs [LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1) policies on the robot or through a remote policy server, consuming camera images and joint states and publishing joint commands at high frequency.
 
 ## Features
 
 - **Synchronous (local) inference** — loads the policy on the robot's own GPU/CPU and runs forward passes in a tight control loop. Supports ACT and SmolVLA policies.
-- **Asynchronous (remote) inference** — offloads the policy to a remote server via ZeroMQ or gRPC, while the robot keeps executing actions from a local queue. Supports any LeRobot policy (ACT, SmolVLA, π₀, and others) since inference runs server-side. Ideal for large VLA models that don't fit on the robot's device.
-- **Configurable camera names** — different policies expect different camera observation keys (e.g. ACT may use `top`/`wrist` while VLAs like SmolVLA typically use `camera1`/`camera2`). The `camera_top_name` and `camera_wrist_name` parameters let you match whatever names the policy was trained with, without changing topics or re-training.
+- **Asynchronous (remote) inference** — offloads the policy to a remote server via ZeroMQ or gRPC, while the robot keeps executing actions from a local queue. The default environment includes ACT, SmolVLA, and Pi0.5 support. Other LeRobot policy families require their corresponding optional dependency extras on the server.
+- **Explicit camera profiles** — every run selects `single_overhead` or `dual_overhead`; both use fixed canonical observation keys and ROS topics.
 - **Action chunking & aggregation** — the async node manages an action queue with configurable chunk sizes, refill thresholds, and aggregation strategies (`weighted_average`, `latest_only`, `average`, `conservative`).
 - **Compressed image support** — the async node can subscribe to `CompressedImage` topics and forward raw JPEG bytes to the server (decoded server-side) for lower bandwidth usage.
 - **Stale-data gating** — observations older than `max_age_s` are automatically discarded to prevent the robot from acting on outdated sensor data.
@@ -40,24 +40,29 @@ cd ~/ros2_ws && colcon build --packages-select so101_inference
 source install/setup.bash
 ```
 
+The root Pixi environment is authoritative for the robot-side ROS client and local inference on both `linux-64` and `linux-aarch64`; it pins LeRobot 0.6.1, includes ffmpeg, and installs `[async]`, `[smolvla]`, and `[pi]`. The `[pi]` extra supplies the dependencies shared by Pi0 and Pi0.5, while ACT uses LeRobot's base dependencies. Installing another policy family requires its upstream LeRobot extra.
+
+Do not use a standalone `uv` environment for the ROS inference package. `uv sync` or `uv pip install .` is supported only for the remote `policy_server`, and only when that server host/container already supplies the required system and native libraries; see the [policy server installation guide](../policy_server/README.md).
+
 ### Synchronous Inference (on-device)
 
 Run a locally-loaded ACT policy:
 
 ```bash
 pixi run -e lerobot infer -- --ros-args \
-    -p repo_id:="legalaspro/act_so101_pnp_crosslane_showcase_60_50hz_v0"
+    -p repo_id:="your-org/your-canonical-camera-policy" \
+    -p camera_profile:=dual_overhead
 ```
 
-Run a SmolVLA policy locally (VLAs typically use different camera names like `camera1`/`camera2`):
+Run a SmolVLA policy locally:
 
 ```bash
 pixi run -e lerobot infer -- --ros-args \
-    -p repo_id:="legalaspro/smolvla_so101_pnp_crosslane_showcase_60_50hz_v0" \
+    -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
+    -p camera_profile:=dual_overhead \
     -p policy_type:=smolvla \
-    -p fps:=50.0 \
-    -p camera_top_name:=camera1 \
-    -p camera_wrist_name:=camera2
+    -p task:="Pick up the cube and place it in the container." \
+    -p fps:=50.0
 ```
 
 ### Asynchronous Inference (remote server)
@@ -66,21 +71,26 @@ Run a SmolVLA policy offloaded to a remote GPU server:
 
 ```bash
 pixi run -e lerobot async_infer -- --ros-args \
-    -p repo_id:="legalaspro/smolvla_so101_pnp_crosslane_showcase_60_50hz_v0" \
+    -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
+    -p camera_profile:=dual_overhead \
     -p policy_type:=smolvla \
+    -p task:="Pick up the cube and place it in the container." \
     -p server_address:=192.168.1.100:8090 \
     -p fps:=50.0 \
     -p actions_per_chunk:=50 \
-    -p chunk_size_threshold:=0.6 \
-    -p camera_top_name:=camera1 \
-    -p camera_wrist_name:=camera2
+    -p chunk_size_threshold:=0.6
 ```
+
+For VLA policies, pass a task that matches the requested and trained behaviour.
+The standalone nodes retain a demo fallback, while the combined bringup launch
+requires an explicit task.
 
 ACT policy with ZeroMQ transport (default):
 
 ```bash
 pixi run -e lerobot async_infer -- --ros-args \
-    -p repo_id:="legalaspro/act_so101_pnp_crosslane_showcase_60_50hz_v0" \
+    -p repo_id:="your-org/your-canonical-camera-policy" \
+    -p camera_profile:=single_overhead \
     -p server_address:=10.0.0.42:8090 \
     -p actions_per_chunk:=100 \
     -p chunk_size_threshold:=0.5
@@ -92,8 +102,27 @@ Using gRPC transport instead of ZeroMQ:
 pixi run -e lerobot async_infer -- --ros-args \
     -p transport_type:=grpc \
     -p server_address:=10.0.0.42:50051 \
-    -p repo_id:="legalaspro/act_so101_pnp_crosslane_showcase_60_50hz_v0"
+    -p repo_id:="your-org/your-canonical-camera-policy" \
+    -p camera_profile:=dual_overhead
 ```
+
+Both `repo_id` and `camera_profile` are required; neither has a compatibility
+default. Profiles select a fixed schema:
+
+| Profile | Required LeRobot image keys | ROS image topics |
+|---------|------------------------------|------------------|
+| `single_overhead` | `observation.images.wrist`, `observation.images.overhead_1` | `/follower/image_raw`, `/static_camera_1/image_raw` |
+| `dual_overhead` | `observation.images.wrist`, `observation.images.overhead_1`, `observation.images.overhead_2` | Above plus `/static_camera_2/image_raw` |
+
+The loaded policy must declare exactly the image keys selected by the profile
+and a six-value `observation.state`. Any noncanonical or mismatched image schema
+is rejected before commands can be published; migrate the checkpoint/dataset
+schema instead of renaming cameras at runtime. Checkpoint-owned preprocessors
+and normalization metadata are still loaded normally.
+
+Every selected image stream and the joint-state stream must be present and
+newer than `max_age_s`. With async `use_compressed:=true`, the node appends
+`/compressed` to every profile topic and forwards JPEG bytes to the server.
 
 ## Parameters
 
@@ -101,17 +130,14 @@ pixi run -e lerobot async_infer -- --ros-args \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `repo_id` | string | `legalaspro/act_so101_pnp_microsanity_20_50hz_v0` | HuggingFace model repo ID |
+| `repo_id` | string | required | Hugging Face model repo ID or local policy path |
+| `camera_profile` | string | required | `single_overhead` or `dual_overhead`; must match the policy input schema |
 | `policy_type` | string | `act` | Policy architecture: `act` or `smolvla` |
 | `task` | string | `Put the green cube in the cup.` | Task description (used by VLA models) |
 | `fps` | float | `50.0` | Control loop frequency |
 | `max_age_s` | float | `0.2` | Max sensor data age before it's considered stale |
-| `camera_top_name` | string | `top` | Camera name for the top/overhead camera as expected by the policy |
-| `camera_wrist_name` | string | `wrist` | Camera name for the wrist camera as expected by the policy |
 | `fwd_topic` | string | `/follower/forward_controller/commands` | Topic to publish joint commands |
 | `joints_topic` | string | `/follower/joint_states` | Topic to subscribe for joint states |
-| `top_camera_topic` | string | `/static_camera/image_raw` | Topic for overhead camera images |
-| `wrist_camera_topic` | string | `/follower/image_raw` | Topic for wrist camera images |
 
 ### Asynchronous Node (`async_infer`)
 
@@ -122,11 +148,9 @@ All parameters from the synchronous node plus:
 | `transport_type` | string | `zmq` | Transport backend: `zmq` or `grpc` |
 | `server_address` | string | `127.0.0.1:8090` | Policy server `host:port` |
 | `policy_device` | string | `cuda` | Device for policy inference on the server |
-| `client_device` | string | `cpu` | Device for pre/post-processing on the robot |
 | `actions_per_chunk` | int | `100` | Number of actions requested per inference call |
 | `chunk_size_threshold` | float | `0.5` | Queue fill ratio below which a new observation is sent (0.0–1.0) |
 | `aggregate_fn_name` | string | `weighted_average` | Action aggregation strategy: `weighted_average`, `latest_only`, `average`, `conservative` |
-| `rename_map_json` | string | `""` | Optional JSON object passed to `RemotePolicyConfig.rename_map`; empty string or `{}` leaves the policy repo's default rename map untouched |
 | `use_compressed` | bool | `false` | Subscribe to `CompressedImage` topics and send JPEG bytes to the server |
 
 ## Architecture
@@ -141,4 +165,3 @@ All parameters from the synchronous node plus:
 ## License
 
 Apache-2.0 — see [LICENSE](../LICENSE).
-

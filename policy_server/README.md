@@ -8,21 +8,21 @@
   </a>
 </p>
 
-GPU-side inference server for SO-101. Loads [LeRobot](https://github.com/huggingface/lerobot) policies and serves action predictions over ZMQ or gRPC. This is the simplest way to host larger policies on a remote GPU machine (for example on Vast.ai) and connect them to the ROS 2 async inference client in [`so101_inference`](../so101_inference/README.md).
+GPU-side inference server for SO-101. Loads [LeRobot 0.6.1](https://github.com/huggingface/lerobot/releases/tag/v0.6.1) policies and serves action predictions over ZMQ or gRPC. The default installation supports ACT, SmolVLA, and Pi0.5; other policy families require their corresponding LeRobot dependency extra. This is the simplest way to host larger policies on a remote GPU machine (for example on Vast.ai) and connect them to the ROS 2 async inference client in [`so101_inference`](../so101_inference/README.md).
 
 ## Prerequisites
 
-Install LeRobot **before** installing the policy server (it's not on PyPI):
+The policy server declares `lerobot[async,smolvla,pi]==0.6.1`, so installing the server also installs the default Python policy extras. ACT uses LeRobot's base installation; `[async]` provides the gRPC runtime, `[smolvla]` provides SmolVLA dependencies, and `[pi]` covers Pi0/Pi0.5. Add another upstream policy extra explicitly before selecting that policy.
 
-```bash
-pip install lerobot "lerobot[async]" "lerobot[smolvla]"
-```
+> **Important:** The standalone `uv` path is for the policy server only. Use it only when the host or container already supplies the required native/system stack, including a compatible C/C++ runtime, ffmpeg/native codec libraries when needed, and compatible NVIDIA drivers/CUDA runtime for GPU inference. `uv` installs Python packages; it does not provision those host libraries. For the complete ROS client, conversion, training, and visualization environment, use the root Pixi workspace instead.
+
+The standalone server does not require ROS 2 unless you intentionally colocate ROS-side components on the same host.
 
 ## Install
 
-### Option 1 — Editable (for development)
+### Option 1 — `uv sync` (development)
 
-Clone the repo and install in editable mode. Edit code directly, changes take effect immediately.
+Clone the repository, enter the standalone project directory, and let `uv` create and synchronize its local environment:
 
 ```bash
 REPO_DIR="/workspace/repo"
@@ -35,10 +35,22 @@ else
     https://github.com/legalaspro/so101-ros-physical-ai.git "${REPO_DIR}"
 fi
 
-uv pip install -e "${REPO_DIR}/policy_server"
+cd "${REPO_DIR}/policy_server"
+uv sync --locked
+uv run --locked policy-server --help
 ```
 
-### Option 2 — Direct from GitHub
+### Option 2 — `uv pip install .`
+
+Use this when you manage the virtual environment yourself:
+
+```bash
+cd /path/to/so101-ros-physical-ai/policy_server
+uv venv
+uv pip install .
+```
+
+### Option 3 — Direct from GitHub
 
 One-liner, no local clone. Re-run to update.
 
@@ -71,15 +83,21 @@ Once the server is running and TCP port `8090` is reachable from the robot, star
 
 ```bash
 pixi run -e lerobot async_infer -- --ros-args \
-  -p repo_id:="legalaspro/smolvla_so101_pnp_crosslane_showcase_60_50hz_v0" \
+  -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
+  -p camera_profile:=dual_overhead \
   -p policy_type:=smolvla \
   -p server_address:=<vast-ai-public-ip>:8090 \
   -p fps:=50.0 \
   -p actions_per_chunk:=50 \
-  -p chunk_size_threshold:=0.6 \
-  -p camera_top_name:=camera1 \
-  -p camera_wrist_name:=camera2
+  -p chunk_size_threshold:=0.6
 ```
 
-For more async inference options and transports, see the [`so101_inference` README](../so101_inference/README.md).
+The client sends the canonical LeRobot feature schema selected by
+`camera_profile`. After loading the checkpoint, the server compares that schema
+with `policy.config.input_features` and rejects setup unless the image keys
+match exactly and `observation.state` has six values. This prevents legacy
+camera renames or a single/dual-profile mismatch from reaching action
+publication. Processor and normalization configuration stored in the checkpoint
+is still loaded through LeRobot 0.6.1's `make_pre_post_processors` API.
 
+For more async inference options and transports, see the [`so101_inference` README](../so101_inference/README.md).

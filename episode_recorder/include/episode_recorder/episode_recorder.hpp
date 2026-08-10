@@ -5,7 +5,6 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +23,7 @@ class EpisodeRecorder : public rclcpp_lifecycle::LifecycleNode
 {
 public:
   explicit EpisodeRecorder(const rclcpp::NodeOptions &options);
+  ~EpisodeRecorder() override;
 
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -40,6 +40,7 @@ public:
 
 private:
   // ROS2 Parameters
+  std::string camera_profile_;
   std::string root_dir_;
   std::string storage_id_;
   std::vector<std::string> topics_;
@@ -67,10 +68,8 @@ private:
   std::string check_topics_alive(double max_age_s) const;
   
   // Recording State
-  std::mutex recording_mutex_;
   std::atomic<bool> is_recording_{false};
   std::unique_ptr<rosbag2_cpp::Writer> writer_;
-  rclcpp::Time episode_start_time_{0, 0, RCL_SYSTEM_TIME};
   std::filesystem::path current_episode_dir_;
   rclcpp::Clock bag_clock_{RCL_SYSTEM_TIME};
 
@@ -110,7 +109,8 @@ private:
   bool patch_metadata_yaml_after_close(const std::filesystem::path &episode_dir,
                                       uint32_t episode_index,
                                       const std::string &task,
-                                      const std::string &experiment_name);
+                                      const std::string &experiment_name,
+                                      const std::string &camera_profile);
   #endif
 };
 

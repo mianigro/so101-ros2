@@ -8,7 +8,7 @@
   </a>
 </p>
 
-Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends follower commands either as a `JointTrajectory` or as forward position commands.
+Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends six-joint forward position commands to the follower.
 
 ## Quick start
 
@@ -16,16 +16,12 @@ Recommended full-stack launch:
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 launch so101_bringup teleop.launch.py
+ros2 launch so101_bringup teleop.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
 ```
 
-This uses `forward_controller` (ROS 2 `ForwardCommandController`) by default, and that is the recommended mode.
-
-Optional override if you want trajectory commands instead:
-
-```bash
-ros2 launch so101_bringup teleop.launch.py arm_controller:=trajectory_controller
-```
+This uses the `forward_controller` (`ForwardCommandController`), matching the command contract used by recording and inference.
 
 ## Package-only launch
 
@@ -35,24 +31,14 @@ Use this only if the leader and follower stacks are already running:
 ros2 launch so101_teleop teleop.launch.py
 ```
 
-Optional split arm/gripper variant:
-
-```bash
-ros2 launch so101_teleop teleop_split.launch.py
-```
-
 ## Main files
 
-- `launch/teleop.launch.py` — standard teleop node
-- `launch/teleop_split.launch.py` — split arm + gripper teleop node
+- `launch/teleop.launch.py` — forward-controller teleop node
 - `config/teleop.yaml` — publish rate, stale timeout, joint list
-- `config/teleop_split.yaml` — split arm/gripper parameters
-- `src/teleop.cpp` — standard follower command relay
-- `src/teleop_split.cpp` — arm teleop + gripper action client
+- `src/teleop.cpp` — six-joint follower command relay
 
 ## Useful launch args
 
 - `leader_namespace` — default: `leader`
 - `follower_namespace` — default: `follower`
-- `arm_controller` — default and recommended: `forward_controller` (ROS 2 `ForwardCommandController`); optional: `trajectory_controller`
 - `params_file` — custom teleop parameter file

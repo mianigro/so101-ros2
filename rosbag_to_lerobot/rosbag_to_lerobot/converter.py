@@ -32,12 +32,13 @@ Notes:
 from __future__ import annotations
 
 import logging
-import time
 import shutil
+import time
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.configs import RGBEncoderConfig
+from lerobot.datasets import CODEBASE_VERSION, LeRobotDataset
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
@@ -49,6 +50,7 @@ from rosbag_to_lerobot.bag_reader import (
     get_custom_data,
 )
 from rosbag_to_lerobot.buffers import LastBuffer
+from rosbag_to_lerobot.camera_profiles import validate_profile_topics
 from rosbag_to_lerobot.config import Config, FeatureSpec
 from rosbag_to_lerobot.decoders import decode, get_lerobot_dtype
 
@@ -331,8 +333,8 @@ def convert_all_bags(
     Args:
         cfg (Config): Parsed conversion configuration
         input_dir (Path): Directory containing episode bag subdirectories.
-        output_dir (Path): Destination for the LeRobot dataset (currently unused by
-                        ``LeRobotDataset.create`` which writes to HF cache).
+        output_dir (Path): Destination for the LeRobot dataset. When omitted,
+            LeRobot writes to its default Hugging Face cache location.
         repo_id (str):  Hugging Face repository ID for the dataset.
         use_videos (bool, optional):  If *True*, store images as video; otherwise as individual images. Defaults to True.
         vcodec (str, optional): Video codec for encoding. Defaults to "libsvtav1".
@@ -340,10 +342,34 @@ def convert_all_bags(
         collect_p95 (bool, optional): If *True*, collects additional data during episode sync.
         overwrite (bool, optional): If *True*, delete any existing dataset directory before writing
     """
+    if CODEBASE_VERSION != "v3.0":
+        raise RuntimeError(
+            "This converter requires the LeRobot v3.0 dataset writer, "
+            f"but the installed LeRobot reports {CODEBASE_VERSION!r}."
+        )
+
     # 1. Discover episodes
     episodes = find_episode_dirs(input_dir)
     if not episodes:
         raise RuntimeError(f"No episode directories found in {input_dir}")
+
+    # Validate every episode before deleting/creating any output dataset.
+    for bag_dir in episodes:
+        reader = open_reader(bag_dir)
+        topic_types = get_topic_types(reader)
+        validate_profile_topics(cfg.camera_profile, topic_types, str(bag_dir))
+        for spec in cfg.features:
+            actual_type = topic_types.get(spec.topic)
+            if actual_type is None:
+                raise ValueError(
+                    f"{bag_dir}: configured topic not found: {spec.topic} "
+                    f"(feature={spec.key})"
+                )
+            if actual_type != spec.msg_type:
+                raise ValueError(
+                    f"{bag_dir}: type mismatch for {spec.topic}: "
+                    f"config={spec.msg_type}, bag={actual_type}"
+                )
 
     # 2. Build features dict
     features = _build_lerobot_features(cfg, use_videos)
@@ -361,7 +387,7 @@ def convert_all_bags(
         robot_type=cfg.robot_type,
         features=features,
         use_videos=use_videos,
-        video_backend=vcodec,
+        rgb_encoder=RGBEncoderConfig(vcodec=vcodec),
     )
 
     # 4. Convert each episode

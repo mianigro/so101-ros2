@@ -9,14 +9,20 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/config", ["config/so101.yaml"]),
+        (
+            "share/" + package_name + "/config",
+            [
+                "config/so101_30hz.yaml",
+                "config/so101_50hz.yaml",
+            ],
+        ),
     ],
     install_requires=[
         "setuptools",
-        "numpy",
-        "pyyaml",
-        "imageio",  # for CompressedImage decoding
-        "lerobot",
+        "numpy>=2.0,<2.3",
+        "pyyaml>=6.0.3,<7",
+        "imageio>=2.34,<3",  # for CompressedImage decoding
+        "lerobot[dataset]==0.6.1",
     ],
     zip_safe=True,
     maintainer="Dmitri Manajev",

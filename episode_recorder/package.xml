@@ -3,8 +3,8 @@
 <package format="3">
   <name>episode_recorder</name>
   <version>0.1.0</version>
-  <description>Minimalistic ROS2 episode recorder for imitation learning. 
-    Records rosbags (MCAP) from configurable topics with keyboard-driven episode control.</description>
+  <description>Minimalistic ROS2 episode recorder for imitation learning.
+    Records strict single- or dual-overhead camera profiles to rosbag2 episodes.</description>
   <maintainer email="dmitri@manajev.com">Dmitri Manajev</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,6 +12,7 @@
 
   <!-- ROS 2 core -->
   <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>lifecycle_msgs</depend>
   <depend>std_srvs</depend>

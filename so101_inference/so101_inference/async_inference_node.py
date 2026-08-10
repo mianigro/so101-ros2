@@ -21,7 +21,7 @@ logic to :class:`AsyncInferenceClient`.
 
 from __future__ import annotations
 
-import json
+from functools import partial
 import ssl  # Preload pixi/conda OpenSSL before rclpy loads system libcrypto.
 import time
 
@@ -33,52 +33,15 @@ from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
 
 from so101_inference.async_client import AsyncInferenceClient, ClientCfg
+from so101_inference.camera_config import (
+    build_lerobot_features,
+    camera_subscription_topics,
+    camera_topics_for_profile,
+    streams_fresh,
+    streams_ready,
+)
 from so101_inference.transport.grpc_transport import GrpcTransport
 from so101_inference.utils import ros2_image_to_numpy
-
-
-def _build_lerobot_features(cam_top: str, cam_wrist: str) -> dict:
-    """Build the feature spec dict with the given camera names."""
-    return {
-        "observation.state": {
-            "dtype": "float32",
-            "shape": (6,),
-            "names": [
-                "shoulder_pan.pos",
-                "shoulder_lift.pos",
-                "elbow_flex.pos",
-                "wrist_flex.pos",
-                "wrist_roll.pos",
-                "gripper.pos",
-            ],
-        },
-        f"observation.images.{cam_top}": {
-            "dtype": "image",
-            "shape": (480, 640, 3),
-            "names": ["height", "width", "channels"],
-        },
-        f"observation.images.{cam_wrist}": {
-            "dtype": "image",
-            "shape": (480, 640, 3),
-            "names": ["height", "width", "channels"],
-        },
-    }
-
-
-def _parse_rename_map_json(raw: str) -> dict[str, str]:
-    """Parse optional JSON rename_map parameter for RemotePolicyConfig."""
-    raw = (raw or "").strip()
-    if not raw or raw == "{}":
-        return {}
-
-    data = json.loads(raw)
-    if data is None or data == {}:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError("rename_map_json must be a JSON object mapping strings to strings")
-    if not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
-        raise ValueError("rename_map_json keys and values must all be strings")
-    return data
 
 
 class AsyncRos2InferenceClient(Node):
@@ -93,28 +56,18 @@ class AsyncRos2InferenceClient(Node):
         self.declare_parameter("transport_type", "zmq")
         self.declare_parameter("server_address", "127.0.0.1:8090")
         self.declare_parameter("policy_type", "act")
-        self.declare_parameter(
-            "repo_id",
-            "legalaspro/act_so101_pnp_microsanity_20_50hz_v0",
-        )
+        self.declare_parameter("repo_id", "")
+        self.declare_parameter("camera_profile", "")
         self.declare_parameter("policy_device", "cuda")
-        self.declare_parameter("client_device", "cpu")
         self.declare_parameter("actions_per_chunk", 100)
         self.declare_parameter("chunk_size_threshold", 0.5)
         self.declare_parameter("fps", 50.0)
         self.declare_parameter("max_age_s", 0.2)
         self.declare_parameter("task", "put the green cube in the cup")
         self.declare_parameter("aggregate_fn_name", "weighted_average")
-        self.declare_parameter("rename_map_json", "")
 
         self.declare_parameter("fwd_topic", "/follower/forward_controller/commands")
         self.declare_parameter("joints_topic", "/follower/joint_states")
-        self.declare_parameter("top_camera_topic", "/static_camera/image_raw")
-        self.declare_parameter("wrist_camera_topic", "/follower/image_raw")
-
-        # Camera names as the policy expects them in observation keys
-        self.declare_parameter("camera_top_name", "top")
-        self.declare_parameter("camera_wrist_name", "wrist")
 
         # When True, subscribe to CompressedImage topics and forward
         # raw JPEG bytes to the server (decoded server-side).
@@ -132,31 +85,27 @@ class AsyncRos2InferenceClient(Node):
             ],
         )
 
-        rename_map = _parse_rename_map_json(str(self.get_parameter("rename_map_json").value))
-
         cfg = ClientCfg(
             server_address=str(self.get_parameter("server_address").value),
             policy_type=str(self.get_parameter("policy_type").value),
-            repo_id=str(self.get_parameter("repo_id").value),
+            repo_id=str(self.get_parameter("repo_id").value).strip(),
             policy_device=str(self.get_parameter("policy_device").value),
-            client_device=str(self.get_parameter("client_device").value),
             actions_per_chunk=int(self.get_parameter("actions_per_chunk").value),
             chunk_size_threshold=float(self.get_parameter("chunk_size_threshold").value),
             fps=float(self.get_parameter("fps").value),
             max_age_s=float(self.get_parameter("max_age_s").value),
             task=str(self.get_parameter("task").value),
             aggregate_fn_name=str(self.get_parameter("aggregate_fn_name").value),
-            rename_map=rename_map,
         )
 
         self.fwd_topic = str(self.get_parameter("fwd_topic").value)
         self.joints_topic = str(self.get_parameter("joints_topic").value)
-        self.top_camera_topic = str(self.get_parameter("top_camera_topic").value)
-        self.wrist_camera_topic = str(self.get_parameter("wrist_camera_topic").value)
+        self.camera_profile = str(self.get_parameter("camera_profile").value).strip()
+        if not cfg.repo_id:
+            raise ValueError("repo_id is required and must not be empty")
+        self.camera_topics = camera_topics_for_profile(self.camera_profile)
         self.arm_joints = list(self.get_parameter("arm_joints").value)
 
-        self._cam_top = str(self.get_parameter("camera_top_name").value)
-        self._cam_wrist = str(self.get_parameter("camera_wrist_name").value)
         self._use_compressed = bool(self.get_parameter("use_compressed").value)
 
         if cfg.fps <= 0:
@@ -179,7 +128,7 @@ class AsyncRos2InferenceClient(Node):
         else:
             transport = GrpcTransport(cfg.server_address, cfg.fps, logger=self.get_logger())
 
-        lerobot_features = _build_lerobot_features(self._cam_top, self._cam_wrist)
+        lerobot_features = build_lerobot_features(self.camera_profile)
         self.client = AsyncInferenceClient(
             transport=transport,
             cfg=cfg,
@@ -191,13 +140,10 @@ class AsyncRos2InferenceClient(Node):
         # --------------------
         # ROS Runtime state
         # --------------------
-        self._latest_top_img: Image | None = None
-        self._latest_wrist_img: Image | None = None
-        self._latest_top_jpeg: bytes | None = None
-        self._latest_wrist_jpeg: bytes | None = None
-        self._latest_joints_msg: JointState | None = None
-        self._rx_top = None
-        self._rx_wrist = None
+        self._latest_camera_data: dict[str, Image | bytes | None] = {
+            camera_name: None for camera_name in self.camera_topics
+        }
+        self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
         self._rx_joints = None
 
         self._joint_idx: list[int] | None = None
@@ -207,35 +153,20 @@ class AsyncRos2InferenceClient(Node):
         # --------------------
         #  ROS2 Subscribers, Publishers, Timers
         # --------------------
+        subscription_topics = camera_subscription_topics(
+            self.camera_profile, self._use_compressed
+        )
+        message_type = CompressedImage if self._use_compressed else Image
+        for camera_name, camera_topic in subscription_topics.items():
+            self.create_subscription(
+                message_type,
+                camera_topic,
+                partial(self._on_camera_image_cb, camera_name),
+                qos_profile_sensor_data,
+            )
         if self._use_compressed:
-            # Subscribe to CompressedImage topics — store raw JPEG bytes
-            top_compressed = self.top_camera_topic + "/compressed"
-            wrist_compressed = self.wrist_camera_topic + "/compressed"
-            self.create_subscription(
-                CompressedImage,
-                top_compressed,
-                self._on_top_compressed_cb,
-                qos_profile_sensor_data,
-            )
-            self.create_subscription(
-                CompressedImage,
-                wrist_compressed,
-                self._on_wrist_compressed_cb,
-                qos_profile_sensor_data,
-            )
-            self._log.info(f"📷 Using COMPRESSED images: {top_compressed}, {wrist_compressed}")
-        else:
-            self.create_subscription(
-                Image,
-                self.top_camera_topic,
-                self._on_top_image_cb,
-                qos_profile_sensor_data,
-            )
-            self.create_subscription(
-                Image,
-                self.wrist_camera_topic,
-                self._on_wrist_image_cb,
-                qos_profile_sensor_data,
+            self._log.info(
+                f"📷 Using COMPRESSED images: {list(subscription_topics.values())}"
             )
         self.create_subscription(JointState, self.joints_topic, self._on_joints_cb, qos_profile_sensor_data)
 
@@ -250,17 +181,15 @@ class AsyncRos2InferenceClient(Node):
         self._log.info("=" * 60)
         self._log.info(f"  server:             {self.cfg.server_address}")
         self._log.info(f"  policy:             {self.cfg.policy_type} | {self.cfg.repo_id}")
-        self._log.info(
-            f"  device:             server={self.cfg.policy_device}  client={self.cfg.client_device}"
-        )
-        self._log.info(f"  cam_top:            {self._cam_top} ({self.top_camera_topic})")
-        self._log.info(f"  cam_wrist:          {self._cam_wrist} ({self.wrist_camera_topic})")
+        self._log.info(f"  policy_device:      {self.cfg.policy_device}")
+        self._log.info(f"  camera_profile:     {self.camera_profile}")
+        for camera_name, camera_topic in self.camera_topics.items():
+            self._log.info(f"  camera {camera_name}: {camera_topic}")
         self._log.info(f"  joints_topic:       {self.joints_topic}")
         self._log.info(f"  fwd_topic:          {self.fwd_topic}")
         self._log.info(f"  fps:                {self.cfg.fps:.1f}  (period={period * 1000:.1f}ms)")
         self._log.info(f"  actions/chunk:      {self.cfg.actions_per_chunk}")
         self._log.info(f"  chunk_threshold:    {self.cfg.chunk_size_threshold}")
-        self._log.info(f"  rename_map:         {self.cfg.rename_map or {}}")
         self._log.info(f"  max_age_s:          {self.cfg.max_age_s}")
         self._log.info(f"  task:               {self.cfg.task}")
         self._log.info("=" * 60)
@@ -269,21 +198,14 @@ class AsyncRos2InferenceClient(Node):
     #   ROS Callbacks
     # ---------------------------------
 
-    def _on_top_image_cb(self, msg: Image):
-        self._latest_top_img = msg
-        self._rx_top = self.get_clock().now()
-
-    def _on_wrist_image_cb(self, msg: Image):
-        self._latest_wrist_img = msg
-        self._rx_wrist = self.get_clock().now()
-
-    def _on_top_compressed_cb(self, msg: CompressedImage):
-        self._latest_top_jpeg = bytes(msg.data)
-        self._rx_top = self.get_clock().now()
-
-    def _on_wrist_compressed_cb(self, msg: CompressedImage):
-        self._latest_wrist_jpeg = bytes(msg.data)
-        self._rx_wrist = self.get_clock().now()
+    def _on_camera_image_cb(
+        self, camera_name: str, msg: Image | CompressedImage
+    ) -> None:
+        if self._use_compressed:
+            self._latest_camera_data[camera_name] = bytes(msg.data)
+        else:
+            self._latest_camera_data[camera_name] = msg
+        self._rx_cameras[camera_name] = self.get_clock().now()
 
     def _on_joints_cb(self, msg: JointState):
         if not self._joint_idx_ready:
@@ -291,7 +213,6 @@ class AsyncRos2InferenceClient(Node):
                 return
         pos = msg.position
         self._latest_joints_vec = np.array([pos[i] for i in self._joint_idx], dtype=np.float32)
-        self._latest_joints_msg = msg
         self._rx_joints = self.get_clock().now()
 
     def _initialize_joint_indices(self, msg: JointState) -> bool:
@@ -316,41 +237,29 @@ class AsyncRos2InferenceClient(Node):
     # ---------------------------------
 
     def _data_ready(self) -> bool:
-        if self._use_compressed:
-            top_ok = self._latest_top_jpeg is not None
-            wrist_ok = self._latest_wrist_jpeg is not None
-        else:
-            top_ok = self._latest_top_img is not None
-            wrist_ok = self._latest_wrist_img is not None
         return (
-            top_ok
-            and wrist_ok
+            streams_ready(
+                self.camera_topics,
+                self._latest_camera_data,
+                self._rx_cameras,
+            )
             and self._latest_joints_vec is not None
-            and self._rx_top is not None
-            and self._rx_wrist is not None
             and self._rx_joints is not None
         )
 
     def _is_data_fresh(self) -> bool:
         now = self.get_clock().now()
 
-        def age_s(t) -> float:
-            return (now - t).nanoseconds * 1e-9
-
-        return (
-            age_s(self._rx_top) <= self.cfg.max_age_s
-            and age_s(self._rx_wrist) <= self.cfg.max_age_s
-            and age_s(self._rx_joints) <= self.cfg.max_age_s
-        )
+        received_at = {**self._rx_cameras, "joints": self._rx_joints}
+        return streams_fresh(received_at, now, self.cfg.max_age_s)
 
     def _get_data_ages(self) -> dict[str, float]:
         """Return age in ms for each sensor stream."""
         now = self.get_clock().now()
         ages = {}
-        if self._rx_top is not None:
-            ages[self._cam_top] = (now - self._rx_top).nanoseconds * 1e-6
-        if self._rx_wrist is not None:
-            ages[self._cam_wrist] = (now - self._rx_wrist).nanoseconds * 1e-6
+        for camera_name, received_at in self._rx_cameras.items():
+            if received_at is not None:
+                ages[camera_name] = (now - received_at).nanoseconds * 1e-6
         if self._rx_joints is not None:
             ages["joints"] = (now - self._rx_joints).nanoseconds * 1e-6
         return ages
@@ -359,18 +268,19 @@ class AsyncRos2InferenceClient(Node):
         j = self._latest_joints_vec
         joints_str = " ".join(f"{v:+.4f}" for v in j)
 
-        if self._use_compressed:
-            top_data = self._latest_top_jpeg  # raw JPEG bytes
-            wrist_data = self._latest_wrist_jpeg
-            self._log.debug(
-                f"  obs joints: [{joints_str}] | top_jpeg={len(top_data)}B wrist_jpeg={len(wrist_data)}B"
-            )
-        else:
-            top_data = ros2_image_to_numpy(self._latest_top_img)
-            wrist_data = ros2_image_to_numpy(self._latest_wrist_img)
-            self._log.debug(
-                f"  obs joints: [{joints_str}] | top_img={top_data.shape} wrist_img={wrist_data.shape}"
-            )
+        camera_data = {}
+        camera_summaries = []
+        for camera_name, data in self._latest_camera_data.items():
+            if self._use_compressed:
+                camera_data[camera_name] = data
+                camera_summaries.append(f"{camera_name}_jpeg={len(data)}B")
+            else:
+                rgb = ros2_image_to_numpy(data)
+                camera_data[camera_name] = rgb
+                camera_summaries.append(f"{camera_name}_img={rgb.shape}")
+        self._log.debug(
+            f"  obs joints: [{joints_str}] | {' '.join(camera_summaries)}"
+        )
 
         return {
             "shoulder_pan.pos": float(j[0]),
@@ -379,8 +289,7 @@ class AsyncRos2InferenceClient(Node):
             "wrist_flex.pos": float(j[3]),
             "wrist_roll.pos": float(j[4]),
             "gripper.pos": float(j[5]),
-            self._cam_top: top_data,
-            self._cam_wrist: wrist_data,
+            **camera_data,
             "task": self.cfg.task,
         }
 
@@ -395,16 +304,13 @@ class AsyncRos2InferenceClient(Node):
         # Require data
         if not self._data_ready():
             if self.client._control_loop_count % 100 == 0:
-                if self._use_compressed:
-                    top_ok = self._latest_top_jpeg is not None
-                    wrist_ok = self._latest_wrist_jpeg is not None
-                else:
-                    top_ok = self._latest_top_img is not None
-                    wrist_ok = self._latest_wrist_img is not None
+                camera_status = " ".join(
+                    f"{name}={'✓' if data is not None else '✗'}"
+                    for name, data in self._latest_camera_data.items()
+                )
                 self._log.warn(
                     f"⏳ Waiting for sensor data... "
-                    f"top={'✓' if top_ok else '✗'} "
-                    f"wrist={'✓' if wrist_ok else '✗'} "
+                    f"{camera_status} "
                     f"joints={'✓' if self._latest_joints_vec is not None else '✗'}"
                 )
             return

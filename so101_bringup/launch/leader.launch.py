@@ -13,7 +13,6 @@ def generate_launch_description():
     namespace = LaunchConfiguration("namespace")
     usb_port = LaunchConfiguration("usb_port")
     frame_prefix = LaunchConfiguration("frame_prefix")
-    joint_config_file = LaunchConfiguration("joint_config_file")
     hardware_type = LaunchConfiguration("hardware_type")
     controllers = LaunchConfiguration("controller_config_file")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -39,8 +38,6 @@ def generate_launch_description():
                 hardware_type,
                 " usb_port:=",
                 usb_port,
-                " joint_config_file:=",
-                joint_config_file,
             ]
         ),
         value_type=str,
@@ -90,10 +87,6 @@ def generate_launch_description():
                 "frame_prefix",
                 default_value="",
                 description="TF frame prefix for robot_state_publisher, e.g. 'leader/'",
-            ),
-            DeclareLaunchArgument(
-                "joint_config_file",
-                default_value="",
             ),
             DeclareLaunchArgument(
                 "controller_config_file",

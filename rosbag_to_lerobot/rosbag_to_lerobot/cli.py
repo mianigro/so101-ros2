@@ -23,7 +23,10 @@ import logging
 import sys
 from pathlib import Path
 
+from lerobot.configs import VALID_VIDEO_CODECS
+
 from rosbag_to_lerobot.config import load_config
+from rosbag_to_lerobot.camera_profiles import CAMERA_NAMES_BY_PROFILE
 from rosbag_to_lerobot.converter import convert_all_bags
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--config", required=True, type=Path, help="Path to YAML config file."
+    )
+    parser.add_argument(
+        "--camera-profile",
+        required=True,
+        choices=tuple(CAMERA_NAMES_BY_PROFILE),
+        help="Required camera profile recorded in every input episode",
     )
     parser.add_argument(
         "--repo-id",
@@ -65,10 +74,10 @@ def main() -> None:
         "--vcodec",
         type=str,
         default="libsvtav1",
-        choices=["libsvtav1", "libx264", "h264", "hevc", "h264_nvenc"],
+        choices=sorted(VALID_VIDEO_CODECS),
         help=(
             "Video codec for encoding (default: libsvtav1). "
-            "Use libx264/h264 for faster CPU encoding; use h264_nvenc if you have NVIDIA NVENC."
+            "Use h264 for faster CPU encoding; hardware encoders require compatible hardware."
         ),
     )
     parser.add_argument(
@@ -108,7 +117,7 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        cfg = load_config(args.config)
+        cfg = load_config(args.config, args.camera_profile)
 
         output_dir = args.output_dir.expanduser() if args.output_dir else None
         convert_all_bags(

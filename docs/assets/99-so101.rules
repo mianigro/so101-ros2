@@ -1,0 +1,16 @@
+# SO-101 device rules for dev-4080.
+# Install with:
+#   sudo cp docs/assets/99-so101.rules /etc/udev/rules.d/99-so101.rules
+
+# Arms: unique USB serials allow either adapter to use any USB port.
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d3", ENV{ID_SERIAL_SHORT}=="5B61035756", SYMLINK+="so101_leader", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d3", ENV{ID_SERIAL_SHORT}=="5B61034311", SYMLINK+="so101_follower", GROUP="dialout", MODE="0660"
+
+# Wrist camera: this is the only 058f:3841 camera used on this machine.
+# It exposes video indexes 0 and 1; index 0 is the main capture stream.
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_VENDOR_ID}=="058f", ENV{ID_MODEL_ID}=="3841", ATTR{index}=="0", SYMLINK+="cam_wrist", GROUP="video", MODE="0660"
+
+# The two overhead cameras report the same model and serial, so USB topology
+# is their only reliable identity. Keep each camera on its assigned port.
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_VENDOR_ID}=="32e6", ENV{ID_MODEL_ID}=="9221", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:12.3:1.0", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_VENDOR_ID}=="32e6", ENV{ID_MODEL_ID}=="9221", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:12.1:1.0", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"

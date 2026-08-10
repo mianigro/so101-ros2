@@ -27,6 +27,13 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from rosbag_to_lerobot.camera_profiles import (
+    CAMERA_TOPICS,
+    COMPRESSED_IMAGE_TYPE,
+    camera_names,
+    camera_topics,
+)
+
 _ALLOWED_STAMP_SRC = {"header", "bag"}
 
 
@@ -53,6 +60,7 @@ class FeatureSpec:
 class Config:
     """Top-level conversion configuration."""
 
+    camera_profile: str
     robot_type: str
     fps: int
     reference_topic: str
@@ -75,6 +83,7 @@ class Config:
         )
 
     def validate(self) -> None:
+        expected_camera_names = camera_names(self.camera_profile)
         if not self.robot_type:
             raise ValueError("robot_type must be set")
         if self.fps <= 0:
@@ -93,6 +102,8 @@ class Config:
 
         # Reference topic must exist
         topics = [f.topic for f in self.features]
+        if len(topics) != len(set(topics)):
+            raise ValueError("Duplicate feature.topic entries found")
         if self.reference_topic not in topics:
             raise ValueError(
                 f"reference_topic '{self.reference_topic}' is not listed in features"
@@ -108,12 +119,32 @@ class Config:
                     f"max_age_s must be > 0 for '{f.key}' (got {f.max_age_s})"
                 )
 
+        expected_camera_keys = {
+            f"observation.images.{name}" for name in expected_camera_names
+        }
+        actual_camera_specs = [
+            f for f in self.features if f.key.startswith("observation.images.")
+        ]
+        if {f.key for f in actual_camera_specs} != expected_camera_keys:
+            raise ValueError(
+                "Image features do not match camera_profile "
+                f"{self.camera_profile!r}"
+            )
+        if {f.topic for f in actual_camera_specs} != set(
+            camera_topics(self.camera_profile)
+        ):
+            raise ValueError(
+                "Image topics do not match camera_profile "
+                f"{self.camera_profile!r}"
+            )
 
-def load_config(path: str | Path) -> Config:
+
+def load_config(path: str | Path, camera_profile: str) -> Config:
     """Load a YAML configuration file and return a validated :class:`Config`.
 
     Args:
-        path (str | Path):  Filesystem path to the YAML config file.
+        path (str | Path): Filesystem path to the timing/non-camera YAML config.
+        camera_profile (str): ``single_overhead`` or ``dual_overhead``.
 
     Returns:
         Config: Parsed configuration object.
@@ -127,9 +158,31 @@ def load_config(path: str | Path) -> Config:
         if k not in raw:
             raise ValueError(f"Missing required field: {k}")
 
-    features = [FeatureSpec(**feat) for feat in raw["features"]]
+    camera_names_for_profile = camera_names(camera_profile)
+    raw_features = raw["features"]
+    for feat in raw_features:
+        key = feat.get("key", "")
+        topic = feat.get("topic", "")
+        if key.startswith("observation.images.") or topic in CAMERA_TOPICS.values():
+            raise ValueError(
+                "Timing config must not define camera features; select them with "
+                "camera_profile"
+            )
+
+    features = [
+        FeatureSpec(
+            key=f"observation.images.{name}",
+            topic=CAMERA_TOPICS[name],
+            msg_type=COMPRESSED_IMAGE_TYPE,
+            stamp_src="bag",
+            shape=[480, 640, 3],
+        )
+        for name in camera_names_for_profile
+    ]
+    features.extend(FeatureSpec(**feat) for feat in raw_features)
 
     cfg = Config(
+        camera_profile=camera_profile,
         robot_type=raw["robot_type"],
         fps=raw["fps"],
         reference_topic=raw["reference_topic"],

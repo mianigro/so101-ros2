@@ -9,11 +9,11 @@ https://github.com/legalaspro/so101-ros-physical-ai
 
 ### Data includes
 - Wrist camera video: `observation.images.wrist`
-- Top/static camera video: `observation.images.top`
+- Overhead camera 1 video: `observation.images.overhead_1`
+- Overhead camera 2 video: `observation.images.overhead_2` in `dual_overhead` datasets
 - Joint positions: `observation.state` (6-DoF, `.pos`)
 - Position commands: `action` (6-DoF position commands)
 
 ### Intended use
 
 Behavior cloning / imitation learning baselines, dataset tooling tests, and ROS→LeRobot conversion examples.
-

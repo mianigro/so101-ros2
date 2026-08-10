@@ -4,7 +4,7 @@
 #
 # Creates stable symlinks so the ROS launch defaults work out of the box:
 #   Arms:    /dev/so101_leader, /dev/so101_follower
-#   Cameras: /dev/cam_wrist, /dev/cam_overhead
+#   Cameras: /dev/cam_wrist, /dev/cam_overhead_1, /dev/cam_overhead_2
 #
 # HOW TO USE
 # ----------
@@ -19,7 +19,9 @@
 #        egrep 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH'
 #
 # 2. Replace the XXXX, YYYY, and SERIAL_* placeholders below with your values.
-#    If ID_SERIAL_SHORT is missing for your device, match on ID_PATH instead.
+#    If ID_SERIAL_SHORT is missing or shared by identical cameras, replace that
+#    camera's ENV{ID_SERIAL_SHORT} match with ENV{ID_PATH}=="PATH_*". A path
+#    match requires keeping that camera connected to the same physical USB port.
 #
 # 3. Copy to system rules directory:
 #      sudo cp docs/assets/99-so101.rules.example /etc/udev/rules.d/99-so101.rules
@@ -29,7 +31,9 @@
 #      sudo udevadm trigger
 #
 # 5. Verify:
-#      ls -l /dev/so101_leader /dev/so101_follower /dev/cam_wrist /dev/cam_overhead
+#      ls -l /dev/so101_leader /dev/so101_follower
+#      ls -l /dev/cam_wrist /dev/cam_overhead_1
+#      ls -l /dev/cam_overhead_2  # required by the dual_overhead profile
 #
 # =============================================================================
 
@@ -46,5 +50,11 @@ SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SE
 # If it doesn't work for yours, use /dev/v4l/by-id/*-video-index0 directly.
 
 ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_WRIST",    ATTR{index}=="0", SYMLINK+="cam_wrist",    GROUP="video", MODE="0660"
-ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD", ATTR{index}=="0", SYMLINK+="cam_overhead", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_1", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_2", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"
 
+# ID_PATH alternatives for cameras without usable unique serials. Uncomment a
+# line only after replacing PATH_*; remove or comment the corresponding serial rule.
+# ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_PATH}=="PATH_WRIST",     ATTR{index}=="0", SYMLINK+="cam_wrist",      GROUP="video", MODE="0660"
+# ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_PATH}=="PATH_OVERHEAD_1", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
+# ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_PATH}=="PATH_OVERHEAD_2", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"

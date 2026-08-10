@@ -30,7 +30,6 @@
         variant:='follower'          
         hardware_type:='mock'            
         usb_port:='/dev/ttyUSB0'
-        joint_config_file:=''
         system_name:='SO101_SYSTEM'">
 
         <ros2_control name="${system_name}" type="system">
@@ -42,7 +41,6 @@
                 <xacro:if value="${hardware_type == 'real'}">
                     <plugin>feetech_ros2_driver/FeetechHardwareInterface</plugin>
                     <param name="usb_port">${usb_port}</param>
-                    <param name="joint_config_file">${joint_config_file}</param>
                 </xacro:if>
             </hardware>
             
