@@ -10,7 +10,7 @@ ROS 2 stack for the SO-101 robot arm in a leader/follower configuration: Feetech
 ## Requirements
 
 - **Ubuntu 24.04** + **ROS 2 Jazzy**
-- Two SO-101 arms (leader + follower) with Feetech STS3215 servos over USB
+- Two SO-101 arms for hardware teleop, or one leader plus Isaac Sim 6.0.1 for simulated-follower teleop
 - Two or three cameras, matching the `single_overhead` or `dual_overhead` profile
 - `rosdep`, `colcon`, and [Pixi](https://pixi.sh/)
 
@@ -73,6 +73,55 @@ ros2 launch so101_bringup teleop.launch.py \
 ```
 
 Useful overrides: `use_cameras:=false`, `use_teleop_rviz:=false`, `use_rerun_3d:=true`. See [Visualization](#visualization).
+
+### Isaac Sim follower
+
+Isaac Sim can replace the follower while the physical leader and existing 50 Hz relay remain unchanged. This uses the
+ROS 2 Bridge Action Graph directly; it does not use `mock_components`, an Isaac Lab task, or a `ros2_control` simulator
+plugin.
+
+**Terminal 1 — Isaac Sim follower:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+
+ISAACSIM_BUILD=/home/anon/Documents/isaacsim/_build/linux-x86_64/release
+SO101_REPO=/home/anon/Documents/so101-ros2
+"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py"
+```
+
+The first run expands the follower Xacro with `use_ros2_control:=false`, validates its six joints, and imports a
+fixed-base USD into the ignored `build/isaacsim_so101/` directory. Use `--rebuild-asset` after changing the Xacro or
+meshes. No symlinks are created.
+
+**Terminal 2 — physical leader and command relay:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+ros2 launch so101_bringup teleop.launch.py \
+  use_follower:=false \
+  use_cameras:=false \
+  use_teleop_rviz:=false
+```
+
+Both terminals must use the same `ROS_DOMAIN_ID` and DDS implementation. The Isaac Sim process subscribes to
+`/follower/forward_controller/commands`, publishes `/follower/joint_states` and `/clock`, and starts the timeline.
+
+Before moving the physical leader, run the direct-message smoke test:
+
+```bash
+ros2 topic pub --once /follower/forward_controller/commands \
+  std_msgs/msg/Float64MultiArray \
+  "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
+ros2 topic echo --once /follower/joint_states
+ros2 topic info --verbose /follower/joint_states
+```
+
+The initial position-drive values are `100 Nm/rad` stiffness and `2 Nm*s/rad` damping. Override them with
+`--joint-stiffness` and `--joint-damping` if the imported arm is underdamped or too slow. The URDF's `10 Nm` effort
+limits supply the drive maximum force.
 
 ---
 
@@ -255,6 +304,7 @@ These are the cross-cutting arguments accepted by the top-level launch files (`t
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `hardware_type` | `real` | Selects which `ros2_control` hardware plugin the URDF/xacro compiles in. `real` → the `feetech_ros2_driver` talks to the physical STS3215 servos over USB. `mock` → `mock_components/GenericSystem`, a fake plant that simulates the 6 joints in software with no hardware attached. Use `mock` to test launch files, the recorder, or inference wiring without the arms plugged in. (Source comments mention `mujoco` but no plugin is wired for it — treat it as unimplemented.) |
+| `use_follower` | `true` | Start the follower `ros2_control` stack. Set `false` when Isaac Sim owns the follower command and joint-state topics. |
 | `leader_usb_port` | `/dev/so101_leader` | USB device path for the **leader** arm. These are udev-symlink stable names (created from the rules in `docs/hardware.md`), not raw `/dev/ttyUSB0` which can reorder on replug. Only used by teleop/recording launches (the leader is absent during inference). |
 | `follower_usb_port` | `/dev/so101_follower` | USB device path for the **follower** arm — the one that actually moves. Used by every launch that brings up `ros2_control`. |
 

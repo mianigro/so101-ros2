@@ -21,6 +21,7 @@ def generate_launch_description():
 
     # --- Launch arguments ---
     hardware_type = LaunchConfiguration("hardware_type")  # real|mock|mujoco
+    use_follower = LaunchConfiguration("use_follower")
     leader_ns = LaunchConfiguration("leader_namespace")
     follower_ns = LaunchConfiguration("follower_namespace")
     leader_frame_prefix = LaunchConfiguration("leader_frame_prefix")
@@ -65,6 +66,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare("so101_bringup"), "launch", "follower.launch.py"])
         ),
+        condition=IfCondition(use_follower),
         launch_arguments={
             "namespace": follower_ns,
             "hardware_type": hardware_type,
@@ -180,6 +182,11 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
+            DeclareLaunchArgument(
+                "use_follower",
+                default_value="true",
+                description="Start the physical/mock follower ros2_control stack. Set false when Isaac Sim is the follower.",
+            ),
             DeclareLaunchArgument("leader_namespace", default_value="leader"),
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
             DeclareLaunchArgument("leader_frame_prefix", default_value="leader/"),
