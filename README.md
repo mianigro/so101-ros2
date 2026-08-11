@@ -64,15 +64,36 @@ Then pick a workflow below.
 
 ## Teleop
 
-Mirror the leader arm to the follower through the `forward_controller` (position interface, 50 Hz):
+### Physical leader and follower
+
+Mirror the physical leader arm to the physical follower through the `forward_controller` position interface at 50 Hz.
+Run this in one terminal, replacing the camera-rig path with the YAML for the connected physical cameras:
 
 ```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+
+export SO101_CAMERA_PROFILE=dual_overhead
+export SO101_CAMERA_RIG=/absolute/path/to/camera_rig.yaml
+
 ros2 launch so101_bringup teleop.launch.py \
   camera_profile:=$SO101_CAMERA_PROFILE \
   camera_rig_config_file:=$SO101_CAMERA_RIG
 ```
 
-Useful overrides: `use_cameras:=false`, `use_teleop_rviz:=false`, `use_rerun_3d:=true`. See [Visualization](#visualization).
+This launch starts the leader and follower `ros2_control` stacks, the 50 Hz command relay, the selected physical
+cameras, and RViz. For arm-only teleop without cameras, omit the camera variables and run:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+
+ros2 launch so101_bringup teleop.launch.py \
+  use_cameras:=false
+```
+
+Useful visualization overrides are `use_teleop_rviz:=false`, `use_rerun:=true`, and `use_rerun_3d:=true`. See
+[Visualization](#visualization).
 
 ### Isaac Sim follower
 
@@ -84,11 +105,13 @@ plugin.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source /home/anon/Documents/so101-ros2/install/setup.bash
-
 ISAACSIM_BUILD=/home/anon/Documents/isaacsim/_build/linux-x86_64/release
 SO101_REPO=/home/anon/Documents/so101-ros2
-"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py"
+source "$SO101_REPO/install/setup.bash"
+
+"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
+  --camera-profile dual_overhead \
+  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
 ```
 
 The first run expands the follower Xacro with `use_ros2_control:=false`, validates its six joints, and imports a
@@ -97,16 +120,8 @@ meshes. The importer creates no symlinks. The default `dual_overhead` camera pro
 mount STLs into that cache, assembles the left/right supports, and creates all three RTX cameras at 640×480 and 30 Hz.
 
 The editable first-pass calibration is
-[`so101_bringup/config/cameras/isaac_dual_overhead.yaml`](so101_bringup/config/cameras/isaac_dual_overhead.yaml).
-Override it or select a smaller camera set with:
-
-```bash
-"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
-  --camera-profile dual_overhead \
-  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
-```
-
-The config owns the support placement, wrist transform, camera look-at targets, FOV, topics, and frame ids. The camera
+[`so101_bringup/config/cameras/isaac_dual_overhead.yaml`](so101_bringup/config/cameras/isaac_dual_overhead.yaml). It
+owns the support placement, wrist transform, camera look-at targets, FOV, topics, and frame ids. The camera
 contract is fixed: wrist publishes on `/follower/image_raw`, left `overhead_1` on
 `/static_camera_1/image_raw`, and right `overhead_2` on `/static_camera_2/image_raw`; each also publishes its matching
 `camera_info`. No physical camera-rig file is used for these simulated streams. Press **Play** after the scene is ready.
@@ -115,7 +130,9 @@ contract is fixed: wrist publishes on `/follower/image_raw`, left `overhead_1` o
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source /home/anon/Documents/so101-ros2/install/setup.bash
+SO101_REPO=/home/anon/Documents/so101-ros2
+source "$SO101_REPO/install/setup.bash"
+
 ros2 launch so101_bringup teleop.launch.py \
   use_follower:=false \
   use_cameras:=false \
@@ -145,34 +162,79 @@ limits supply the drive maximum force.
 
 Record teleoperated episodes (joint states + camera frames + commands) to timestamped MCAP episodes.
 
-**Terminal 1 — recording session:**
+### Physical dataset recording
 
-```bash
-ros2 launch so101_bringup recording_session.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
-  experiment_name:=pick_and_place \
-  task:="Pick up the cube and place it in the container." \
-  use_rerun:=true
-```
+This workflow uses the physical leader, physical follower, and physical cameras. The recording launch starts both arm
+stacks, the teleop relay, camera drivers, camera watchdog, and episode recorder.
 
-**Terminal 2 — keyboard controller:**
-
-```bash
-ros2 run episode_recorder teleop_episode_keyboard
-```
-
-Keys: **r** start · **s** save & stop · **d**/Backspace discard · **q** quit · **h** help. Episodes save to `~/.ros/so101_episodes/<experiment>/` by default. Ctrl-C while recording discards the in-progress episode.
-
-### Isaac Sim data collection
-
-Start Isaac Sim as shown in [Isaac Sim follower](#isaac-sim-follower), using `--camera-profile dual_overhead`, then press
-**Play**. In a second terminal, start the real leader, relay, simulated-camera JPEG republishers, watchdog, and existing
-strict recorder with one launch:
+**Terminal 1 — physical recording session:**
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
+
+export SO101_CAMERA_PROFILE=dual_overhead
+export SO101_CAMERA_RIG=/absolute/path/to/camera_rig.yaml
+
+ros2 launch so101_bringup recording_session.launch.py \
+  camera_profile:=$SO101_CAMERA_PROFILE \
+  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  experiment_name:=pick_and_place \
+  task:="Pick up the cube and place it in the container."
+```
+
+Wait until the launch reports that all required topics are ready. Then start the keyboard controller.
+
+**Terminal 2 — episode controls:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+
+ros2 run episode_recorder teleop_episode_keyboard
+```
+
+The keyboard controls the recorder, not the arm:
+
+- **r** or **Right Arrow**: start recording an episode.
+- **s** or **Left Arrow**: stop and save the current episode.
+- **d** or **Backspace**: discard the current episode.
+- **t**: change the recorder's task description.
+- **h**: show the key bindings.
+- **q**: quit the keyboard controller.
+
+Press **r**, operate the leader arm, and then press **s** to save the episode or **d** to discard it. Repeat for each
+episode. Episodes are stored in `~/.ros/so101_episodes/pick_and_place/` for the example above. Ctrl-C while recording
+discards the in-progress episode.
+
+### Isaac Sim dataset recording
+
+This workflow keeps the physical leader but replaces the follower and all three cameras with Isaac Sim. It needs three
+terminals.
+
+**Terminal 1 — Isaac Sim follower and cameras:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+ISAACSIM_BUILD=/home/anon/Documents/isaacsim/_build/linux-x86_64/release
+SO101_REPO=/home/anon/Documents/so101-ros2
+source "$SO101_REPO/install/setup.bash"
+
+"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
+  --camera-profile dual_overhead \
+  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
+```
+
+Wait for `Isaac Sim is ready`, then press **Play**. Isaac Sim now owns the simulated follower joint states and the three
+raw camera streams.
+
+**Terminal 2 — physical leader, relay, JPEG republishers, watchdog, and recorder:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+SO101_REPO=/home/anon/Documents/so101-ros2
+source "$SO101_REPO/install/setup.bash"
+
 ros2 launch so101_bringup recording_session.launch.py \
   camera_profile:=dual_overhead \
   use_follower:=false \
@@ -184,7 +246,20 @@ ros2 launch so101_bringup recording_session.launch.py \
 
 This republishes Isaac's three raw images as the existing `image_raw/compressed` JPEG topics; it does not use Isaac's
 H.264 output. The camera watchdog monitors the raw streams and terminates collection if any selected stream stalls.
-Use the same keyboard controls and convert the result with `so101_30hz.yaml --camera-profile dual_overhead` as below.
+Wait until all five required topics are reported ready before starting an episode.
+
+**Terminal 3 — episode controls:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+
+ros2 run episode_recorder teleop_episode_keyboard
+```
+
+Press **r**, operate the physical leader, and press **s** to save or **d** to discard. The keyboard controls only the
+recorder; the physical leader continues to control the simulated arm. Convert the result with `so101_30hz.yaml` and
+`--camera-profile dual_overhead` as shown in [LeRobot dataset conversion](#lerobot-dataset-conversion).
 
 **Review episodes** in the browser (replays MCAP through ROS so images/joints/actions decode with the live stack):
 
