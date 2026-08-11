@@ -23,7 +23,13 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
-from so101_bringup.camera_config import CameraConfigError, load_camera_setup
+from so101_bringup.camera_config import (
+    CameraConfigError,
+    load_camera_setup,
+    load_profile,
+    normalize_frame_prefix,
+    normalize_namespace,
+)
 
 
 def _shutdown_when_process_exits(action, label: str) -> RegisterEventHandler:
@@ -114,13 +120,128 @@ def spawn_cameras(context):
     return actions
 
 
+def spawn_sim_camera_pipeline(context):
+    """Republish Isaac's raw streams as JPEG and supervise the raw sources."""
+    use_sim_cameras = IfCondition(
+        LaunchConfiguration("use_sim_cameras")
+    ).evaluate(context)
+    if not use_sim_cameras:
+        return []
+    if IfCondition(LaunchConfiguration("use_cameras")).evaluate(context):
+        raise CameraConfigError(
+            "use_cameras and use_sim_cameras cannot both be true; "
+            "select exactly one camera source"
+        )
+
+    profile_name = LaunchConfiguration("camera_profile").perform(context).strip()
+    follower_namespace = normalize_namespace(
+        LaunchConfiguration("follower_namespace").perform(context)
+    )
+    frame_prefix = normalize_frame_prefix(
+        LaunchConfiguration("follower_frame_prefix").perform(context)
+    )
+    if follower_namespace != "follower" or frame_prefix != "follower/":
+        raise CameraConfigError(
+            "simulated cameras use the fixed /follower topic and follower/ frame "
+            "contract; keep the default follower namespace and frame prefix"
+        )
+    startup_timeout = float(
+        LaunchConfiguration("camera_startup_timeout_s").perform(context)
+    )
+    stale_timeout = float(
+        LaunchConfiguration("camera_stale_timeout_s").perform(context)
+    )
+    if startup_timeout <= 0 or stale_timeout <= 0:
+        raise CameraConfigError("camera startup/stale timeouts must be positive")
+
+    profiles_dir = os.path.join(
+        get_package_share_directory("so101_bringup"),
+        "config",
+        "cameras",
+        "profiles",
+    )
+    logical_cameras = load_profile(profile_name, profiles_dir)
+    camera_names: list[str] = []
+    raw_topics: list[str] = []
+    actions = []
+    for camera in logical_cameras:
+        try:
+            raw_topic = camera["image_topic"].format(
+                follower_namespace=follower_namespace,
+                frame_prefix=frame_prefix,
+            )
+        except (KeyError, ValueError) as error:
+            raise CameraConfigError(
+                f"invalid image topic template for {camera['id']}: {error}"
+            ) from error
+        if not raw_topic.startswith("/"):
+            raise CameraConfigError(
+                f"camera {camera['id']} profile image topic must be absolute"
+            )
+
+        republisher = Node(
+            package="image_transport",
+            executable="republish",
+            name=f"sim_{camera['id']}_jpeg_republisher",
+            parameters=[
+                {
+                    "in_transport": "raw",
+                    "out_transport": "compressed",
+                }
+            ],
+            remappings=[
+                ("in", raw_topic),
+                ("out/compressed", f"{raw_topic}/compressed"),
+            ],
+            output="screen",
+        )
+        actions.extend(
+            [
+                republisher,
+                _shutdown_when_process_exits(
+                    republisher, f"{camera['id']} JPEG republisher"
+                ),
+            ]
+        )
+        camera_names.append(camera["id"])
+        raw_topics.append(raw_topic)
+
+    supervisor = Node(
+        package="so101_bringup",
+        executable="camera_supervisor",
+        name="sim_camera_supervisor",
+        parameters=[
+            {
+                "camera_names": ParameterValue(
+                    TextSubstitution(text=json.dumps(camera_names)),
+                    value_type=list[str],
+                ),
+                "camera_topics": ParameterValue(
+                    TextSubstitution(text=json.dumps(raw_topics)),
+                    value_type=list[str],
+                ),
+                "startup_timeout_s": startup_timeout,
+                "stale_timeout_s": stale_timeout,
+            }
+        ],
+        output="screen",
+    )
+    actions.extend(
+        [supervisor, _shutdown_when_process_exits(supervisor, "sim camera supervisor")]
+    )
+    return actions
+
+
 def declare_camera_arguments(*, use_cameras_default: str = "true"):
     return [
         DeclareLaunchArgument("use_cameras", default_value=use_cameras_default),
         DeclareLaunchArgument(
             "camera_profile",
             default_value="",
-            description="Required when use_cameras=true: single_overhead or dual_overhead",
+            description=(
+                "Required when physical or simulated cameras are enabled: "
+                "single_overhead or dual_overhead"
+            ),
         ),
         DeclareLaunchArgument(
             "camera_rig_config_file",

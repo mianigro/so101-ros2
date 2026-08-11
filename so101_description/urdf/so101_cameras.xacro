@@ -11,9 +11,9 @@
   -->
 
   <xacro:macro name="so101_wrist_camera"
-               params="xyz:='0.0 0.0 -0.02'
-                       rpy:='-1.5708 0.0 -1.5708'
-                       parent:='moving_jaw_so101_v1_link'
+               params="xyz:='0.0202 0.0388 -0.0234'
+                       rpy:='0.0 1.5708 0.0'
+                       parent:='gripper_link'
                        include_inertia:='false'">
 
     <link name="wrist_camera_link">

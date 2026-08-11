@@ -93,7 +93,23 @@ SO101_REPO=/home/anon/Documents/so101-ros2
 
 The first run expands the follower Xacro with `use_ros2_control:=false`, validates its six joints, and imports a
 fixed-base USD into the ignored `build/isaacsim_so101/` directory. Use `--rebuild-asset` after changing the Xacro or
-meshes. No symlinks are created.
+meshes. The importer creates no symlinks. The default `dual_overhead` camera profile also converts the two supplied
+mount STLs into that cache, assembles the left/right supports, and creates all three RTX cameras at 640×480 and 30 Hz.
+
+The editable first-pass calibration is
+[`so101_bringup/config/cameras/isaac_dual_overhead.yaml`](so101_bringup/config/cameras/isaac_dual_overhead.yaml).
+Override it or select a smaller camera set with:
+
+```bash
+"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
+  --camera-profile dual_overhead \
+  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
+```
+
+The config owns the support placement, wrist transform, camera look-at targets, FOV, topics, and frame ids. The camera
+contract is fixed: wrist publishes on `/follower/image_raw`, left `overhead_1` on
+`/static_camera_1/image_raw`, and right `overhead_2` on `/static_camera_2/image_raw`; each also publishes its matching
+`camera_info`. No physical camera-rig file is used for these simulated streams. Press **Play** after the scene is ready.
 
 **Terminal 2 — physical leader and command relay:**
 
@@ -107,7 +123,7 @@ ros2 launch so101_bringup teleop.launch.py \
 ```
 
 Both terminals must use the same `ROS_DOMAIN_ID` and DDS implementation. The Isaac Sim process subscribes to
-`/follower/forward_controller/commands`, publishes `/follower/joint_states` and `/clock`, and starts the timeline.
+`/follower/forward_controller/commands` and publishes `/follower/joint_states` and `/clock` while the timeline plays.
 
 Before moving the physical leader, run the direct-message smoke test:
 
@@ -147,6 +163,28 @@ ros2 run episode_recorder teleop_episode_keyboard
 ```
 
 Keys: **r** start · **s** save & stop · **d**/Backspace discard · **q** quit · **h** help. Episodes save to `~/.ros/so101_episodes/<experiment>/` by default. Ctrl-C while recording discards the in-progress episode.
+
+### Isaac Sim data collection
+
+Start Isaac Sim as shown in [Isaac Sim follower](#isaac-sim-follower), using `--camera-profile dual_overhead`, then press
+**Play**. In a second terminal, start the real leader, relay, simulated-camera JPEG republishers, watchdog, and existing
+strict recorder with one launch:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+ros2 launch so101_bringup recording_session.launch.py \
+  camera_profile:=dual_overhead \
+  use_follower:=false \
+  use_cameras:=false \
+  use_sim_cameras:=true \
+  experiment_name:=pick_and_place \
+  task:="Pick up the cube and place it in the container."
+```
+
+This republishes Isaac's three raw images as the existing `image_raw/compressed` JPEG topics; it does not use Isaac's
+H.264 output. The camera watchdog monitors the raw streams and terminates collection if any selected stream stalls.
+Use the same keyboard controls and convert the result with `so101_30hz.yaml --camera-profile dual_overhead` as below.
 
 **Review episodes** in the browser (replays MCAP through ROS so images/joints/actions decode with the live stack):
 
@@ -315,6 +353,7 @@ The camera stack is deliberately fail-fast: a `camera_supervisor` node enforces 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `use_cameras` | `true` | Master gate. When `true`, spawns every camera driver in the selected profile plus the supervisor. When `false`, no camera nodes start — useful for motor-only flows or when cameras are temporarily down. |
+| `use_sim_cameras` | `false` | Recording-session gate for Isaac streams. When `true`, starts raw-to-JPEG republishers plus the same fail-fast watchdog. It is mutually exclusive with `use_cameras`; use `use_cameras:=false use_sim_cameras:=true` for simulation. |
 | `camera_profile` | required | The **logical** camera set. `single_overhead` = wrist + 1 overhead; `dual_overhead` = wrist + 2 overheads. This single value is enforced identically across recording, Rerun, conversion, and inference — it determines which image topics get recorded, which become LeRobot features, and which the policy expects at inference. Use the same profile end-to-end. |
 | `camera_rig_config_file` | required | Absolute path to the **external physical-rig YAML** (schema in `docs/hardware.md` §6.1). Not in the repo because it's machine-specific: it maps each profile camera id (`wrist`, `overhead_1`, `overhead_2`) to a real `/dev/...` device symlink via udev. At launch, each device is validated to exist and be a RW character device before any driver starts — a bad path fails immediately. |
 | `camera_startup_timeout_s` | `10.0` | **Cold-start deadline.** The supervisor waits this long for every camera in the profile to publish its first frame. If any stream doesn't appear in time, the supervisor exits → the whole launch shuts down. Raise this on a slow USB bus or cold boot. The recorder also independently refuses to start an episode until every topic is fresh (`start_gate_max_age_s`). |
@@ -357,6 +396,7 @@ ros2 launch so101_bringup recording_session.launch.py \
 
 - `so101_bringup/config/ros2_control/` — `forward_controller` + `joint_state_broadcaster` parameters
 - `so101_bringup/config/cameras/profiles/` — the two canonical camera profiles; physical device paths and driver overrides live in the external rig YAML
+- `so101_bringup/config/cameras/isaac_dual_overhead.yaml` — editable simulated mount/camera calibration used by the Isaac script
 - `so101_teleop/config/teleop.yaml` — relay rate, stale timeout, joint order
 - `episode_recorder/config/recorder.yaml` — MCAP storage and timing
 

@@ -5,6 +5,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     TimerAction,
 )
 from launch.conditions import IfCondition
@@ -15,7 +16,11 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.substitutions import FindPackageShare
-from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
+from so101_bringup.camera_launch import (
+    declare_camera_arguments,
+    include_cameras,
+    spawn_sim_camera_pipeline,
+)
 
 
 def generate_launch_description():
@@ -42,6 +47,7 @@ def generate_launch_description():
 
     use_rerun = LaunchConfiguration("use_rerun")
     use_rerun_3d = LaunchConfiguration("use_rerun_3d")
+    use_follower = LaunchConfiguration("use_follower")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
@@ -77,6 +83,7 @@ def generate_launch_description():
             "controller_config_file": follower_ctrl_cfg,
             "use_rviz": "false",
         }.items(),
+        condition=IfCondition(use_follower),
     )
 
     # --- Include cameras launch ---
@@ -192,6 +199,11 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("hardware_type", default_value="real"),
+            DeclareLaunchArgument(
+                "use_follower",
+                default_value="true",
+                description="Start the physical/mock follower controller manager",
+            ),
             DeclareLaunchArgument("leader_namespace", default_value="leader"),
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
             DeclareLaunchArgument("leader_frame_prefix", default_value="leader/"),
@@ -208,6 +220,11 @@ def generate_launch_description():
                 default_value=default_follower_ctrl_cfg,
             ),
             *declare_camera_arguments(),
+            DeclareLaunchArgument(
+                "use_sim_cameras",
+                default_value="false",
+                description="Use Isaac raw cameras and republish them as JPEG",
+            ),
             DeclareLaunchArgument(
                 "teleop_params_file", default_value=default_teleop_params
             ),
@@ -230,6 +247,7 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("rerun_delay_s", default_value=teleop_delay_s),
+            OpaqueFunction(function=spawn_sim_camera_pipeline),
             leader_launch,
             follower_launch,
             cameras_launch,
