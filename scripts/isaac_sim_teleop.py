@@ -255,8 +255,9 @@ def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
     expected_height = _require_positive(support.get("expected_height_mm"), "expected_height_mm")
     bottom_lower, bottom_upper = binary_stl_bounds(bottom_mesh)
     top_lower, top_upper = binary_stl_bounds(top_mesh)
-    if not math.isclose(top_translation[1], bottom_upper[1], abs_tol=1e-3):
-        raise RuntimeError("support top must butt-stack at the bottom mesh's +Y extent")
+    insertion_depth = bottom_upper[1] - top_translation[1]
+    if insertion_depth <= 0.0 or top_translation[1] <= bottom_lower[1]:
+        raise RuntimeError("support top must slide into the bottom mesh")
     assembled_height = max(bottom_upper[1], top_translation[1] + top_upper[1]) - min(
         bottom_lower[1], top_translation[1] + top_lower[1]
     )
@@ -317,6 +318,7 @@ def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
     support["_bottom_mesh_path"] = bottom_mesh
     support["_top_mesh_path"] = top_mesh
     support["_measured_height_mm"] = assembled_height
+    support["_insertion_depth_mm"] = insertion_depth
     support["_assembly_center_mm"] = assembly_center
     data["_selected_camera_names"] = CAMERA_NAMES_BY_PROFILE[profile]
     data["_horizontal_aperture_mm"] = aperture
@@ -391,8 +393,8 @@ def validate_follower_urdf(urdf_path: Path) -> None:
         raise RuntimeError("wrist_camera_joint is missing its calibrated origin")
     xyz = [float(value) for value in origin.attrib.get("xyz", "").split()]
     rpy = [float(value) for value in origin.attrib.get("rpy", "").split()]
-    expected_xyz = [0.0202, 0.0388, -0.0234]
-    expected_rpy = [0.0, math.pi / 2.0, 0.0]
+    expected_xyz = [0.0025, -0.0720574, 0.0041503]
+    expected_rpy = [math.pi / 2.0, math.radians(65.0), math.pi / 2.0]
     if len(xyz) != 3 or any(
         not math.isclose(actual, expected, abs_tol=1e-6)
         for actual, expected in zip(xyz, expected_xyz)
@@ -942,7 +944,9 @@ def main() -> int:
     if camera_rig is not None:
         print(
             f"Validated {args.camera_profile} camera rig: {camera_rig['_config_path']} "
-            f"({camera_rig['support']['_measured_height_mm']:.3f} mm supports, no symlinks)"
+            f"({camera_rig['support']['_measured_height_mm']:.3f} mm supports, "
+            f"{camera_rig['support']['_insertion_depth_mm']:.3f} mm insertion, "
+            "no source symlinks)"
         )
     if args.validate_only:
         return 0

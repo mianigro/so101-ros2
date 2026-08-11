@@ -14,8 +14,23 @@
       <xacro:mesh_vc filename="${mesh_dir}/sts3215_03a_v1.stl"
         xyz="0.0077 0.0001 -0.0234" rpy="-1.5708 -5.19179e-17 -1.66533e-16" material="sts3215"/>
 
-      <xacro:mesh_vc filename="${mesh_dir}/wrist_roll_follower_so101_v1.stl"
-        xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0" material="3d_printed"/>
+      <!-- Integrated 32x32 UVC wrist-camera mount; source STL units are millimetres. -->
+      <visual>
+        <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/wrist_cam_mount_32x32_uvc_so101.stl"
+            scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="3d_printed"/>
+      </visual>
+
+      <!-- Keep the original wrist-roll collision mesh to avoid a dense camera-mount collider. -->
+      <collision>
+        <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/wrist_roll_follower_so101_v1.stl"/>
+        </geometry>
+      </collision>
     </link>
 
     <xacro:so101_gripper_frame />
