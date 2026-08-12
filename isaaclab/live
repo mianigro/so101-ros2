@@ -30,7 +30,7 @@ def main() -> int:
     settings, arguments = parser.parse_known_args(sys.argv[1:])
 
     if not any(arg == "--task" or arg.startswith("--task=") for arg in arguments):
-        arguments.extend(("--task", "SO101-Object-In-Cup-v0"))
+        arguments.extend(("--task", "SO101-Object-In-Cup-Vision-Fixed-v0"))
     if not any(
         arg == "--num_envs" or arg.startswith("--num_envs=") for arg in arguments
     ):

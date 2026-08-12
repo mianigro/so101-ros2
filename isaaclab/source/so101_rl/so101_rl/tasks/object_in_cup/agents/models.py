@@ -47,7 +47,7 @@ class SpatialSoftmax(nn.Module):
 
 
 class SpatialSoftmaxCNNModel(MLPModel):
-    """Encode each image independently and fuse its keypoints with joint positions."""
+    """Encode each image independently and fuse keypoints with joint positions."""
 
     is_recurrent = False
     _get_obs_dim = CNNModel._get_obs_dim

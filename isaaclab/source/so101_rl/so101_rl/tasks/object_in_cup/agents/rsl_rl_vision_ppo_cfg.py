@@ -1,4 +1,4 @@
-"""Asymmetric visual PPO configuration for the deployable SO-101 actor."""
+"""Asymmetric visual PPO configuration for the deployable SO-101 policy."""
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import (
@@ -62,7 +62,7 @@ class SO101ObjectInCupVisionPPOCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "so101_object_in_cup_vision"
     obs_groups = {
         "actor": ["joint_state", "wrist", "overhead_1", "overhead_2"],
-        "critic": ["critic"],
+        "critic": ["critic_state"],
     }
     clip_actions = 1.0
     actor = _ACTOR

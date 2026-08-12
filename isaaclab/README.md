@@ -1,105 +1,92 @@
-# SO-101 deployable three-camera visual RL
+# SO-101 three-camera PPO
 
-This is a repository-owned external Isaac Lab project. Isaac Lab supplies the
-simulation and RSL-RL runtime; this repository owns the SO-101 robot asset,
-object/cup assets, environments, visual model, PPO configuration, checkpoints,
-export contract, and ROS 2 deployment node. Isaac Lab's source checkout is not
-modified, and ROS 2 is not part of the training loop.
+This directory is a repository-owned Isaac Lab project for training a visual
+SO-101 object-in-cup policy with RSL-RL PPO. The deployable actor receives three
+RGB images and six measured joint positions. A separate training-only critic
+receives exact simulator task state and is never exported to ROS 2.
 
-For the design rationale, exact reward formulas, PPO details, neural-network
-architecture, supported algorithm boundary, and instructions for creating a new
-reward, model, observation, action, or task, read
+Isaac Lab supplies simulation, rendering, managers, and the RSL-RL runtime.
+This project owns the task, assets, camera contract, models, PPO configuration,
+export contract, and entry points. For reward formulas, network details, PPO
+parameters, design rationale, and extension instructions, see
 [`METHODOLOGY.md`](METHODOLOGY.md).
 
-## Current status — read this first
 
-Implemented:
+## Actor and critic boundary
 
-- fixed-pose and randomized visual Isaac Lab tasks;
-- visible and headless vectorized simulation;
-- one-, multi-environment, single-GPU, and two-GPU launch paths;
-- an actor that receives only three RGB images and six absolute joint positions;
-- an asymmetric 35-value training-only critic;
-- visual and dynamics randomization, including one-step camera/action latency;
-- TorchScript/ONNX export, manifest generation, and numerical parity checks;
-- a separate safety-gated ROS 2 inference node that starts in shadow mode.
+The deployable actor receives exactly these observation groups:
 
-Not yet claimed:
+```text
+joint_state  [N, 6]            absolute joint positions in radians
+wrist       [N, 3, 120, 160]  RGB / 255 - 0.5
+overhead_1  [N, 3, 120, 160]  RGB / 255 - 0.5
+overhead_2  [N, 3, 120, 160]  RGB / 255 - 0.5
+```
 
-- no PPO checkpoint has been trained by this implementation work;
-- the 95% fixed-pose and 90% randomized success gates have not been achieved or
-  measured;
-- no real robot has been armed with an exported visual policy;
-- matching teleop inputs establishes interface compatibility, not guaranteed
-  visual sim-to-real transfer.
+The actor does not receive object pose, cup pose, object velocity, previous
+action, reward state, or success flags. The training-only critic receives one
+noiseless 34-value `critic_state` group:
 
-## Assumptions and prerequisites
+| Component | Width |
+|---|---:|
+| Absolute joint positions | 6 |
+| Joint velocities | 6 |
+| Last requested action | 6 |
+| Gripper-to-object delta | 3 |
+| Object-to-cup delta | 3 |
+| Object quaternion | 4 |
+| Object linear and angular velocity | 6 |
+| **Total** | **34** |
+
+This is asymmetric PPO: exact simulator information improves the value estimate
+and actor learning, but cannot enter the exported actor. Simulator state also
+drives rewards, terminations, resets, and physics.
+
+## Prerequisites
 
 The commands below assume:
 
 - repository: `/home/anon/Documents/so101-ros2`;
 - Isaac Lab: `/home/anon/Documents/IsaacLab`;
 - source-built Isaac Sim: `/home/anon/Documents/isaacsim`;
-- camera profile: always `dual_overhead`;
+- camera profile: `dual_overhead`;
 - a CUDA GPU for visual training and deployment;
-- a graphical desktop terminal with `DISPLAY` available for native Isaac Sim
-  windows;
-- `cube.stl` is the manipulated object and `cup.stl` is fixed during each
-  episode;
-- the supplied STLs use millimetres and are converted at `0.001 m/unit`;
+- `cube.stl` is manipulated and `cup.stl` remains fixed during an episode;
 - the generated repository SO-101 USD is authoritative.
 
-Every command in the ordered workflow is run from the repository root:
+Start from the repository root:
 
 ```bash
 cd /home/anon/Documents/so101-ros2
 export ISAACLAB_PYTHON=/home/anon/Documents/IsaacLab/.venv/bin/python
 ```
 
-## Choose what you want to do
+The entry points automatically switch to the configured source-built Isaac Sim
+runtime when required.
 
-| Goal | Go to |
+## Registered tasks
+
+| Task | Purpose |
 |---|---|
-| Understand or modify rewards, PPO, networks, or tasks | [Methodology](METHODOLOGY.md) |
-| Run the complete training/deployment lifecycle | [Required workflow](#required-workflow--run-these-steps-in-order) |
-| Open the fixed task in a visible Isaac Sim window | [Step 3](#step-3--open-the-fixed-task-visibly-required-smoke-check) |
-| Train while watching Isaac Sim | [Step 4, option A](#step-4--train-the-fixed-task-choose-one-option) |
-| Train faster on one GPU | [Step 4, option B](#step-4--train-the-fixed-task-choose-one-option) |
-| Train on two GPUs | [Step 4, option C](#step-4--train-the-fixed-task-choose-one-option) |
-| Watch a trained checkpoint | [Step 5](#step-5--play-and-accept-the-fixed-checkpoint-visibly) |
-| Export a policy for ROS 2 | [Step 9](#step-9--export-the-accepted-randomized-checkpoint) |
-| Run on real observations without commanding the arm | [Step 10](#step-10--start-real-robot-inference-in-shadow-mode) |
-| Arm or disarm real command publication | [Step 11](#step-11--arm-the-real-controller-only-after-all-gates-pass) |
-| Copy one standalone command | [Standalone command recipes](#standalone-command-recipes) |
+| `SO101-Object-In-Cup-Vision-Fixed-v0` | Nominal visual task for smoke checks and initial overfitting |
+| `SO101-Object-In-Cup-Vision-v0` | Randomized visual task for robust training and deployment |
 
-## Required workflow — run these steps in order
-
-Do not start randomized training first. The intended progression is:
+The intended lifecycle is:
 
 ```text
 prepare assets
-  -> inspect fixed task visibly
-  -> train fixed task
-  -> accept fixed checkpoint
-  -> train randomized task from fixed checkpoint
-  -> accept randomized checkpoint
+  -> inspect the fixed task
+  -> train and accept a fixed checkpoint
+  -> resume on the randomized task
+  -> evaluate held-out randomization
   -> export
-  -> real-input shadow mode
-  -> supervised real arming
+  -> run real inputs in shadow mode
+  -> arm only after every gate passes
 ```
 
-### Step 1 — configure the shell
+## 1. Prepare and validate assets
 
-```bash
-cd /home/anon/Documents/so101-ros2
-export ISAACLAB_PYTHON=/home/anon/Documents/IsaacLab/.venv/bin/python
-```
-
-Keep this shell open, or repeat these two commands in every new terminal.
-
-### Step 2 — prepare and validate all assets
-
-The visual task requires these existing teleop-generated assets:
+The visual task uses these teleop-generated assets:
 
 ```text
 build/isaacsim_so101/so101_follower/so101_follower.usda
@@ -107,8 +94,7 @@ build/isaacsim_so101/camera_rig/cam_mount_bottom.usd
 build/isaacsim_so101/camera_rig/cam_mount_top.usd
 ```
 
-If any are missing, generate them once through the existing sim-teleop asset
-path. This command also needs the built ROS workspace:
+If they are missing, build and source the ROS workspace, then generate them:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -120,17 +106,17 @@ source /home/anon/Documents/so101-ros2/install/setup.bash
   --headless --max-frames 1
 ```
 
-Add `--rebuild-asset` only after changing the robot Xacro, robot meshes, camera
-mount meshes, or camera rig configuration.
+Use `--rebuild-asset` only after changing robot Xacro/meshes, camera mount
+meshes, or camera rig configuration.
 
-Now prepare the supplied cube and open cup:
+Prepare and validate the cube and cup:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/prepare_assets
 "$ISAACLAB_PYTHON" isaaclab/prepare_assets --validate-only
 ```
 
-Expected generated files:
+Expected outputs:
 
 ```text
 build/isaaclab_assets/cube.usda
@@ -138,49 +124,38 @@ build/isaaclab_assets/cup.usda
 build/isaaclab_assets/manifest.json
 ```
 
-Re-run preparation after changing either STL or regenerating the robot USD.
+Repeat preparation after changing either STL or regenerating the robot USD.
 
-### Step 3 — open the fixed task visibly (required smoke check)
+## 2. Inspect the fixed task
 
-Run this from a graphical desktop terminal:
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/live \
-  --task SO101-Object-In-Cup-Vision-Fixed-v0 \
-  --num_envs 4
-```
-
-This is **not headless**. A native Isaac Sim window should open with four
-concurrent cloned environments. `--num_envs 1`, `4`, `16`, and so on select the
-number of simulations stepped concurrently in one Isaac Sim process.
-
-Before training, verify all of the following visually:
-
-- the robot, table, object, and open cup are present in every environment;
-- the cube can physically pass through the cup opening;
-- the wrist camera is attached to the gripper;
-- both overhead cameras and support geometry match sim teleop;
-- camera views, optical axes, FOV, robot initial pose, joint order, and gripper
-  direction are correct.
-
-Do not continue if this smoke check is wrong.
-
-To exercise actions and resets visibly instead of holding zero action:
+From a graphical desktop terminal, run:
 
 ```bash
-"$ISAACLAB_PYTHON" isaaclab/live \
-  --task SO101-Object-In-Cup-Vision-Fixed-v0 \
-  --num_envs 4 --policy random
+"$ISAACLAB_PYTHON" isaaclab/live --num_envs 4
 ```
 
-### Step 4 — train the fixed task (choose one option)
+`live` defaults to `SO101-Object-In-Cup-Vision-Fixed-v0` and opens the native
+Isaac Sim visualizer. Before training, verify:
 
-Choose exactly one launch option. They train the same fixed-pose task and write
-to the same experiment family.
+- robot, table, cube, and open cup geometry;
+- the cube fits through the cup opening;
+- wrist camera attachment and both overhead camera poses;
+- camera optical axes, FOV, image content, and support geometry;
+- joint ordering, limits, initial pose, gripper direction, actions, and resets.
 
-#### Option A — visible training while watching
+Exercise actions and resets with:
 
-Use this for debugging, not maximum throughput:
+```bash
+"$ISAACLAB_PYTHON" isaaclab/live --num_envs 4 --policy random
+```
+
+Do not train until this visual check is correct.
+
+## 3. Train and accept the fixed task
+
+Choose one launch mode.
+
+Visible debugging run:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/train \
@@ -190,9 +165,7 @@ Use this for debugging, not maximum throughput:
   physics=isaacsim_physx
 ```
 
-This is **visible**, not headless.
-
-#### Option B — faster single-GPU training
+Headless single-GPU run:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/train \
@@ -202,41 +175,27 @@ This is **visible**, not headless.
   physics=isaacsim_physx
 ```
 
-This is **headless** and uses 64 rendered environments on one GPU.
-
-#### Option C — two-GPU headless training
+Headless two-GPU run:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/train_multigpu \
   --num_gpus 2 \
   --task SO101-Object-In-Cup-Vision-Fixed-v0 \
   --rl_library rsl_rl \
-  --visualizer kit --num_envs 4 \
+  --num_envs 64 --headless \
   physics=isaacsim_physx
 ```
 
-This is **headless** and launches 64 environments per process/GPU, 128 total.
-It is data-parallel training: each GPU owns one complete actor, critic, optimizer,
-and 64-environment Isaac Sim batch. RSL-RL averages gradients across the two
-complete model replicas after every PPO minibatch; the neural network is not
-split across GPUs.
+`64` environments per process is a starting point, not a guaranteed capacity.
+The actor owns three camera encoders and the critic is a compact MLP, while every
+environment still renders three views. Reduce `--num_envs` if startup or
+training exceeds GPU memory.
 
-The local source-built Isaac Sim runtime creates the NCCL training group before
-Kit starts on each rank and keeps that group for the entire training run. This
-avoids a CUDA-interop crash when a new NCCL communicator is otherwise created
-after the rendered scene and PhysX CUDA contexts are active. RSL-RL's matching
-initialization request reuses the validated group.
-The repository PPO variant also broadcasts actor/critic state as tensors rather
-than using RSL-RL's CUDA `broadcast_object_list` path; PPO losses, optimizers,
-rollouts, and gradient averaging are otherwise unchanged.
-
-Do not set `CUDA_VISIBLE_DEVICES` separately for these workers. Isaac Sim's
-Vulkan device enumeration does not follow CUDA's remapped indices; use
-`--num_gpus 2` and let the launcher assign physical GPU 0 and GPU 1.
-
-To show both worker logs while diagnosing distributed startup, add
-`--log_all_ranks` immediately after `--num_gpus 2`. Normal training filters the
-duplicated rank-1 startup output.
+Two-GPU training is replicated data parallel: each GPU owns a complete model,
+optimizer, and simulation batch, and RSL-RL averages gradients. Do not remap
+the workers with `CUDA_VISIBLE_DEVICES`; Isaac Sim's Vulkan selection uses
+physical device indices. Add `--log_all_ranks` immediately after
+`--num_gpus 2` only when diagnosing distributed startup.
 
 Fixed checkpoints are written under:
 
@@ -244,12 +203,10 @@ Fixed checkpoints are written under:
 logs/rsl_rl/so101_object_in_cup_vision_fixed/<run>/model_<iteration>.pt
 ```
 
-### Step 5 — play and accept the fixed checkpoint visibly
-
-Replace the checkpoint placeholder with an absolute path:
+Inspect a checkpoint visibly:
 
 ```bash
-FIXED_CHECKPOINT=/absolute/path/to/logs/rsl_rl/so101_object_in_cup_vision_fixed/<run>/model_<iteration>.pt
+FIXED_CHECKPOINT=/absolute/path/to/model_<iteration>.pt
 
 "$ISAACLAB_PYTHON" isaaclab/play \
   --task SO101-Object-In-Cup-Vision-Fixed-v0 \
@@ -259,28 +216,13 @@ FIXED_CHECKPOINT=/absolute/path/to/logs/rsl_rl/so101_object_in_cup_vision_fixed/
   physics=isaacsim_physx
 ```
 
-This is **visible**. Do not start randomized training until the fixed task has
-at least 95% simulation success and the contacts, release behavior, and camera
-inputs are correct. The 95% value is an acceptance requirement, not a result
-already achieved by this repository.
+Require at least 95% fixed-task success and inspect contacts, release behavior,
+and camera inputs before continuing. This is an acceptance target, not a result
+already achieved by the repository.
 
-### Step 6 — train the randomized task from the fixed checkpoint
+## 4. Resume on the randomized task
 
-Keep `FIXED_CHECKPOINT` set to the accepted fixed checkpoint. Choose exactly one
-option below. Every option resumes from the fixed actor.
-
-#### Option A — visible randomized training
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/train \
-  --task SO101-Object-In-Cup-Vision-v0 \
-  --rl_library rsl_rl \
-  --resume --checkpoint "$FIXED_CHECKPOINT" \
-  --visualizer kit --num_envs 4 \
-  physics=isaacsim_physx
-```
-
-#### Option B — single-GPU headless randomized training
+Start randomized training from the accepted fixed checkpoint:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/train \
@@ -291,7 +233,7 @@ option below. Every option resumes from the fixed actor.
   physics=isaacsim_physx
 ```
 
-#### Option C — two-GPU headless randomized training
+For two GPUs, use the same task and checkpoint with the multi-GPU launcher:
 
 ```bash
 "$ISAACLAB_PYTHON" isaaclab/train_multigpu \
@@ -309,10 +251,15 @@ Randomized checkpoints are written under:
 logs/rsl_rl/so101_object_in_cup_vision/<run>/model_<iteration>.pt
 ```
 
-### Step 7 — play the randomized checkpoint visibly
+Fixed and randomized tasks use the same model contract, so a new fixed
+checkpoint can be resumed directly. Checkpoints using either the former
+35-value critic or the temporary camera critic are incompatible and are not
+migrated.
+
+## 5. Evaluate the randomized policy
 
 ```bash
-RANDOMIZED_CHECKPOINT=/absolute/path/to/logs/rsl_rl/so101_object_in_cup_vision/<run>/model_<iteration>.pt
+RANDOMIZED_CHECKPOINT=/absolute/path/to/model_<iteration>.pt
 
 "$ISAACLAB_PYTHON" isaaclab/play \
   --task SO101-Object-In-Cup-Vision-v0 \
@@ -322,24 +269,17 @@ RANDOMIZED_CHECKPOINT=/absolute/path/to/logs/rsl_rl/so101_object_in_cup_vision/<
   physics=isaacsim_physx
 ```
 
-Increase `--num_envs` to inspect more concurrent randomized environments when
-GPU memory permits.
-
-### Step 8 — pass simulation acceptance
-
 Before export or real command publication, require:
 
-- at least 90% success across 1,000 held-out randomized vision episodes;
-- held-out camera, lighting, material, mass, friction, and actuator variations;
-- no use of training-only reset states;
-- no NaNs, persistent penetrations, invalid actions, or joint-limit violations;
-- correct actor observations: only three images and six absolute joints.
+- at least 90% success across 1,000 held-out randomized episodes;
+- held-out camera, lighting, appearance, mass, friction, and actuator samples;
+- no NaNs, persistent penetrations, invalid actions, or limit violations;
+- confirmation that the exported actor contains only camera and joint inputs.
 
-Visible `play` is for inspection. This repository does not currently claim a
-completed 1,000-episode acceptance report; record that result separately before
-deployment.
+Visible playback is for qualitative inspection. Record the quantitative held-out
+result separately; this repository does not claim that it has been completed.
 
-### Step 9 — export the accepted randomized checkpoint
+## 6. Export the accepted checkpoint
 
 ```bash
 ARTIFACT_DIR=/absolute/path/to/policy-artifacts
@@ -351,7 +291,7 @@ ARTIFACT_DIR=/absolute/path/to/policy-artifacts
   physics=isaacsim_physx --headless
 ```
 
-The output directory must contain:
+The output directory contains:
 
 ```text
 policy.pt
@@ -359,151 +299,56 @@ policy.onnx
 policy_manifest.json
 ```
 
-Export checks checkpoint/TorchScript and checkpoint/ONNX action parity on the
-same environment observation. The manifest records camera order, image shape
-and preprocessing, joint order, frequency, delta scales, hard joint limits,
-0.98 safety margin, task ID, camera-calibration hash, and artifact checksums.
+Export includes only the actor. It checks checkpoint/TorchScript and
+checkpoint/ONNX action parity on the same observation. The manifest records
+camera preprocessing/order, joint order, action scales, limits, frequency,
+task ID, calibration hash, and artifact checksums.
 
-### Step 10 — start real-robot inference in shadow mode
+## 7. Validate real inputs, then arm
 
-Build and source the ROS package:
+Build and source the existing inference package:
 
 ```bash
-cd /home/anon/Documents/so101-ros2
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select so101_inference
 source install/setup.bash
-```
 
-Launch the exported policy:
-
-```bash
 ros2 launch so101_inference rsl_rl_infer.launch.py \
   model_dir:="$ARTIFACT_DIR" camera_profile:=dual_overhead
 ```
 
-The node starts in **shadow mode**. It runs inference but publishes no controller
-commands. It requires:
+The node starts in shadow mode and requires fresh, synchronized data from:
 
-- `/follower/image_raw`;
-- `/static_camera_1/image_raw`;
-- `/static_camera_2/image_raw`;
-- `/follower/joint_states`;
-- every stream fresh and all source timestamps within 50 ms;
-- a local CUDA workstation GPU.
+```text
+/follower/image_raw
+/static_camera_1/image_raw
+/static_camera_2/image_raw
+/follower/joint_states
+```
 
-Feed recorded real camera/joint observations through shadow mode and verify
-preprocessing, 20 Hz inference, action bounds, freshness rejection, manual
-arming, and hold-on-failure behavior before enabling publication.
+Validate preprocessing, 20 Hz inference, action bounds, timestamp rejection,
+hold-on-failure behavior, and manual arming using recorded real inputs before
+publishing commands.
 
-### Step 11 — arm the real controller only after all gates pass
-
-Do not arm until simulation acceptance and recorded-real-input shadow checks
-have passed. To arm:
+Arm only after simulation and shadow-mode gates pass:
 
 ```bash
 ros2 service call /so101_rl/set_enabled \
   std_srvs/srv/SetBool "{data: true}"
 ```
 
-To disable:
+Disable with:
 
 ```bash
 ros2 service call /so101_rl/set_enabled \
   std_srvs/srv/SetBool "{data: false}"
 ```
 
-Manual disable, stale or skewed data, inference failure, invalid output, or
-NaN/Inf publishes the current measured positions once as a hold target,
-disarms, and requires explicit rearming. Initial real validation is ten
-supervised episodes with no freshness, invalid-output, or joint-limit
-violations.
+Manual disable, stale/skewed data, inference failure, invalid output, or
+non-finite output sends one measured-position hold target, disarms, and requires
+explicit rearming.
 
-## Standalone command recipes
-
-These recipes are shortcuts. The complete lifecycle and gates above still
-apply.
-
-| Action | Visible? | Task/checkpoint |
-|---|---:|---|
-| Inspect fixed task | Yes | Fixed task, no checkpoint |
-| Inspect randomized task | Yes | Randomized task, no checkpoint |
-| Train fixed with four environments | Yes | Fixed task |
-| Train fixed with 64 environments | No | Fixed task |
-| Train randomized | Either | Must resume fixed checkpoint |
-| Play a checkpoint | Yes | Use the matching task ID |
-| Export | No | Accepted randomized checkpoint |
-
-### Inspect the fixed task now
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/live \
-  --task SO101-Object-In-Cup-Vision-Fixed-v0 --num_envs 4
-```
-
-### Inspect the randomized task now
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/live \
-  --task SO101-Object-In-Cup-Vision-v0 --num_envs 4
-```
-
-### Inspect randomized actions and resets
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/live \
-  --task SO101-Object-In-Cup-Vision-v0 \
-  --num_envs 16 --policy random
-```
-
-### Train or play visibly
-
-Use `--visualizer kit` and a small `--num_envs` value. Do not include
-`--headless`:
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/train \
-  --task SO101-Object-In-Cup-Vision-Fixed-v0 \
-  --rl_library rsl_rl --visualizer kit --num_envs 4 \
-  physics=isaacsim_physx
-```
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/play \
-  --task SO101-Object-In-Cup-Vision-v0 \
-  --rl_library rsl_rl --checkpoint "$RANDOMIZED_CHECKPOINT" \
-  --visualizer kit --num_envs 4 physics=isaacsim_physx
-```
-
-### Train headless
-
-Use `--headless`; 64 environments is the intended starting point per GPU:
-
-```bash
-"$ISAACLAB_PYTHON" isaaclab/train \
-  --task SO101-Object-In-Cup-Vision-Fixed-v0 \
-  --rl_library rsl_rl --num_envs 64 --headless \
-  physics=isaacsim_physx
-```
-
-## Task and model reference
-
-### Registered tasks
-
-| Task ID | Purpose | Actor input |
-|---|---|---|
-| `SO101-Object-In-Cup-v0` | State-based physics/debug baseline | Simulator state |
-| `SO101-Object-In-Cup-Vision-Fixed-v0` | Nominal fixed-pose visual overfit | Three images + six joints |
-| `SO101-Object-In-Cup-Vision-v0` | Randomized visual training/deployment | Three images + six joints |
-
-### Deployable actor observations
-
-```text
-observation.images.wrist       [N, 3, 120, 160] RGB / 255 - 0.5
-observation.images.overhead_1  [N, 3, 120, 160] RGB / 255 - 0.5
-observation.images.overhead_2  [N, 3, 120, 160] RGB / 255 - 0.5
-observation.state              [N, 6] absolute joint positions in radians
-```
+## Task reference
 
 Canonical joint and action order:
 
@@ -511,170 +356,86 @@ Canonical joint and action order:
 shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 ```
 
-The actor receives no joint velocity, previous action, object pose, cup pose, or
-object velocity. Those values are not exported.
+The policy runs at 20 Hz over 100 Hz physics. Normalized outputs are clipped to
+`[-1, 1]` and converted to measured-position deltas:
 
-### Training-only critic
+```text
+arm target delta      0.05 rad * action
+gripper target delta  0.15 rad * action
+```
 
-The asymmetric critic receives one 35-value group containing joint position,
-joint velocity, previous action, gripper/object delta, object/cup delta, object
-orientation, object velocity, and gripper position. Rewards and termination use
-simulator truth.
+The fixed task uses nominal geometry, appearance, physics, deterministic resets,
+and no observation/action latency. The randomized task adds layout, yaw, mass,
+friction, actuator, joint noise, camera calibration, appearance, lighting,
+image corruption, and zero/one-step camera/action latency.
 
-### Model and PPO
-
-- independent `[16, 32, 32]` CNN per camera;
-- kernels `[8, 4, 3]`, strides `[4, 2, 1]`, ELU;
-- spatial-softmax feature-location reduction;
-- actor head `[512, 256, 128]`;
-- critic MLP `[256, 256, 128]`;
-- 32 steps per environment;
-- fixed `7e-5` learning rate;
-- eight minibatches;
-- initial Gaussian action standard deviation `0.7`;
-- 15,000 maximum iterations;
-- checkpoint every 250 iterations.
-
-### Control and simulation
-
-- physics: 100 Hz;
-- policy and camera refresh: 20 Hz;
-- normalized policy output clipped to `[-1, 1]`;
-- arm delta scale: `0.05 rad/action`;
-- gripper delta scale: `0.15 rad/action`.
-
-### Fixed versus randomized task
-
-The fixed task uses nominal camera geometry, nominal physics/materials,
-deterministic robot/object/cup resets, and no observation or latency corruption.
-
-The randomized task adds object/cup pose, object orientation, mass, friction,
-actuator response, and observation noise plus:
-
-- overhead translation jitter up to 10 mm;
-- wrist translation jitter up to 5 mm;
-- camera rotation and FOV jitter up to 3 degrees;
-- lighting intensity/color, material color/roughness, exposure, contrast, RGB
-  gain, and Gaussian sensor noise;
-- sampled zero/one-policy-step camera and action latency.
-
-## Files and generated outputs
+## Files and outputs
 
 | Purpose | Location |
 |---|---|
-| Source cube/cup STLs | `isaaclab/assets/source/` |
-| Generated cube/cup USD and manifest | `build/isaaclab_assets/` |
-| Generated SO-101 robot USD | `build/isaacsim_so101/so101_follower/` |
-| Generated camera support USDs | `build/isaacsim_so101/camera_rig/` |
-| Nominal camera calibration | `so101_bringup/config/cameras/isaac_dual_overhead.yaml` |
+| Source cube/cup meshes | `isaaclab/assets/source/` |
+| Task and model package | `isaaclab/source/so101_rl/` |
+| Focused tests | `isaaclab/tests/` |
+| Generated cube/cup assets | `build/isaaclab_assets/` |
+| Generated robot and camera supports | `build/isaacsim_so101/` |
 | Fixed checkpoints | `logs/rsl_rl/so101_object_in_cup_vision_fixed/` |
 | Randomized checkpoints | `logs/rsl_rl/so101_object_in_cup_vision/` |
-| Exported deployment artifacts | User-selected `--output-dir` |
-| ROS 2 deployment launch file | `so101_inference/launch/rsl_rl_infer.launch.py` |
+| Exported actor | User-selected `--output-dir` |
 
-Generated assets, logs, and local environments are ignored by Git.
+Generated assets, logs, exports, and local environments are ignored by Git.
 
-## Verification and tests
+## Tests
 
-Run the focused test suite from the repository root:
+Run the focused Isaac Lab suite through the source-runtime bootstrap:
 
 ```bash
-PYTHONPATH=isaaclab/source/so101_rl \
-  "$ISAACLAB_PYTHON" -m unittest discover -s isaaclab/tests -v
-
-PYTHONPATH=so101_inference \
-  "$ISAACLAB_PYTHON" so101_inference/test/test_rsl_rl_policy.py
+"$ISAACLAB_PYTHON" isaaclab/test
 ```
 
-These tests cover task-critical contracts only: open cup collision geometry,
-object fit, action bounds and ordering, insertion/settling boundaries, exact
-actor groups, critic width, camera calibration conversion, model export
-signature, preprocessing, timestamp skew, manifest contents, and safe absolute
-target conversion.
-
-They do not prove PPO convergence, rendered-camera correctness inside a running
-Isaac Sim process, the 1,000-episode randomized acceptance target, or sim-to-real
-transfer. Those are runtime acceptance experiments.
+The suite checks asset geometry, action ordering/bounds, task timing, success
+boundaries, visual task registration, the exact 34-value critic layout, actor
+input isolation, camera calibration, latency reset behavior, actor export
+signatures, and the deployment manifest. It does not prove PPO convergence,
+rendered-camera correctness, held-out success, or sim-to-real transfer.
 
 ## Troubleshooting
 
-### No Isaac Sim window appears
+### No Isaac Sim window
 
-- confirm the command does not contain `--headless`;
-- add `--visualizer kit` for `train` or `play`;
-- run from a graphical desktop terminal and check `echo "$DISPLAY"` is nonempty;
-- use `isaaclab/live`, not the headless training recipe, for the first smoke test;
-- remote shells need an Isaac Lab livestream visualizer instead of a native
-  window.
+Use `isaaclab/live`, or pass `--visualizer kit` to `train`/`play`. Do not pass
+`--headless`. Run from a desktop session with `DISPLAY`; remote sessions require
+an Isaac Lab livestream visualizer.
 
-### Assets are reported missing
+### Missing assets
 
-Run [Step 2](#step-2--prepare-and-validate-all-assets). If the robot or camera
-support USDs are missing, run the existing sim-teleop generation command first;
-then run `isaaclab/prepare_assets`.
+Repeat asset generation and [asset preparation](#1-prepare-and-validate-assets).
+Regenerate after robot, camera mount, cube, or cup geometry changes.
 
-### Camera views are wrong
+### Wrong camera views
 
 Stop training. Compare the fixed task with sim teleop at the same joint pose and
-inspect `so101_bringup/config/cameras/isaac_dual_overhead.yaml`. That YAML is
-nominal calibration, not proof of pixel-perfect real calibration.
+inspect `so101_bringup/config/cameras/isaac_dual_overhead.yaml`. Nominal
+calibration is not proof of pixel-perfect real calibration.
 
 ### CUDA out of memory
 
-Reduce `--num_envs` from 64 to 32, 16, or 4. Three RGB cameras are rendered for
-every environment. For live visualization, start with four.
+Reduce `--num_envs` from 64 to 32, 16, or 4. Each environment renders three
+views; only the actor encodes images, while the critic uses an MLP.
 
-### Multi-GPU appears to stop at parameter synchronization
+### Multi-GPU startup stalls
 
-Use the repository's `isaaclab/train_multigpu` command from Option C. It starts
-the persistent NCCL group before Isaac Sim and performs replicated data-parallel
-PPO: one complete model and one simulation process on each GPU. Do not add
-`CUDA_VISIBLE_DEVICES`.
+Use `isaaclab/train_multigpu` without `CUDA_VISIBLE_DEVICES`. Add
+`--log_all_ranks` after `--num_gpus 2` and confirm both workers initialize NCCL,
+build their environments, and reach parameter synchronization. Initial shader
+compilation can take time.
 
-Add `--log_all_ranks` immediately after `--num_gpus 2` for diagnosis. Both ranks
-must print the persistent NCCL message, build their environments, and reach
-`Synchronizing parameters`. The first source-built RTX launch may spend time
-compiling shaders, so distinguish that startup work from a crashed worker by
-checking both rank logs.
+### Checkpoint fails to load
 
-### Checkpoint not found
-
-Use an absolute path. Fixed and randomized tasks use different log directories.
-Use the fixed task ID to play a fixed checkpoint and the randomized task ID to
-play a randomized checkpoint.
+Use an absolute path and the matching fixed/randomized task ID. Pre-cleanup
+35-value-critic checkpoints and temporary camera-critic checkpoints are
+incompatible.
 
 ### ROS node refuses to arm
 
-Check that all three raw RGB topics and `/follower/joint_states` are present,
-fresh, and within 50 ms source-timestamp skew. Confirm the manifest and
-TorchScript checksums match and CUDA is available. Any failure requires explicit
-rearming.
-
-### Local Isaac Sim source build aborts before creating the environment
-
-Use the documented `$ISAACLAB_PYTHON` value and repository entry points; they
-re-execute with the local source-built Isaac Sim runtime before importing task
-USD modules. If the state baseline also fails before environment creation, the
-problem is in the local Isaac Sim/Isaac Lab runtime rather than the vision task.
-
-## Geometry and task details
-
-The supplied cube is 25 mm per side. The cup is 50 mm tall with an inner radius
-of approximately 22.50 mm. The cube's worst-case horizontal radius is about
-17.68 mm, leaving roughly 4.83 mm radial clearance. Asset preparation derives a
-conservative 3.86 mm success tolerance.
-
-Preparation verifies watertight meshes, millimetre scale, a convex cube
-collision, a compound-convex open cup collision, unobstructed entry through the
-cup opening, mass, inertia, friction, restitution, contact offsets, and source
-asset hashes. A collision approximation that seals the cup is rejected.
-
-Task rewards cover reach, grasp, lift, transport, insertion, release, and stable
-placement, with action-rate and joint-velocity penalties. Success requires the
-released object to remain inside the cup below its rim at low velocity for ten
-consecutive policy steps (0.5 seconds). Episodes terminate on stable success,
-dropped object, non-finite state, or the 15-second timeout.
-
-This is a tight-contact manipulation task. PPO is not the main architectural
-risk: grasp geometry, contact behavior, calibration, reward progression, and
-matching the real actuator interface are the deployment-critical risks.
+Check all four input topics, source timestamp skew, manifest/artifact checksums,
+and CUDA availability. Any failure requires explicit rearming.

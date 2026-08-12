@@ -7,7 +7,6 @@ import math
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -33,13 +32,11 @@ from so101_rl.paths import (
 from . import mdp
 from .object_in_cup_env_cfg import (
     SO101_JOINTS,
-    ActionsCfg,
     EventsCfg,
     ObjectInCupSceneCfg,
     RewardsCfg,
-    SO101ObjectInCupEnvCfg,
+    SO101ObjectInCupBaseEnvCfg,
     TerminationsCfg,
-    _GRIPPER_CFG,
     _ROBOT_JOINT_CFG,
 )
 
@@ -292,7 +289,7 @@ class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
 
 
 @configclass
-class VisionActionsCfg(ActionsCfg):
+class VisionActionsCfg:
     joint_delta = mdp.DelayedRelativeJointPositionActionCfg(
         asset_name="robot",
         joint_names=list(SO101_JOINTS),
@@ -354,27 +351,21 @@ class VisionObservationsCfg:
             self.concatenate_terms = True
 
     @configclass
-    class CriticCfg(ObsGroup):
-        joint_position = ObsTerm(func=mdp.joint_pos_rel, params={"asset_cfg": _ROBOT_JOINT_CFG})
-        joint_velocity = ObsTerm(func=mdp.joint_vel_rel, params={"asset_cfg": _ROBOT_JOINT_CFG})
-        previous_action = ObsTerm(func=mdp.last_action)
-        gripper_object_delta = ObsTerm(func=mdp.ee_to_object)
-        object_cup_delta = ObsTerm(func=mdp.object_to_cup)
-        object_quaternion = ObsTerm(func=mdp.object_orientation)
-        object_velocity = ObsTerm(func=mdp.object_velocity)
-        gripper_position = ObsTerm(
-            func=mdp.gripper_position, params={"robot_cfg": _GRIPPER_CFG}
+    class CriticStateCfg(ObsGroup):
+        task_state = ObsTerm(
+            func=mdp.critic_task_state,
+            params={"robot_cfg": _ROBOT_JOINT_CFG},
         )
 
         def __post_init__(self):
-            self.enable_corruption = True
+            self.enable_corruption = False
             self.concatenate_terms = True
 
     joint_state: JointStateCfg = JointStateCfg()
     wrist: WristCfg = WristCfg()
     overhead_1: Overhead1Cfg = Overhead1Cfg()
     overhead_2: Overhead2Cfg = Overhead2Cfg()
-    critic: CriticCfg = CriticCfg()
+    critic_state: CriticStateCfg = CriticStateCfg()
 
 
 @configclass
@@ -436,7 +427,7 @@ class VisionEventsCfg(EventsCfg):
 
 
 @configclass
-class SO101ObjectInCupVisionEnvCfg(SO101ObjectInCupEnvCfg):
+class SO101ObjectInCupVisionEnvCfg(SO101ObjectInCupBaseEnvCfg):
     scene: ObjectInCupVisionSceneCfg = ObjectInCupVisionSceneCfg(
         # Per-environment USD materials must remain independently authorable.
         num_envs=64,
@@ -455,10 +446,8 @@ class SO101ObjectInCupVisionEnvCfg(SO101ObjectInCupEnvCfg):
         self.sim.render_interval = self.decimation
 
     def play_mode(self):
-        ManagerBasedRLEnvCfg.play_mode(self)
+        super().play_mode()
         self.observations.joint_state.enable_corruption = False
-        self.observations.critic.enable_corruption = False
-        self.scene.ee_frame.debug_vis = True
 
 
 @configclass

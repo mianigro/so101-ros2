@@ -3,13 +3,9 @@
 # Keep this list explicit. A wildcard import materializes every lazy Isaac Lab MDP
 # export, including USD-dependent helpers, before SimulationApp has launched.
 from isaaclab.envs.mdp import (
-    RelativeJointPositionActionCfg,
     action_rate_l2,
     joint_pos,
-    joint_pos_rel,
     joint_vel_l2,
-    joint_vel_rel,
-    last_action,
     randomize_actuator_gains,
     randomize_rigid_body_mass,
     randomize_rigid_body_material,
@@ -17,15 +13,13 @@ from isaaclab.envs.mdp import (
     time_out,
 )
 
+from .critic_observations import (
+    CRITIC_STATE_COMPONENTS,
+    CRITIC_STATE_DIM,
+    critic_task_state,
+)
 from .events import reset_task_layout
 from .geometry import placement_mask, update_settle_counter
-from .observations import (
-    ee_to_object,
-    gripper_position,
-    object_orientation,
-    object_to_cup,
-    object_velocity,
-)
 from .rewards import (
     grasp_object,
     insert_object,
@@ -45,25 +39,19 @@ from .vision_events import (
 from .vision_observations import camera_rgb
 
 __all__ = [
-    "ee_to_object",
-    "RelativeJointPositionActionCfg",
+    "CRITIC_STATE_COMPONENTS",
+    "CRITIC_STATE_DIM",
     "action_rate_l2",
     "camera_rgb",
+    "critic_task_state",
     "DelayedRelativeJointPositionActionCfg",
     "grasp_object",
-    "gripper_position",
     "insert_object",
     "invalid_state",
-    "joint_pos_rel",
     "joint_pos",
     "joint_vel_l2",
-    "joint_vel_rel",
-    "last_action",
     "lift_object",
     "object_dropped",
-    "object_orientation",
-    "object_to_cup",
-    "object_velocity",
     "placement_mask",
     "reach_object",
     "randomize_actuator_gains",

@@ -1,4 +1,4 @@
-"""Manager-based SO-101 object-in-cup reinforcement-learning environment."""
+"""Shared simulation configuration for SO-101 visual reinforcement learning."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
@@ -16,7 +14,6 @@ from isaaclab.physics import PhysxAutoCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import FrameTransformerCfg, OffsetCfg
 from isaaclab.utils.configclass import configclass
-from isaaclab.utils.noise import UniformNoiseCfg as UniformNoise
 from isaaclab.visualizers import VisualizerCfg
 from isaaclab_physx.physics import PhysxCfg
 from isaaclab_tasks.utils import PresetCfg
@@ -192,71 +189,10 @@ class ObjectInCupSceneCfg(InteractiveSceneCfg):
     )
 
 
-@configclass
-class ActionsCfg:
-    joint_delta = mdp.RelativeJointPositionActionCfg(
-        asset_name="robot",
-        joint_names=list(SO101_JOINTS),
-        preserve_order=True,
-        scale={"shoulder_.*|elbow_flex|wrist_.*": 0.05, "gripper": 0.15},
-        # JointAction clips after scaling, so these bounds are the result of
-        # clipping the normalized command to [-1, 1].
-        clip={
-            "shoulder_.*|elbow_flex|wrist_.*": (-0.05, 0.05),
-            "gripper": (-0.15, 0.15),
-        },
-        use_zero_offset=True,
-    )
-
-
 _ROBOT_JOINT_CFG = SceneEntityCfg(
     "robot", joint_names=list(SO101_JOINTS), preserve_order=True
 )
 _GRIPPER_CFG = SceneEntityCfg("robot", joint_names=["gripper"], preserve_order=True)
-
-
-@configclass
-class ObservationsCfg:
-    @configclass
-    class PolicyCfg(ObsGroup):
-        joint_position = ObsTerm(
-            func=mdp.joint_pos_rel,
-            params={"asset_cfg": _ROBOT_JOINT_CFG},
-            noise=UniformNoise(n_min=-0.005, n_max=0.005),
-        )
-        joint_velocity = ObsTerm(
-            func=mdp.joint_vel_rel,
-            params={"asset_cfg": _ROBOT_JOINT_CFG},
-            noise=UniformNoise(n_min=-0.01, n_max=0.01),
-        )
-        previous_action = ObsTerm(func=mdp.last_action)
-        gripper_object_delta = ObsTerm(
-            func=mdp.ee_to_object,
-            noise=UniformNoise(n_min=-0.001, n_max=0.001),
-        )
-        object_cup_delta = ObsTerm(
-            func=mdp.object_to_cup,
-            noise=UniformNoise(n_min=-0.001, n_max=0.001),
-        )
-        object_quaternion = ObsTerm(
-            func=mdp.object_orientation,
-            noise=UniformNoise(n_min=-0.002, n_max=0.002),
-        )
-        object_velocity = ObsTerm(
-            func=mdp.object_velocity,
-            noise=UniformNoise(n_min=-0.002, n_max=0.002),
-        )
-        gripper_position = ObsTerm(
-            func=mdp.gripper_position,
-            params={"robot_cfg": _GRIPPER_CFG},
-            noise=UniformNoise(n_min=-0.005, n_max=0.005),
-        )
-
-        def __post_init__(self):
-            self.enable_corruption = True
-            self.concatenate_terms = True
-
-    policy: PolicyCfg = PolicyCfg()
 
 
 @configclass
@@ -417,12 +353,9 @@ class SO101PhysicsCfg(PresetCfg):
 
 
 @configclass
-class SO101ObjectInCupEnvCfg(ManagerBasedRLEnvCfg):
-    scene: ObjectInCupSceneCfg = ObjectInCupSceneCfg(
-        num_envs=4096, env_spacing=0.8, replicate_physics=True
-    )
-    observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
+class SO101ObjectInCupBaseEnvCfg(ManagerBasedRLEnvCfg):
+    """Common scene and MDP configuration completed by a visual task subclass."""
+
     commands = None
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
@@ -458,5 +391,4 @@ class SO101ObjectInCupEnvCfg(ManagerBasedRLEnvCfg):
 
     def play_mode(self):
         super().play_mode()
-        self.observations.policy.enable_corruption = False
         self.scene.ee_frame.debug_vis = True

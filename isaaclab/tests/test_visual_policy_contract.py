@@ -34,35 +34,37 @@ class VisualPolicyContractTests(unittest.TestCase):
         self.assertAlmostEqual(sum(value * value for value in quaternion), 1.0, places=6)
         self.assertEqual(len(camera_profile_sha256()), 64)
 
-    def test_three_encoder_actor_forward_and_torchscript_signature(self):
+    def test_three_encoder_actor_and_torchscript_contract(self):
         observations = TensorDict(
             {
                 "joint_state": torch.zeros(2, 6),
                 "wrist": torch.zeros(2, 3, 120, 160),
                 "overhead_1": torch.zeros(2, 3, 120, 160),
                 "overhead_2": torch.zeros(2, 3, 120, 160),
-                "critic": torch.zeros(2, 35),
+                "critic_state": torch.zeros(2, 34),
             },
             batch_size=[2],
         )
+        observation_groups = {
+            "actor": ["joint_state", "wrist", "overhead_1", "overhead_2"],
+            "critic": ["critic_state"],
+        }
+        cnn_cfg = {
+            "output_channels": [16, 32, 32],
+            "kernel_size": [8, 4, 3],
+            "stride": [4, 2, 1],
+            "activation": "elu",
+        }
         model = SpatialSoftmaxCNNModel(
             observations,
-            {
-                "actor": ["joint_state", "wrist", "overhead_1", "overhead_2"],
-                "critic": ["critic"],
-            },
+            observation_groups,
             "actor",
             output_dim=6,
             hidden_dims=[512, 256, 128],
             activation="elu",
             obs_normalization=True,
             distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.7},
-            cnn_cfg={
-                "output_channels": [16, 32, 32],
-                "kernel_size": [8, 4, 3],
-                "stride": [4, 2, 1],
-                "activation": "elu",
-            },
+            cnn_cfg=cnn_cfg,
         )
         actions = model(observations)
         self.assertEqual(tuple(actions.shape), (2, 6))
