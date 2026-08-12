@@ -16,6 +16,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
 # --- CMake / C++ ---
 CMakeFiles/
@@ -42,3 +43,7 @@ Thumbs.db
 
 # --
 *keys.sh
+
+# --- Isaac Lab RL runtime artifacts ---
+logs/
+isaaclab/.venv/

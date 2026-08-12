@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Unified Isaac Lab training entry point for repository-owned SO-101 tasks."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+REPOSITORY_ROOT = PROJECT_ROOT.parent
+sys.path.insert(0, str(PROJECT_ROOT / "source" / "so101_rl"))
+
+from so101_rl.runtime import launch_isaac_sim_before_task_imports  # noqa: E402
+
+launch_isaac_sim_before_task_imports(Path(__file__))
+
+import so101_rl.tasks  # noqa: E402,F401
+from isaaclab_rl.entrypoints import run_train_cli  # noqa: E402
+
+
+def main() -> int:
+    """Train from the repository root; current Isaac Lab is headless by default."""
+    os.chdir(REPOSITORY_ROOT)
+    arguments = [argument for argument in sys.argv[1:] if argument != "--headless"]
+    return run_train_cli(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

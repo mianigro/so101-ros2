@@ -5,6 +5,18 @@ ROS 2 stack for the SO-101 robot arm in a leader/follower configuration: Feetech
 
 **End-to-end workflow:** [teleop](#teleop) → [record episodes](#data-collection) → [convert to LeRobot](#lerobot-dataset-conversion) → [train](#training) → [run policies](#inference)
 
+The repository also contains a separate, external Isaac Lab reinforcement-learning
+project for state and deployable three-camera SO-101 object-in-cup PPO training.
+Its visual actor consumes the same wrist/two-overhead RGB streams and six absolute
+joint positions available on the real robot, while a privileged state is used only
+by the training critic. It uses this repository's generated robot USD and supplied
+STL assets without modifying Isaac Lab or putting ROS 2 in the training loop. See
+[isaaclab/README.md](isaaclab/README.md) for asset preparation, visual PPO,
+multi-GPU/live playback, export, and shadow-mode deployment. The design,
+reward equations, algorithm support, neural-network configuration, and task/model
+extension process are in
+[isaaclab/METHODOLOGY.md](isaaclab/METHODOLOGY.md).
+
 ---
 
 ## Requirements

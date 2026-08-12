@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Prepare repository-owned STL assets for Isaac Lab."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT / "source" / "so101_rl"))
+
+from so101_rl.asset_prep import main  # noqa: E402
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
