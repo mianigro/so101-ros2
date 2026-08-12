@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import torch
+from rsl_rl.models.mlp_model import MLPModel
 from tensordict import TensorDict
 
 from so101_rl.camera_profile import (
@@ -16,7 +17,9 @@ from so101_rl.camera_profile import (
     wxyz_to_xyzw,
 )
 from so101_rl.export_manifest import build_policy_manifest
-from so101_rl.tasks.object_in_cup.agents.models import SpatialSoftmaxCNNModel
+from so101_rl.tasks.common.agents.models import SpatialSoftmaxCNNModel
+from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
+from so101_rl.visual_contract import SO101_ACTOR_OBSERVATION_GROUPS
 
 
 class VisualPolicyContractTests(unittest.TestCase):
@@ -46,7 +49,7 @@ class VisualPolicyContractTests(unittest.TestCase):
             batch_size=[2],
         )
         observation_groups = {
-            "actor": ["joint_state", "wrist", "overhead_1", "overhead_2"],
+            "actor": list(SO101_ACTOR_OBSERVATION_GROUPS),
             "critic": ["critic_state"],
         }
         cnn_cfg = {
@@ -78,6 +81,21 @@ class VisualPolicyContractTests(unittest.TestCase):
             ],
         )
         self.assertEqual(tuple(exported_actions.shape), (2, 6))
+
+        critic_cfg = SO101VisualPPOCfg().critic
+        critic = MLPModel(
+            observations,
+            observation_groups,
+            "critic",
+            output_dim=1,
+            hidden_dims=critic_cfg.hidden_dims,
+            activation=critic_cfg.activation,
+            obs_normalization=critic_cfg.obs_normalization,
+            distribution_cfg=critic_cfg.distribution_cfg,
+        )
+        values = critic(observations)
+        self.assertEqual(tuple(values.shape), (2, 1))
+        self.assertIsNone(critic.distribution)
 
     def test_manifest_contains_only_real_actor_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:

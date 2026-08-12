@@ -1,5 +1,5 @@
-"""Gym registrations for repository-owned SO-101 reinforcement-learning tasks."""
+"""Gym registrations and shared configs for repository-owned SO-101 tasks."""
 
-from . import object_in_cup
+from . import common, object_in_cup, three_boxes_in_cups
 
-__all__ = ["object_in_cup"]
+__all__ = ["common", "object_in_cup", "three_boxes_in_cups"]

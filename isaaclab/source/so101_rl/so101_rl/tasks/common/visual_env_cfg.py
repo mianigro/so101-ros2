@@ -1,19 +1,25 @@
-"""Three-camera deployable SO-101 object-in-cup environments."""
+"""Reusable SO-101 workcell, camera, action, and actor-observation configs."""
 
 from __future__ import annotations
 
-import copy
 import math
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import CameraCfg
+from isaaclab.physics import PhysxAutoCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import CameraCfg, FrameTransformerCfg, OffsetCfg
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.noise import UniformNoiseCfg as UniformNoise
+from isaaclab.visualizers import VisualizerCfg
+from isaaclab_physx.physics import PhysxCfg
+from isaaclab_tasks.utils import PresetCfg
 
 from so101_rl.camera_profile import (
     POLICY_IMAGE_HEIGHT,
@@ -26,18 +32,24 @@ from so101_rl.camera_profile import (
 from so101_rl.paths import (
     CAMERA_SUPPORT_BOTTOM_USD_PATH,
     CAMERA_SUPPORT_TOP_USD_PATH,
+    ROBOT_USD_PATH,
     require_vision_assets,
+)
+from so101_rl.visual_contract import (
+    SO101_ARM_ACTION_PATTERN,
+    SO101_ARM_DELTA_RAD,
+    SO101_ARM_JOINT_NAMES,
+    SO101_GRIPPER_DELTA_RAD,
+    SO101_JOINT_NAMES,
 )
 
 from . import mdp
-from .object_in_cup_env_cfg import (
-    SO101_JOINTS,
-    EventsCfg,
-    ObjectInCupSceneCfg,
-    RewardsCfg,
-    SO101ObjectInCupBaseEnvCfg,
-    TerminationsCfg,
-    _ROBOT_JOINT_CFG,
+
+SO101_ROBOT_JOINT_CFG = SceneEntityCfg(
+    "robot", joint_names=list(SO101_JOINT_NAMES), preserve_order=True
+)
+SO101_GRIPPER_CFG = SceneEntityCfg(
+    "robot", joint_names=["gripper"], preserve_order=True
 )
 
 _PROFILE = load_camera_profile()
@@ -52,6 +64,68 @@ _CLIPPING_RANGE = (
 _GRIPPER_PRIM_PATH = (
     "{ENV_REGEX_NS}/Robot/Geometry/base_link/shoulder_link/upper_arm_link/"
     "lower_arm_link/wrist_link/gripper_link"
+)
+
+
+def contact_properties() -> sim_utils.CollisionPropertiesCfg:
+    """Return the contact offsets used by the shared workcell and task props."""
+    return sim_utils.CollisionPropertiesCfg(contact_offset=0.001, rest_offset=0.0)
+
+
+def contact_material() -> sim_utils.RigidBodyMaterialCfg:
+    """Return the nominal contact material used by the shared workcell."""
+    return sim_utils.RigidBodyMaterialCfg(
+        static_friction=0.8,
+        dynamic_friction=0.6,
+        restitution=0.0,
+    )
+
+
+SO101_ROBOT_CFG = ArticulationCfg(
+    prim_path="{ENV_REGEX_NS}/Robot",
+    articulation_root_prim_path="/Geometry",
+    spawn=sim_utils.UsdFileCfg(
+        usd_path=str(ROBOT_USD_PATH),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            max_depenetration_velocity=5.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False,
+            solver_position_iteration_count=12,
+            solver_velocity_iteration_count=1,
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        # The base meshes extend 2.4 mm below base_link in this repository's URDF.
+        pos=(0.0, 0.0, 0.0024),
+        joint_pos={
+            "shoulder_pan": 0.0,
+            "shoulder_lift": -0.60,
+            "elbow_flex": 0.80,
+            "wrist_flex": 0.60,
+            "wrist_roll": 0.0,
+            "gripper": 1.50,
+        },
+    ),
+    actuators={
+        "arm": ImplicitActuatorCfg(
+            joint_names_expr=list(SO101_ARM_JOINT_NAMES),
+            effort_limit_sim=10.0,
+            velocity_limit_sim=10.0,
+            stiffness=17.8,
+            damping=0.60,
+        ),
+        "gripper": ImplicitActuatorCfg(
+            joint_names_expr=["gripper"],
+            effort_limit_sim=10.0,
+            velocity_limit_sim=10.0,
+            stiffness=17.8,
+            damping=0.60,
+        ),
+    },
+    soft_joint_pos_limit_factor=0.98,
+    joint_ordering=SO101_JOINT_NAMES,
 )
 
 
@@ -151,9 +225,7 @@ def _support_collider_cfg(camera_name: str, collider: str) -> AssetBaseCfg:
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True, disable_gravity=True
             ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                contact_offset=0.001, rest_offset=0.0
-            ),
+            collision_props=contact_properties(),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=position),
     )
@@ -171,22 +243,6 @@ def _housing_cfg(name: str, prim_path: str) -> AssetBaseCfg:
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, size[2] * 0.5)),
     )
-
-
-def _vision_object_cfgs():
-    nominal = ObjectInCupSceneCfg(num_envs=1, env_spacing=0.8)
-    object_cfg = copy.deepcopy(nominal.object)
-    object_cfg.spawn.visual_material = sim_utils.PreviewSurfaceCfg(
-        diffuse_color=(0.12, 0.35, 0.85), roughness=0.48
-    )
-    cup_cfg = copy.deepcopy(nominal.cup)
-    cup_cfg.spawn.visual_material = sim_utils.PreviewSurfaceCfg(
-        diffuse_color=(0.85, 0.35, 0.12), roughness=0.52
-    )
-    return object_cfg, cup_cfg
-
-
-_VISION_OBJECT_CFG, _VISION_CUP_CFG = _vision_object_cfgs()
 
 
 def _nominal_camera_contract() -> dict[str, dict]:
@@ -207,15 +263,63 @@ def _nominal_camera_contract() -> dict[str, dict]:
     return nominal
 
 
-NOMINAL_CAMERAS = _nominal_camera_contract()
+SO101_NOMINAL_CAMERAS = _nominal_camera_contract()
 
 
 @configclass
-class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
-    """State scene plus the YAML-derived three-camera rig in every environment."""
+class SO101VisualSceneCfg(InteractiveSceneCfg):
+    """SO-101 workcell and deployment-matched three-camera rig."""
 
-    object = _VISION_OBJECT_CFG
-    cup = _VISION_CUP_CFG
+    robot: ArticulationCfg = SO101_ROBOT_CFG
+
+    table: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Table",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.60, 0.46, 0.040),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True, disable_gravity=True
+            ),
+            collision_props=contact_properties(),
+            physics_material=contact_material(),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.28, 0.24, 0.20)
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.14, 0.0, -0.020)),
+    )
+
+    ground = AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        spawn=sim_utils.GroundPlaneCfg(color=(0.12, 0.12, 0.12)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.041)),
+        collision_group=-1,
+    )
+
+    ee_frame = FrameTransformerCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/Geometry/base_link",
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path=_GRIPPER_PRIM_PATH,
+                name="grasp_frame",
+                offset=OffsetCfg(
+                    pos=(-0.0079, -0.000218121, -0.0981274),
+                    rot=(0.0, 1.0, 0.0, 0.0),
+                ),
+            )
+        ],
+        debug_vis=False,
+    )
+
+    dome_light = AssetBaseCfg(
+        prim_path="/World/DomeLight",
+        spawn=sim_utils.DomeLightCfg(intensity=900.0, color=(0.90, 0.90, 0.90)),
+    )
+    distant_light = AssetBaseCfg(
+        prim_path="/World/DistantLight",
+        spawn=sim_utils.DistantLightCfg(
+            intensity=1200.0, color=(1.0, 0.95, 0.88)
+        ),
+    )
 
     support_1_bottom = _support_part_cfg("overhead_1", "bottom")
     support_1_top = _support_part_cfg("overhead_1", "top")
@@ -226,15 +330,14 @@ class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
     support_2_foot = _support_collider_cfg("overhead_2", "foot")
     support_2_post = _support_collider_cfg("overhead_2", "post")
 
-    # Author camera prims as ordinary scene assets before their housing children.
-    # If a housing child is spawned first, USD creates an intermediate Xform at
-    # the camera path and CameraCfg will not replace it with a Camera prim.
+    # Camera prims must be authored before their housing children. Otherwise USD
+    # creates an intermediate Xform that CameraCfg cannot replace with a Camera.
     wrist_camera_prim = AssetBaseCfg(
         prim_path=f"{_GRIPPER_PRIM_PATH}/WristCamera",
         spawn=_camera_spawn("wrist"),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=NOMINAL_CAMERAS["wrist"]["pos"],
-            rot=NOMINAL_CAMERAS["wrist"]["rot"],
+            pos=SO101_NOMINAL_CAMERAS["wrist"]["pos"],
+            rot=SO101_NOMINAL_CAMERAS["wrist"]["rot"],
         ),
     )
     wrist_housing = _housing_cfg("wrist", f"{_GRIPPER_PRIM_PATH}/WristCamera")
@@ -251,8 +354,8 @@ class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
         prim_path="{ENV_REGEX_NS}/CameraRig/OverheadCamera1",
         spawn=_camera_spawn("overhead_1"),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=NOMINAL_CAMERAS["overhead_1"]["pos"],
-            rot=NOMINAL_CAMERAS["overhead_1"]["rot"],
+            pos=SO101_NOMINAL_CAMERAS["overhead_1"]["pos"],
+            rot=SO101_NOMINAL_CAMERAS["overhead_1"]["rot"],
         ),
     )
     overhead_1_housing = _housing_cfg(
@@ -271,8 +374,8 @@ class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
         prim_path="{ENV_REGEX_NS}/CameraRig/OverheadCamera2",
         spawn=_camera_spawn("overhead_2"),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=NOMINAL_CAMERAS["overhead_2"]["pos"],
-            rot=NOMINAL_CAMERAS["overhead_2"]["rot"],
+            pos=SO101_NOMINAL_CAMERAS["overhead_2"]["pos"],
+            rot=SO101_NOMINAL_CAMERAS["overhead_2"]["rot"],
         ),
     )
     overhead_2_housing = _housing_cfg(
@@ -289,15 +392,18 @@ class ObjectInCupVisionSceneCfg(ObjectInCupSceneCfg):
 
 
 @configclass
-class VisionActionsCfg:
+class SO101VisualActionsCfg:
     joint_delta = mdp.DelayedRelativeJointPositionActionCfg(
         asset_name="robot",
-        joint_names=list(SO101_JOINTS),
+        joint_names=list(SO101_JOINT_NAMES),
         preserve_order=True,
-        scale={"shoulder_.*|elbow_flex|wrist_.*": 0.05, "gripper": 0.15},
+        scale={
+            SO101_ARM_ACTION_PATTERN: SO101_ARM_DELTA_RAD,
+            "gripper": SO101_GRIPPER_DELTA_RAD,
+        },
         clip={
-            "shoulder_.*|elbow_flex|wrist_.*": (-0.05, 0.05),
-            "gripper": (-0.15, 0.15),
+            SO101_ARM_ACTION_PATTERN: (-SO101_ARM_DELTA_RAD, SO101_ARM_DELTA_RAD),
+            "gripper": (-SO101_GRIPPER_DELTA_RAD, SO101_GRIPPER_DELTA_RAD),
         },
         use_zero_offset=True,
         max_delay_steps=1,
@@ -316,12 +422,14 @@ def _image_term(sensor_name: str) -> ObsTerm:
 
 
 @configclass
-class VisionObservationsCfg:
+class SO101VisualObservationsCfg:
+    """The complete and immutable deployable actor observation surface."""
+
     @configclass
     class JointStateCfg(ObsGroup):
         absolute_joint_positions = ObsTerm(
             func=mdp.joint_pos,
-            params={"asset_cfg": _ROBOT_JOINT_CFG},
+            params={"asset_cfg": SO101_ROBOT_JOINT_CFG},
             noise=UniformNoise(n_min=-0.005, n_max=0.005),
         )
 
@@ -350,57 +458,44 @@ class VisionObservationsCfg:
         def __post_init__(self):
             self.concatenate_terms = True
 
-    @configclass
-    class CriticStateCfg(ObsGroup):
-        task_state = ObsTerm(
-            func=mdp.critic_task_state,
-            params={"robot_cfg": _ROBOT_JOINT_CFG},
-        )
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
     joint_state: JointStateCfg = JointStateCfg()
     wrist: WristCfg = WristCfg()
     overhead_1: Overhead1Cfg = Overhead1Cfg()
     overhead_2: Overhead2Cfg = Overhead2Cfg()
-    critic_state: CriticStateCfg = CriticStateCfg()
 
 
 @configclass
-class VisionEventsCfg(EventsCfg):
+class SO101VisualEventsCfg:
+    actuator_response = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "stiffness_distribution_params": (0.85, 1.15),
+            "damping_distribution_params": (0.85, 1.15),
+            "operation": "scale",
+        },
+    )
+    reset_robot = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "asset_cfg": SO101_ROBOT_JOINT_CFG,
+            "position_range": (-0.03, 0.03),
+            "velocity_range": (-0.01, 0.01),
+        },
+    )
     randomize_cameras = EventTerm(
         func=mdp.randomize_camera_calibration,
         mode="reset",
         params={
-            "nominal": NOMINAL_CAMERAS,
+            "nominal": SO101_NOMINAL_CAMERAS,
             "width": POLICY_IMAGE_WIDTH,
             "height": POLICY_IMAGE_HEIGHT,
             "overhead_translation_jitter_m": 0.010,
             "wrist_translation_jitter_m": 0.005,
             "rotation_jitter_deg": 3.0,
             "fov_jitter_deg": 3.0,
-        },
-    )
-    object_visual = EventTerm(
-        func=mdp.randomize_preview_material,
-        mode="reset",
-        params={
-            "asset_name": "Object",
-            "color_low": (0.04, 0.10, 0.20),
-            "color_high": (0.45, 0.75, 1.0),
-            "roughness_range": (0.25, 0.85),
-        },
-    )
-    cup_visual = EventTerm(
-        func=mdp.randomize_preview_material,
-        mode="reset",
-        params={
-            "asset_name": "Cup",
-            "color_low": (0.30, 0.08, 0.03),
-            "color_high": (1.0, 0.65, 0.35),
-            "roughness_range": (0.25, 0.85),
         },
     )
     table_visual = EventTerm(
@@ -427,35 +522,50 @@ class VisionEventsCfg(EventsCfg):
 
 
 @configclass
-class SO101ObjectInCupVisionEnvCfg(SO101ObjectInCupBaseEnvCfg):
-    scene: ObjectInCupVisionSceneCfg = ObjectInCupVisionSceneCfg(
-        # Per-environment USD materials must remain independently authorable.
+class SO101PhysicsCfg(PresetCfg):
+    isaacsim_physx = PhysxCfg(
+        bounce_threshold_velocity=0.01,
+        friction_correlation_distance=0.00625,
+        solve_articulation_contact_last=True,
+        gpu_max_rigid_patch_count=5 * 2**15,
+        gpu_found_lost_pairs_capacity=2**25,
+    )
+    physx = PhysxAutoCfg(isaacsim_physx=isaacsim_physx)
+    default = isaacsim_physx
+
+
+@configclass
+class SO101VisualEnvCfg(ManagerBasedRLEnvCfg):
+    """Reusable visual platform; scenarios must supply task rewards and termination."""
+
+    scene: SO101VisualSceneCfg = SO101VisualSceneCfg(
         num_envs=64,
         env_spacing=0.8,
         replicate_physics=False,
     )
-    observations: VisionObservationsCfg = VisionObservationsCfg()
-    actions: VisionActionsCfg = VisionActionsCfg()
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-    events: VisionEventsCfg = VisionEventsCfg()
+    observations: SO101VisualObservationsCfg = SO101VisualObservationsCfg()
+    actions: SO101VisualActionsCfg = SO101VisualActionsCfg()
+    events: SO101VisualEventsCfg = SO101VisualEventsCfg()
+    rewards = None
+    terminations = None
+    commands = None
+    curriculum = None
 
     def __post_init__(self):
         require_vision_assets()
-        super().__post_init__()
+        self.decimation = 5
+        self.episode_length_s = 15.0
+        self.is_finite_horizon = False
+        self.sim.dt = 0.01
         self.sim.render_interval = self.decimation
+        self.sim.physics = SO101PhysicsCfg()
+        self.sim.default_visualizer_cfg = VisualizerCfg(
+            eye=(0.48, -0.48, 0.34),
+            lookat=(0.17, 0.0, 0.09),
+        )
 
-    def play_mode(self):
-        super().play_mode()
-        self.observations.joint_state.enable_corruption = False
-
-
-@configclass
-class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
-    """Nominal fixed-pose environment used to prove visual learnability first."""
-
-    def __post_init__(self):
-        super().__post_init__()
+    def _apply_fixed_mode(self) -> None:
+        """Disable shared randomization and latency for a scenario's fixed variant."""
         self.actions.joint_delta.max_delay_steps = 0
         self.observations.joint_state.enable_corruption = False
         self.observations.joint_state.absolute_joint_positions.noise = None
@@ -464,21 +574,30 @@ class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
             term.params["randomize"] = False
             term.params["max_delay_steps"] = 0
 
-        self.events.object_material = None
-        self.events.cup_material = None
-        self.events.object_mass = None
         self.events.actuator_response = None
         self.events.randomize_cameras = None
-        self.events.object_visual = None
-        self.events.cup_visual = None
         self.events.table_visual = None
         self.events.lighting = None
         self.events.reset_robot.params["position_range"] = (0.0, 0.0)
         self.events.reset_robot.params["velocity_range"] = (0.0, 0.0)
-        self.events.reset_layout.params.update(
-            object_xy_range_nominal=(0.0, 0.0),
-            object_xy_range_full=(0.0, 0.0),
-            cup_xy_range_nominal=(0.0, 0.0),
-            cup_xy_range_full=(0.0, 0.0),
-            object_yaw_range_full=(0.0, 0.0),
-        )
+
+    def play_mode(self):
+        super().play_mode()
+        self.scene.ee_frame.debug_vis = True
+        self.observations.joint_state.enable_corruption = False
+
+
+__all__ = [
+    "SO101_GRIPPER_CFG",
+    "SO101_NOMINAL_CAMERAS",
+    "SO101PhysicsCfg",
+    "SO101_ROBOT_CFG",
+    "SO101_ROBOT_JOINT_CFG",
+    "SO101VisualActionsCfg",
+    "SO101VisualEnvCfg",
+    "SO101VisualEventsCfg",
+    "SO101VisualObservationsCfg",
+    "SO101VisualSceneCfg",
+    "contact_material",
+    "contact_properties",
+]

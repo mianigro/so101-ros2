@@ -1,7 +1,7 @@
 [package]
 version = "0.1.0"
 title = "SO-101 RL"
-description = "SO-101 object-in-cup reinforcement-learning task"
+description = "SO-101 visual-manipulation reinforcement-learning tasks"
 category = "Simulation"
 keywords = ["isaaclab", "reinforcement-learning", "so101"]
 repository = ""
@@ -13,4 +13,3 @@ authors = ["SO-101 ROS 2 contributors"]
 
 [[python.module]]
 name = "so101_rl"
-

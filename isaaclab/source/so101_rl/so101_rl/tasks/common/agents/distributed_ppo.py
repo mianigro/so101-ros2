@@ -13,7 +13,7 @@ class TensorBroadcastPPO(PPO):
     """Synchronize model state with tensor collectives instead of object pickling.
 
     RSL-RL's default implementation sends CUDA state dictionaries through
-    `broadcast_object_list`. That path crashes the source-built Isaac Sim CUDA
+    ``broadcast_object_list``. That path crashes the source-built Isaac Sim CUDA
     interop plugin on this system. Direct tensor broadcasts cover parameters and
     buffers while retaining RSL-RL's normal tensor all-reduce for gradients.
     """
@@ -37,6 +37,4 @@ class TensorBroadcastPPO(PPO):
 class TensorBroadcastPPOCfg(RslRlPpoAlgorithmCfg):
     """Select the repository-owned distributed-safe PPO implementation."""
 
-    class_name: str = (
-        "so101_rl.tasks.object_in_cup.agents.distributed_ppo:TensorBroadcastPPO"
-    )
+    class_name: str = "so101_rl.tasks.common.agents.distributed_ppo:TensorBroadcastPPO"

@@ -1,4 +1,4 @@
-"""Actor RGB observations with deployment-equivalent preprocessing."""
+"""SO-101 actor RGB observations with deployment-equivalent preprocessing."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from isaaclab.utils import DelayBuffer
 
 
 class camera_rgb(ManagerTermBase):
-    """Return CHW RGB as ``RGB / 255 - 0.5`` with optional visual perturbations."""
+    """Return CHW RGB as ``RGB / 255 - 0.5`` with optional perturbations."""
 
     def __init__(self, cfg: ObservationTermCfg, env) -> None:
         super().__init__(cfg, env)

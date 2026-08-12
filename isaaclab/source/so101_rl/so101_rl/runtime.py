@@ -129,8 +129,7 @@ def launch_isaac_sim_before_task_imports(
     ):
         launcher_arguments.visualizer = [default_visualizer]
 
-    task_name = launcher_arguments.task
-    launcher_arguments.enable_cameras = task_name is None or "-Vision" in task_name
+    launcher_arguments.enable_cameras = True
 
     # Keep task, Hydra, and checkpoint arguments away from Kit's own argv
     # parser. AppLauncher receives every setting it needs through the namespace.

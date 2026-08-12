@@ -1,24 +1,26 @@
 # SO-101 visual reinforcement-learning methodology
 
-This document describes the object-in-cup task, camera/joint observation
-contract, reward and termination logic, neural networks, PPO configuration,
+This document describes the shared SO-101 visual platform, its single- and
+three-box scenarios, observation contracts, rewards, neural networks, PPO,
 randomization, and extension process. For asset preparation, launch commands,
 checkpoint progression, export, and real-robot safety gates, see
 [`README.md`](README.md).
 
 ## Supported design
 
-The repository supports single-agent RSL-RL PPO for two three-camera tasks:
+The repository supports single-agent RSL-RL PPO for four three-camera tasks:
 
 | Task | Role |
 |---|---|
 | `SO101-Object-In-Cup-Vision-Fixed-v0` | Nominal task used to prove visual learnability |
 | `SO101-Object-In-Cup-Vision-v0` | Randomized task used for robustness and deployment |
+| `SO101-Three-Boxes-In-Cups-Vision-Fixed-v0` | Nominal three-placement task |
+| `SO101-Three-Boxes-In-Cups-Vision-v0` | Curriculum-randomized three-placement task |
 
 The actor receives three RGB images and six measured joint positions and
 outputs six normalized joint-position deltas. A separate training-only critic
-receives one exact 34-value simulator task-state vector and outputs a scalar
-value estimate. Only the actor is exported.
+receives exact scenario state—34 values for one box or 84 for three—and outputs
+a scalar value estimate. Only the actor is exported.
 
 This is asymmetric PPO: simulator information can make the value estimate and
 advantages more accurate without changing the deployable policy interface.
@@ -60,7 +62,8 @@ learning failures.
 
 Physics runs at 100 Hz (`sim.dt = 0.01 s`). Environment decimation is five, so
 actions, observations, rewards, terminations, and camera refresh run at 20 Hz
-(`0.05 s`). A 15-second episode contains at most 300 policy steps.
+(`0.05 s`). The single-box horizon is 15 seconds or 300 steps; the three-box
+horizon is 45 seconds or 900 steps.
 
 Canonical joint/action order:
 
@@ -79,8 +82,8 @@ This is a joint-position-delta controller, not torque control. Isaac Sim applies
 the simulated articulation limits. The ROS adapter independently clips absolute
 targets to the URDF limits with its safety margin.
 
-The randomized task samples zero or one policy step of action latency. The fixed
-task applies actions immediately.
+Each randomized task samples zero or one policy step of action latency. Fixed
+variants apply actions immediately.
 
 ## Actor and critic observations
 
@@ -98,7 +101,7 @@ velocity, reward phase, termination counters, or success flags. The randomized
 task adds small joint measurement noise and image corruption/latency; the fixed
 task disables both.
 
-The critic uses one concatenated, noiseless `critic_state` group:
+The single-box critic uses one concatenated, noiseless `critic_state` group:
 
 | Component | Width | Meaning |
 |---|---:|---|
@@ -117,6 +120,23 @@ standalone gripper value is not duplicated. The critic also excludes cameras,
 observation noise, delay-buffer internals, and randomized dynamics parameters.
 It is task-complete rather than a dump of every simulator field.
 
+The three-box task uses a separate 84-value contract:
+
+| Component | Width | Ordering |
+|---|---:|---|
+| Absolute joint positions | 6 | Canonical SO-101 order |
+| Joint velocities | 6 | Canonical SO-101 order |
+| Last requested action | 6 | Canonical SO-101 order |
+| Gripper-to-box deltas | 9 | Box 1 through box 3 |
+| All box-to-cup deltas | 27 | Box-major, then cup 1 through cup 3 |
+| Box quaternions | 12 | Box 1 through box 3 |
+| Box linear velocities | 9 | Box 1 through box 3 |
+| Box angular velocities | 9 | Box 1 through box 3 |
+| **Total** | **84** | |
+
+It contains no occupancy flags or chosen assignment. Those are derived by the
+reward and termination logic, leaving the critic state exact and unambiguous.
+
 ```mermaid
 flowchart LR
     C["Three RGB cameras"] --> A["Actor: six action means"]
@@ -134,7 +154,7 @@ Changing actor observations is a deployment interface change and requires
 matching export-manifest and ROS preprocessing changes. Changing only the
 critic state invalidates checkpoints but does not change deployment.
 
-## Reward design
+## Single-box reward design
 
 The reward is a dense task sequence plus two smoothness penalties. Let:
 
@@ -209,7 +229,7 @@ release/stability terms keep completion more valuable than hovering.
 Inspect `Episode_Reward/<term>` metrics and trajectories. Increasing total
 reward alone does not prove the intended behavior.
 
-## Success and termination
+## Single-box success and termination
 
 | Condition | Definition |
 |---|---|
@@ -222,13 +242,45 @@ Ten steps at 20 Hz is a 0.5-second settling window. The counter resets whenever
 the mask becomes false, so a transient pass through the cup is not success.
 Timeout is a truncation, allowing PPO to bootstrap the value estimate.
 
+## Three-box scenario
+
+The boxes and cups are interchangeable. For every reward and success check, the
+task evaluates all six possible one-to-one assignments and selects the
+highest-scoring assignment. Consequently, a box may enter any cup, but two
+boxes in the same cup can never satisfy all-three success.
+
+Reach and grasp operate on the best unplaced box. Lift ignores placed boxes,
+and transport considers only unplaced boxes and empty cups. Insertion, release,
+and stable-placement progress sum the best assignment and divide by three so
+their maximum raw values remain `1.0`, matching the single-box reward scale.
+
+A placed box is considered released when the gripper is open or the grasp frame
+has moved at least 50 mm away. The distance alternative is necessary for a
+sequential task: closing the gripper around the next box must not invalidate
+earlier placements. Success requires all three boxes to be slow and inside
+three distinct cups for ten consecutive steps. Any dropped box terminates the
+episode, and the horizon is 45 seconds.
+
+The fixed layout uses three deterministic pickup anchors and three placement
+anchors. The randomized variant expands over 30,000,000 environment steps into
+separate reachable zones:
+
+```text
+boxes: x=[0.14, 0.30], y=[-0.13, -0.04]
+cups:  x=[0.14, 0.30], y=[ 0.04,  0.13]
+```
+
+Reset rejection sampling maintains at least 40 mm between boxes, 60 mm between
+cups, and 55 mm across types. A layout failure after 128 attempts is an error;
+the environment does not silently accept overlaps.
+
 ## Fixed task and domain randomization
 
 The fixed task disables reset variation, material/actuator randomization,
 camera perturbation, image corruption, joint noise, and camera/action latency.
 It answers one question: can the nominal visual task learn?
 
-The randomized task includes:
+The randomized variants include:
 
 - object/cup XY reset offsets and object yaw;
 - object mass and object/cup contact material;
@@ -238,10 +290,11 @@ The randomized task includes:
 - exposure, contrast, RGB gain, and Gaussian image noise;
 - zero/one-step camera and action latency.
 
-Layout variation grows linearly over 30,000,000 environment steps. Object XY
-half-range grows from 4 mm to 25 mm, cup XY half-range from 3 mm to 20 mm, and
-object yaw grows to `[-pi, pi]`. Startup physics samples are chosen when the
-environment process is created; reset events are sampled per episode.
+Layout variation grows linearly over 30,000,000 environment steps. The
+single-box ranges grow from small nominal offsets to 25 mm for the box and 20 mm
+for the cup. The three-box task grows from ±3 mm around fixed anchors into the
+zones above. Startup physics samples are chosen when the environment process is
+created; reset events are sampled per episode.
 
 Randomization ranges are transfer hypotheses, not evidence. Measure real camera
 calibration, timing, friction, and actuator response, then revise ranges from
@@ -251,8 +304,9 @@ can prevent early learning.
 ## Neural-network architecture
 
 The actor owns three independent camera encoders whose weights are not shared
-between views. The critic is a separate normalized MLP over its 34-value state.
-Training therefore uses three CNN encoders rather than six.
+between views. The critic is a separate normalized MLP over its scenario's
+34- or 84-value state. Training therefore uses three CNN encoders rather than
+six.
 
 For each `[3, 120, 160]` image:
 
@@ -283,8 +337,8 @@ Spatial softmax emphasizes feature location, which suits object-in-cup control,
 but learned features are not guaranteed to correspond to the cube, cup, or
 gripper. Inspect renders and learned keypoints when diagnosing failures.
 
-Implementation and deployment adapters live in
-[`models.py`](source/so101_rl/so101_rl/tasks/object_in_cup/agents/models.py).
+Implementation and deployment adapters live in the shared
+[`models.py`](source/so101_rl/so101_rl/tasks/common/agents/models.py).
 
 ## PPO configuration
 
@@ -350,15 +404,14 @@ backend choices do not fit this task without redesign.
 Create a new named runner preset rather than silently changing an accepted
 baseline:
 
-1. Copy the relevant actor or critic configuration in
-   [`rsl_rl_vision_ppo_cfg.py`](source/so101_rl/so101_rl/tasks/object_in_cup/agents/rsl_rl_vision_ppo_cfg.py).
+1. Subclass the shared `SO101VisualPPOCfg` in the scenario's agent configuration.
 2. Change actor CNN channels/kernels/strides, spatial-softmax temperature, actor
    head widths, critic MLP widths, activation, normalization, or distribution
    settings.
 3. For actor changes, confirm every convolution produces positive dimensions. Spatial
    softmax requires `global_pool="none"` and an unflattened feature map.
 4. Give incompatible experiments distinct `experiment_name` values.
-5. Validate the 34-value critic contract, scalar value output, actor forward
+5. Validate the scenario's critic width, scalar value output, actor forward
    shape, and actor export before training.
 6. Compare short fixed-task runs with identical seeds, rollout budgets, and
    evaluation episodes.
@@ -383,7 +436,7 @@ replacement actor should:
    ```python
    @configclass
    class MyVisualModelCfg(RslRlCNNModelCfg):
-       class_name = "so101_rl.tasks.object_in_cup.agents.my_model:MyVisualModel"
+       class_name = "so101_rl.tasks.common.agents.my_model:MyVisualModel"
    ```
 
 7. Update export, manifest, and ROS preprocessing whenever actor I/O changes.
@@ -396,8 +449,7 @@ checkpoint compatibility note together.
 
 For a reward:
 
-1. Add a vectorized function to
-   [`mdp/rewards.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/rewards.py).
+1. Add a vectorized function to the scenario's `mdp/rewards.py`.
 2. Export it explicitly from `mdp/__init__.py`.
 3. Add a visible `RewardTermCfg` with its parameters and weight.
 4. Put reusable pure tensor geometry in `mdp/geometry.py`.
@@ -446,20 +498,43 @@ still six.
 
 ### Create another visual task
 
-Keep related tasks inside this external package rather than modifying the Isaac
-Lab checkout:
+The shared platform owns the robot, workcell, cameras, actor observation groups,
+joint action, physics, common randomization, visual actor, and PPO defaults. A
+new scenario should subclass those configs instead of copying them:
 
-1. Create `source/so101_rl/so101_rl/tasks/<task_name>/` with environment, MDP,
-   registration, and agent configuration modules.
-2. Define the scene, sensors, action, camera/joint observations, rewards,
-   terminations, events, physics rate, episode duration, and environment count.
-3. Provide a fixed visual variant before the randomized variant.
-4. Configure a camera-based actor, task-state MLP critic, and unique experiment
-   name.
-5. Register unique Gym IDs and import the task module from `tasks/__init__.py`.
-6. Add visible zero/random-action checks, focused contract/boundary tests,
-   held-out evaluation, and export/deployment checks.
-7. Document the ordered workflow and limitations.
+```python
+@configclass
+class MySceneCfg(SO101VisualSceneCfg):
+    target: RigidObjectCfg = ...
+
+@configclass
+class MyObservationsCfg(SO101VisualObservationsCfg):
+    critic_state: CriticStateCfg = CriticStateCfg()
+
+@configclass
+class MyEnvCfg(SO101VisualEnvCfg):
+    scene = MySceneCfg(num_envs=64, env_spacing=0.8, replicate_physics=False)
+    observations = MyObservationsCfg()
+    rewards = MyRewardsCfg()
+    terminations = MyTerminationsCfg()
+    events = MyEventsCfg()
+```
+
+The scenario still owns meaningful semantics:
+
+1. Add its assets to a scene subclass.
+2. Add one documented, noiseless critic group to the shared actor observations.
+3. Define vectorized reset, reward, termination, and pure geometry functions.
+4. Provide a fixed subclass that calls `_apply_fixed_mode()` before disabling
+   its own randomization.
+5. Subclass `SO101VisualPPOCfg` only for a unique experiment name or intentional
+   hyperparameter overrides.
+6. Register unique fixed/randomized Gym IDs and import the scenario package.
+7. Test task boundaries and run deployment-contract validation.
+
+The three-box scenario is the concrete example: it reuses the platform without
+adding actor inputs, while owning its six assets, collision-safe reset,
+permutation matching, 84-value critic, rewards, and success definition.
 
 Do not add simulator-only values to the deployable actor. Keep them in the
 training-only critic or task scoring/reset paths, with an explicit documented
@@ -469,18 +544,13 @@ contract.
 
 | Concern | Source |
 |---|---|
-| Robot, scene, physics, rewards, terminations, reset events | [`object_in_cup_env_cfg.py`](source/so101_rl/so101_rl/tasks/object_in_cup/object_in_cup_env_cfg.py) |
-| Cameras, model observations/actions, fixed/randomized variants | [`vision_env_cfg.py`](source/so101_rl/so101_rl/tasks/object_in_cup/vision_env_cfg.py) |
-| Exact 34-value critic state | [`mdp/critic_observations.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/critic_observations.py) |
-| Reward formulas | [`mdp/rewards.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/rewards.py) |
-| Placement geometry | [`mdp/geometry.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/geometry.py) |
-| Stateful success and failures | [`mdp/terminations.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/terminations.py) |
-| Layout curriculum | [`mdp/events.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/events.py) |
-| Image preprocessing/latency | [`mdp/vision_observations.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/vision_observations.py) |
-| Action latency | [`mdp/vision_actions.py`](source/so101_rl/so101_rl/tasks/object_in_cup/mdp/vision_actions.py) |
-| PPO/model configuration | [`agents/rsl_rl_vision_ppo_cfg.py`](source/so101_rl/so101_rl/tasks/object_in_cup/agents/rsl_rl_vision_ppo_cfg.py) |
-| CNN models and exporters | [`agents/models.py`](source/so101_rl/so101_rl/tasks/object_in_cup/agents/models.py) |
-| Gym registrations | [`object_in_cup/__init__.py`](source/so101_rl/so101_rl/tasks/object_in_cup/__init__.py) |
+| Shared robot, workcell, cameras, actions, observations, physics, fixed mode | [`common/visual_env_cfg.py`](source/so101_rl/so101_rl/tasks/common/visual_env_cfg.py) |
+| Shared actor, PPO, and distributed synchronization | [`common/agents/`](source/so101_rl/so101_rl/tasks/common/agents/) |
+| Shared camera/action terms and visual randomization | [`common/mdp/`](source/so101_rl/so101_rl/tasks/common/mdp/) |
+| Single-box scenario and 34-value critic | [`object_in_cup/`](source/so101_rl/so101_rl/tasks/object_in_cup/) |
+| Three-box scenario and 84-value critic | [`three_boxes_in_cups/`](source/so101_rl/so101_rl/tasks/three_boxes_in_cups/) |
+| Stable deployment constants | [`visual_contract.py`](source/so101_rl/so101_rl/visual_contract.py) |
+| Contract-based export validation | [`export_manifest.py`](source/so101_rl/so101_rl/export_manifest.py) |
 
 ## Experimental record
 

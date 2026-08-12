@@ -1,4 +1,4 @@
-"""Visual-domain randomization for the deployable camera task."""
+"""Visual-domain randomization shared by SO-101 manipulation scenarios."""
 
 from __future__ import annotations
 
@@ -62,12 +62,18 @@ def randomize_camera_calibration(
     origins = env.scene.env_origins[ids]
 
     wrist_camera = env.scene["wrist_camera"]
-    wrist_pos = torch.tensor(nominal["wrist"]["pos"], device=env.device).repeat(count, 1)
+    wrist_pos = torch.tensor(nominal["wrist"]["pos"], device=env.device).repeat(
+        count, 1
+    )
     wrist_pos += torch.empty_like(wrist_pos).uniform_(
         -wrist_translation_jitter_m, wrist_translation_jitter_m
     )
-    wrist_quat = torch.tensor(nominal["wrist"]["rot"], device=env.device).repeat(count, 1)
-    wrist_quat = quat_mul(wrist_quat, _rotation_jitter(count, rotation_jitter_deg, env.device))
+    wrist_quat = torch.tensor(nominal["wrist"]["rot"], device=env.device).repeat(
+        count, 1
+    )
+    wrist_quat = quat_mul(
+        wrist_quat, _rotation_jitter(count, rotation_jitter_deg, env.device)
+    )
     # Camera exposes world-pose writes only; its generic frame view is used here
     # so a reset never derives the local wrist offset from stale body kinematics.
     wrist_camera._view.set_local_poses(
@@ -89,12 +95,16 @@ def randomize_camera_calibration(
 
     for name in ("overhead_1", "overhead_2"):
         camera = env.scene[f"{name}_camera"]
-        position = torch.tensor(nominal[name]["pos"], device=env.device).repeat(count, 1)
+        position = torch.tensor(nominal[name]["pos"], device=env.device).repeat(
+            count, 1
+        )
         position += origins
         position += torch.empty_like(position).uniform_(
             -overhead_translation_jitter_m, overhead_translation_jitter_m
         )
-        orientation = torch.tensor(nominal[name]["rot"], device=env.device).repeat(count, 1)
+        orientation = torch.tensor(nominal[name]["rot"], device=env.device).repeat(
+            count, 1
+        )
         orientation = quat_mul(
             orientation, _rotation_jitter(count, rotation_jitter_deg, env.device)
         )

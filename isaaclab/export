@@ -30,10 +30,11 @@ from isaaclab_rl.rsl_rl import (  # noqa: E402
 from isaaclab_tasks.utils import setup_preset_cli  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 from so101_rl.export_manifest import (  # noqa: E402
-    JOINT_NAMES,
     build_policy_manifest,
+    validate_deployable_contract,
     write_policy_manifest,
 )
+from so101_rl.visual_contract import SO101_JOINT_NAMES  # noqa: E402
 
 import so101_rl.tasks  # noqa: E402,F401
 
@@ -54,6 +55,8 @@ def _export(env_cfg, agent_cfg) -> None:
         raise FileNotFoundError(f"checkpoint does not exist: {checkpoint}")
     output_dir = args_cli.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    validate_deployable_contract(args_cli.task, env_cfg, agent_cfg)
 
     env_cfg.scene.num_envs = 1
     env_cfg.seed = agent_cfg.seed
@@ -133,7 +136,7 @@ def _export(env_cfg, agent_cfg) -> None:
             )
 
         robot = wrapped.unwrapped.scene["robot"]
-        indices = [robot.joint_names.index(name) for name in JOINT_NAMES]
+        indices = [robot.joint_names.index(name) for name in SO101_JOINT_NAMES]
         limits = (
             robot.data.joint_pos_limits.torch[0, indices]
             .detach()

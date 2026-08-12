@@ -1,4 +1,4 @@
-"""Deployment-matched joint-delta actions with bounded policy-step latency."""
+"""Deployment-matched SO-101 joint actions with bounded policy-step latency."""
 
 from __future__ import annotations
 
@@ -26,10 +26,7 @@ class DelayedRelativeJointPositionAction(RelativeJointPositionAction):
         if self.cfg.max_delay_steps <= 0:
             self._delay.set_time_lag(0, env_ids)
             return
-        if isinstance(env_ids, slice):
-            count = self.num_envs
-        else:
-            count = len(env_ids)
+        count = self.num_envs if isinstance(env_ids, slice) else len(env_ids)
         lags = torch.randint(
             0,
             self.cfg.max_delay_steps + 1,

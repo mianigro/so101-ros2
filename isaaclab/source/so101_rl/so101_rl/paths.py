@@ -79,10 +79,11 @@ def load_asset_manifest() -> dict:
 
 
 def require_vision_assets() -> None:
-    """Require the nominal camera profile and teleop-authored support meshes."""
+    """Require the robot and nominal camera rig shared by every visual task."""
     missing = [
         path
         for path in (
+            ROBOT_USD_PATH,
             CAMERA_PROFILE_PATH,
             CAMERA_SUPPORT_BOTTOM_USD_PATH,
             CAMERA_SUPPORT_TOP_USD_PATH,
@@ -93,7 +94,7 @@ def require_vision_assets() -> None:
         return
     formatted = "\n".join(f"  - {path}" for path in missing)
     raise FileNotFoundError(
-        "SO-101 vision assets are unavailable. Missing:\n"
+        "SO-101 visual-platform assets are unavailable. Missing:\n"
         f"{formatted}\n"
         "Run scripts/isaac_sim_teleop.py once so its YAML-derived camera support "
         "assets are authored before launching the Isaac Lab vision task."

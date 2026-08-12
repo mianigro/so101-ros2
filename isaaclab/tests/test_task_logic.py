@@ -18,7 +18,7 @@ from so101_rl.tasks.object_in_cup.mdp.geometry import (
     update_settle_counter,
 )
 from so101_rl.tasks.object_in_cup.mdp.terminations import object_dropped
-from so101_rl.tasks.object_in_cup.mdp.vision_observations import camera_rgb
+from so101_rl.tasks.common.mdp.observations import camera_rgb
 
 
 class CriticObservationTests(unittest.TestCase):

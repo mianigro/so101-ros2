@@ -1,4 +1,4 @@
-"""Repository-owned RSL-RL multi-camera spatial-softmax actor."""
+"""Reusable RSL-RL multi-camera spatial-softmax actor."""
 
 from __future__ import annotations
 
@@ -194,7 +194,10 @@ class _OnnxSpatialSoftmaxActor(_TorchSpatialSoftmaxActor):
 
     @property
     def input_names(self) -> list[str]:
-        return ["observation.state", *[f"observation.images.{name}" for name in self.image_groups]]
+        return [
+            "observation.state",
+            *[f"observation.images.{name}" for name in self.image_groups],
+        ]
 
     @property
     def output_names(self) -> list[str]:

@@ -1,12 +1,14 @@
 # SO-101 three-camera PPO
 
-This directory is a repository-owned Isaac Lab project for training a visual
-SO-101 object-in-cup policy with RSL-RL PPO. The deployable actor receives three
-RGB images and six measured joint positions. A separate training-only critic
-receives exact simulator task state and is never exported to ROS 2.
+This directory is a repository-owned Isaac Lab project for training visual
+SO-101 manipulation policies with RSL-RL PPO. It includes single-box and
+three-box placement scenarios built on one reusable workcell configuration.
+The deployable actor receives three RGB images and six measured joint positions.
+A separate training-only critic receives exact scenario state and is never
+exported to ROS 2.
 
 Isaac Lab supplies simulation, rendering, managers, and the RSL-RL runtime.
-This project owns the task, assets, camera contract, models, PPO configuration,
+This project owns the tasks, assets, camera contract, models, PPO configuration,
 export contract, and entry points. For reward formulas, network details, PPO
 parameters, design rationale, and extension instructions, see
 [`METHODOLOGY.md`](METHODOLOGY.md).
@@ -23,9 +25,9 @@ overhead_1  [N, 3, 120, 160]  RGB / 255 - 0.5
 overhead_2  [N, 3, 120, 160]  RGB / 255 - 0.5
 ```
 
-The actor does not receive object pose, cup pose, object velocity, previous
-action, reward state, or success flags. The training-only critic receives one
-noiseless 34-value `critic_state` group:
+The actor does not receive box/cup poses, velocities, previous actions, reward
+state, or success flags. The single-box task adds this noiseless training-only
+34-value `critic_state` group:
 
 | Component | Width |
 |---|---:|
@@ -36,7 +38,12 @@ noiseless 34-value `critic_state` group:
 | Object-to-cup delta | 3 |
 | Object quaternion | 4 |
 | Object linear and angular velocity | 6 |
-| **Total** | **34** |
+| **Single-box total** | **34** |
+
+The three-box task instead uses an 84-value state: the same 18 robot/action
+values, three gripper-to-box deltas, all nine box-to-cup deltas in box-major
+order, and pose/velocity values for all three boxes. See
+[`METHODOLOGY.md`](METHODOLOGY.md#three-box-scenario) for the exact layout.
 
 This is asymmetric PPO: exact simulator information improves the value estimate
 and actor learning, but cannot enter the exported actor. Simulator state also
@@ -64,12 +71,38 @@ export ISAACLAB_PYTHON=/home/anon/Documents/IsaacLab/.venv/bin/python
 The entry points automatically switch to the configured source-built Isaac Sim
 runtime when required.
 
-## Registered tasks
+## Scenarios
 
-| Task | Purpose |
-|---|---|
-| `SO101-Object-In-Cup-Vision-Fixed-v0` | Nominal visual task for smoke checks and initial overfitting |
-| `SO101-Object-In-Cup-Vision-v0` | Randomized visual task for robust training and deployment |
+Choose the scenario first, then choose its training stage:
+
+| Scenario | Goal | Episode | Fixed task | Randomized task |
+|---|---|---:|---|---|
+| Single box | Put one box into one cup and release it stably | 15 s | `SO101-Object-In-Cup-Vision-Fixed-v0` | `SO101-Object-In-Cup-Vision-v0` |
+| Three boxes | Put all three interchangeable boxes into three distinct cups, in any assignment | 45 s | `SO101-Three-Boxes-In-Cups-Vision-Fixed-v0` | `SO101-Three-Boxes-In-Cups-Vision-v0` |
+
+Use the fixed task to inspect the scene and prove that PPO can learn the
+scenario without randomization. Resume that scenario's accepted fixed
+checkpoint into its randomized task for robustness and export. Do not resume a
+single-box checkpoint into the three-box task or vice versa: the deployable
+actors have the same interface, but the training-only critics have different
+input widths.
+
+Pass the selected ID with `--task` to `live`, `train`, `train_multigpu`, `play`,
+or `export`. For example:
+
+```bash
+# Inspect the deterministic single-box scenario (also the `live` default).
+"$ISAACLAB_PYTHON" isaaclab/live \
+  --task SO101-Object-In-Cup-Vision-Fixed-v0 --num_envs 4
+
+# Inspect the deterministic three-box scenario.
+"$ISAACLAB_PYTHON" isaaclab/live \
+  --task SO101-Three-Boxes-In-Cups-Vision-Fixed-v0 --num_envs 4
+```
+
+The remaining commands use the single-box IDs as the concise baseline. Replace
+them with both three-box IDs at the corresponding fixed and randomized stages
+to run the three-box workflow; a complete command pair is included below.
 
 The intended lifecycle is:
 
@@ -103,7 +136,8 @@ source /home/anon/Documents/so101-ros2/install/setup.bash
 /home/anon/Documents/isaacsim/_build/linux-x86_64/release/python.sh \
   /home/anon/Documents/so101-ros2/scripts/isaac_sim_teleop.py \
   --camera-profile dual_overhead \
-  --headless --max-frames 1
+  --headless --max-frames 1 \
+  --rebuild-asset
 ```
 
 Use `--rebuild-asset` only after changing robot Xacro/meshes, camera mount
@@ -150,6 +184,14 @@ Exercise actions and resets with:
 ```
 
 Do not train until this visual check is correct.
+
+Inspect the three-box fixed layout explicitly with:
+
+```bash
+"$ISAACLAB_PYTHON" isaaclab/live \
+  --task SO101-Three-Boxes-In-Cups-Vision-Fixed-v0 \
+  --num_envs 4
+```
 
 ## 3. Train and accept the fixed task
 
@@ -255,6 +297,42 @@ Fixed and randomized tasks use the same model contract, so a new fixed
 checkpoint can be resumed directly. Checkpoints using either the former
 35-value critic or the temporary camera critic are incompatible and are not
 migrated.
+
+### Three-box workflow
+
+The three-box task uses the same commands and actor contract. Train its fixed
+variant first:
+
+```bash
+"$ISAACLAB_PYTHON" isaaclab/train \
+  --task SO101-Three-Boxes-In-Cups-Vision-Fixed-v0 \
+  --rl_library rsl_rl \
+  --num_envs 64 --headless \
+  physics=isaacsim_physx
+```
+
+Then resume that checkpoint on the randomized variant:
+
+```bash
+THREE_BOX_FIXED_CHECKPOINT=/absolute/path/to/model_<iteration>.pt
+
+"$ISAACLAB_PYTHON" isaaclab/train \
+  --task SO101-Three-Boxes-In-Cups-Vision-v0 \
+  --rl_library rsl_rl \
+  --resume --checkpoint "$THREE_BOX_FIXED_CHECKPOINT" \
+  --num_envs 64 --headless \
+  physics=isaacsim_physx
+```
+
+Its 45-second episode succeeds only after all three interchangeable boxes have
+occupied three distinct cups for ten consecutive policy steps. The randomized
+variant grows separated pickup and placement zones over 30 million environment
+steps. `64` environments remains only a starting example.
+
+Fixed and randomized checkpoints are compatible within this scenario. A full
+three-box PPO checkpoint is not compatible with the single-box task because
+their critics consume 84 and 34 values respectively; the exported actor
+interface is identical.
 
 ## 5. Evaluate the randomized policy
 
@@ -364,10 +442,11 @@ arm target delta      0.05 rad * action
 gripper target delta  0.15 rad * action
 ```
 
-The fixed task uses nominal geometry, appearance, physics, deterministic resets,
-and no observation/action latency. The randomized task adds layout, yaw, mass,
-friction, actuator, joint noise, camera calibration, appearance, lighting,
-image corruption, and zero/one-step camera/action latency.
+Each fixed task uses nominal geometry, appearance, physics, deterministic
+resets, and no observation/action latency. Each randomized task adds its own
+layout curriculum plus yaw, mass, friction, actuator, joint noise, camera
+calibration, appearance, lighting, image corruption, and zero/one-step
+camera/action latency.
 
 ## Files and outputs
 
@@ -380,6 +459,8 @@ image corruption, and zero/one-step camera/action latency.
 | Generated robot and camera supports | `build/isaacsim_so101/` |
 | Fixed checkpoints | `logs/rsl_rl/so101_object_in_cup_vision_fixed/` |
 | Randomized checkpoints | `logs/rsl_rl/so101_object_in_cup_vision/` |
+| Three-box fixed checkpoints | `logs/rsl_rl/so101_three_boxes_in_cups_vision_fixed/` |
+| Three-box randomized checkpoints | `logs/rsl_rl/so101_three_boxes_in_cups_vision/` |
 | Exported actor | User-selected `--output-dir` |
 
 Generated assets, logs, exports, and local environments are ignored by Git.
@@ -392,10 +473,10 @@ Run the focused Isaac Lab suite through the source-runtime bootstrap:
 "$ISAACLAB_PYTHON" isaaclab/test
 ```
 
-The suite checks asset geometry, action ordering/bounds, task timing, success
-boundaries, visual task registration, the exact 34-value critic layout, actor
-input isolation, camera calibration, latency reset behavior, actor export
-signatures, and the deployment manifest. It does not prove PPO convergence,
+The suite checks asset geometry, the shared actor/action contract, both task
+families, the exact 34- and 84-value critics, permutation-invariant three-box
+success, reset spacing, camera calibration, latency resets, actor export
+signatures, and deployment validation. It does not prove PPO convergence,
 rendered-camera correctness, held-out success, or sim-to-real transfer.
 
 ## Troubleshooting
@@ -431,9 +512,10 @@ compilation can take time.
 
 ### Checkpoint fails to load
 
-Use an absolute path and the matching fixed/randomized task ID. Pre-cleanup
-35-value-critic checkpoints and temporary camera-critic checkpoints are
-incompatible.
+Use an absolute path and the matching scenario and fixed/randomized task ID.
+Single-box and three-box full checkpoints are mutually incompatible because the
+critic widths differ. Pre-cleanup 35-value-critic and temporary camera-critic
+checkpoints are also incompatible.
 
 ### ROS node refuses to arm
 

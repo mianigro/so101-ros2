@@ -13,20 +13,15 @@ from .camera_profile import (
     POLICY_IMAGE_WIDTH,
     camera_profile_sha256,
 )
-
-JOINT_NAMES = (
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_roll",
-    "gripper",
+from .visual_contract import (
+    SO101_ACTION_DELTA_SCALES_RAD,
+    SO101_ACTOR_OBSERVATION_GROUPS,
+    SO101_ARM_ACTION_PATTERN,
+    SO101_ARM_DELTA_RAD,
+    SO101_GRIPPER_DELTA_RAD,
+    SO101_JOINT_NAMES,
+    SO101_NORMALIZED_ACTION_CLIP,
 )
-DELTA_SCALES_RAD = (0.05, 0.05, 0.05, 0.05, 0.05, 0.15)
-VISION_TASK_IDS = {
-    "SO101-Object-In-Cup-Vision-Fixed-v0",
-    "SO101-Object-In-Cup-Vision-v0",
-}
 
 
 def sha256_file(path: Path) -> str:
@@ -44,9 +39,9 @@ def build_policy_manifest(
     onnx_path: Path,
 ) -> dict:
     """Build the complete actor/deployment contract for an exported checkpoint."""
-    if task_id not in VISION_TASK_IDS:
-        raise ValueError(f"refusing to export a non-vision task: {task_id}")
-    if len(joint_limits_rad) != len(JOINT_NAMES) or any(
+    if not task_id:
+        raise ValueError("task ID must not be empty")
+    if len(joint_limits_rad) != len(SO101_JOINT_NAMES) or any(
         len(bounds) != 2 or bounds[0] >= bounds[1] for bounds in joint_limits_rad
     ):
         raise ValueError("joint limits must contain six ordered [lower, upper] pairs")
@@ -76,18 +71,18 @@ def build_policy_manifest(
             },
             "joint_state": {
                 "key": "observation.state",
-                "names": list(JOINT_NAMES),
-                "shape": [len(JOINT_NAMES)],
+                "names": list(SO101_JOINT_NAMES),
+                "shape": [len(SO101_JOINT_NAMES)],
                 "units": "rad",
                 "representation": "absolute_position",
             },
         },
         "policy": {
             "frequency_hz": POLICY_FREQUENCY_HZ,
-            "action_order": list(JOINT_NAMES),
+            "action_order": list(SO101_JOINT_NAMES),
             "action_representation": "normalized_joint_position_delta",
-            "normalized_action_clip": [-1.0, 1.0],
-            "delta_scales_rad": list(DELTA_SCALES_RAD),
+            "normalized_action_clip": list(SO101_NORMALIZED_ACTION_CLIP),
+            "delta_scales_rad": list(SO101_ACTION_DELTA_SCALES_RAD),
             "joint_limits_rad": joint_limits_rad,
             "joint_limit_safety_margin": 0.98,
         },
@@ -99,6 +94,79 @@ def build_policy_manifest(
         },
         "model_checksum": model_checksum,
     }
+
+
+def validate_deployable_contract(task_id: str, env_cfg, agent_cfg) -> None:
+    """Reject a task whose actor cannot use the real SO-101 deployment interface."""
+    errors: list[str] = []
+    if not task_id:
+        errors.append("task ID is empty")
+
+    actor_groups = tuple(agent_cfg.obs_groups.get("actor", ()))
+    if actor_groups != SO101_ACTOR_OBSERVATION_GROUPS:
+        errors.append(
+            f"actor groups are {actor_groups}, expected {SO101_ACTOR_OBSERVATION_GROUPS}"
+        )
+
+    action = env_cfg.actions.joint_delta
+    if tuple(action.joint_names) != SO101_JOINT_NAMES or not action.preserve_order:
+        errors.append("joint action order does not match the six-joint SO-101 contract")
+    expected_scale = {
+        SO101_ARM_ACTION_PATTERN: SO101_ARM_DELTA_RAD,
+        "gripper": SO101_GRIPPER_DELTA_RAD,
+    }
+    expected_clip = {
+        SO101_ARM_ACTION_PATTERN: (-SO101_ARM_DELTA_RAD, SO101_ARM_DELTA_RAD),
+        "gripper": (-SO101_GRIPPER_DELTA_RAD, SO101_GRIPPER_DELTA_RAD),
+    }
+    if action.scale != expected_scale:
+        errors.append(f"action scale is {action.scale}, expected {expected_scale}")
+    if action.clip != expected_clip:
+        errors.append(f"action clip is {action.clip}, expected {expected_clip}")
+    if not action.use_zero_offset:
+        errors.append("joint actions must use the current position as their zero offset")
+    if float(agent_cfg.clip_actions) != SO101_NORMALIZED_ACTION_CLIP[1]:
+        errors.append("runner normalized-action clipping must remain [-1, 1]")
+
+    policy_period = float(env_cfg.sim.dt) * int(env_cfg.decimation)
+    expected_period = 1.0 / POLICY_FREQUENCY_HZ
+    if abs(policy_period - expected_period) > 1.0e-9:
+        errors.append(
+            f"policy period is {policy_period:g}s, expected {expected_period:g}s"
+        )
+
+    joint_term = env_cfg.observations.joint_state.absolute_joint_positions
+    joint_cfg = joint_term.params["asset_cfg"]
+    if tuple(joint_cfg.joint_names) != SO101_JOINT_NAMES or not joint_cfg.preserve_order:
+        errors.append("joint observation order does not match the action order")
+
+    for camera_name in CAMERA_NAMES:
+        group = getattr(env_cfg.observations, camera_name)
+        sensor_name = group.rgb.params["sensor_cfg"].name
+        if sensor_name != f"{camera_name}_camera":
+            errors.append(
+                f"{camera_name} actor group reads {sensor_name}, expected {camera_name}_camera"
+            )
+        camera = getattr(env_cfg.scene, f"{camera_name}_camera")
+        if (camera.width, camera.height) != (
+            POLICY_IMAGE_WIDTH,
+            POLICY_IMAGE_HEIGHT,
+        ):
+            errors.append(
+                f"{camera_name} size is {(camera.width, camera.height)}, expected "
+                f"{(POLICY_IMAGE_WIDTH, POLICY_IMAGE_HEIGHT)}"
+            )
+        if abs(float(camera.update_period) - expected_period) > 1.0e-9:
+            errors.append(
+                f"{camera_name} period is {camera.update_period:g}s, "
+                f"expected {expected_period:g}s"
+            )
+
+    if errors:
+        details = "\n  - ".join(errors)
+        raise ValueError(
+            f"task {task_id!r} violates the deployable SO-101 contract:\n  - {details}"
+        )
 
 
 def write_policy_manifest(manifest: dict, output_path: Path) -> None:
