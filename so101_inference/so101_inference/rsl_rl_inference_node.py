@@ -16,6 +16,7 @@ from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import SetBool
 import torch
 
+from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.camera_config import (
     camera_topics_for_profile,
     streams_fresh,
@@ -112,7 +113,7 @@ class RslRlInferenceNode(Node):
         )
         self.publisher = self.create_publisher(Float64MultiArray, self.fwd_topic, 10)
         self.create_service(SetBool, "/so101_rl/set_enabled", self._set_enabled)
-        self.create_timer(0.05, self._inference_tick)
+        self.create_timer(1.0 / CONTROL_FREQUENCY_HZ, self._inference_tick)
         self.get_logger().info(
             "RSL-RL visual policy loaded in SHADOW MODE; use /so101_rl/set_enabled to arm"
         )

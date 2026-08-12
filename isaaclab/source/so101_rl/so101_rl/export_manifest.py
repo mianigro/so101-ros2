@@ -55,7 +55,7 @@ def build_policy_manifest(
     ]
     model_checksum = sha256_file(torchscript_path)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "task_id": task_id,
         "camera_profile": "dual_overhead",
         "camera_calibration_sha256": camera_profile_sha256(),
@@ -85,6 +85,15 @@ def build_policy_manifest(
             "delta_scales_rad": list(SO101_ACTION_DELTA_SCALES_RAD),
             "joint_limits_rad": joint_limits_rad,
             "joint_limit_safety_margin": 0.98,
+        },
+        "deployment": {
+            "controller_command": {
+                "topic": "/follower/forward_controller/commands",
+                "message_type": "std_msgs/msg/Float64MultiArray",
+                "representation": "absolute_joint_position",
+                "units": "rad",
+                "names": list(SO101_JOINT_NAMES),
+            }
         },
         "artifacts": {
             "torchscript": torchscript_path.name,

@@ -71,10 +71,10 @@ The script installs LeRobot + policy_server automatically on first boot.
 
 ```bash
 # Console script
-policy-server --transport=zmq --host=0.0.0.0 --port=8090 --fps=50
+policy-server --transport=zmq --host=0.0.0.0 --port=8090
 
 # Or as a module
-python -m policy_server --transport=zmq --host=0.0.0.0 --port=8090 --fps=50
+python -m policy_server --transport=zmq --host=0.0.0.0 --port=8090
 ```
 
 ## Run async inference from ROS 2
@@ -87,12 +87,11 @@ pixi run -e lerobot async_infer -- --ros-args \
   -p camera_profile:=dual_overhead \
   -p policy_type:=smolvla \
   -p server_address:=<vast-ai-public-ip>:8090 \
-  -p fps:=50.0 \
   -p actions_per_chunk:=50 \
   -p chunk_size_threshold:=0.6
 ```
 
-The client sends the canonical LeRobot feature schema selected by
+The server and client run at the fixed canonical 30 Hz. The client sends the canonical LeRobot feature schema selected by
 `camera_profile`. After loading the checkpoint, the server compares that schema
 with `policy.config.input_features` and rejects setup unless the image keys
 match exactly and `observation.state` has six values. This prevents legacy

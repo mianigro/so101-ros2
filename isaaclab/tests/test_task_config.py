@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import gymnasium as gym
 
-from so101_rl.camera_profile import POLICY_IMAGE_HEIGHT, POLICY_IMAGE_WIDTH
+from so101_rl.camera_profile import (
+    POLICY_FREQUENCY_HZ,
+    POLICY_IMAGE_HEIGHT,
+    POLICY_IMAGE_WIDTH,
+)
 from so101_rl.export_manifest import validate_deployable_contract
 from so101_rl.tasks.common import SO101VisualObservationsCfg
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
@@ -92,18 +96,19 @@ class TaskConfigTests(unittest.TestCase):
         cfg.validate()
         agent = SO101ObjectInCupVisionPPOCfg()
 
-        self.assertEqual(cfg.sim.dt, 0.01)
-        self.assertEqual(cfg.decimation, 5)
-        self.assertEqual(cfg.sim.dt * cfg.decimation, 0.05)
+        self.assertAlmostEqual(cfg.sim.dt, 1.0 / 120.0)
+        self.assertEqual(cfg.decimation, 4)
+        self.assertAlmostEqual(cfg.sim.dt * cfg.decimation, 1.0 / 30.0)
         self.assertEqual(tuple(cfg.actions.joint_delta.joint_names), SO101_JOINT_NAMES)
         self.assertTrue(cfg.actions.joint_delta.preserve_order)
         self.assertEqual(
             cfg.actions.joint_delta.clip["shoulder_.*|elbow_flex|wrist_.*"],
-            (-0.05, 0.05),
+            (-1.0 / 30.0, 1.0 / 30.0),
         )
-        self.assertEqual(cfg.actions.joint_delta.clip["gripper"], (-0.15, 0.15))
+        self.assertEqual(cfg.actions.joint_delta.clip["gripper"], (-0.10, 0.10))
         self.assertEqual(agent.clip_actions, 1.0)
-        self.assertEqual(cfg.terminations.success.params["required_steps"], 10)
+        self.assertEqual(cfg.terminations.success.params["required_steps"], 15)
+        self.assertEqual(cfg.events.reset_layout.params["curriculum_steps"], 45_000_000)
         self.assertEqual(cfg.terminations.success.params["xy_tolerance"], 0.0038)
 
     def test_visual_actor_and_simulator_critic_contract(self):
@@ -141,7 +146,8 @@ class TaskConfigTests(unittest.TestCase):
         )
         self.assertEqual(cfg.scene.wrist_camera.width, POLICY_IMAGE_WIDTH)
         self.assertEqual(cfg.scene.wrist_camera.height, POLICY_IMAGE_HEIGHT)
-        self.assertEqual(cfg.scene.wrist_camera.update_period, 0.05)
+        self.assertEqual(POLICY_FREQUENCY_HZ, 30.0)
+        self.assertAlmostEqual(cfg.scene.wrist_camera.update_period, 1.0 / 30.0)
         for name in ("wrist", "overhead_1", "overhead_2"):
             camera = getattr(cfg.scene, f"{name}_camera")
             camera_prim = getattr(cfg.scene, f"{name}_camera_prim")
@@ -156,7 +162,9 @@ class TaskConfigTests(unittest.TestCase):
             )
         self.assertFalse(cfg.scene.replicate_physics)
         self.assertEqual(cfg.actions.joint_delta.max_delay_steps, 1)
-        self.assertEqual(agent.num_steps_per_env, 32)
+        self.assertEqual(agent.num_steps_per_env, 48)
+        self.assertEqual(agent.algorithm.gamma, 0.9933)
+        self.assertEqual(agent.algorithm.lam, 0.9664)
         self.assertEqual(agent.algorithm.learning_rate, 7.0e-5)
         self.assertEqual(agent.algorithm.schedule, "fixed")
         self.assertEqual(agent.algorithm.num_mini_batches, 8)

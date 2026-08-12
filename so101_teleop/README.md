@@ -8,7 +8,7 @@
   </a>
 </p>
 
-Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends six-joint forward position commands to the follower.
+Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends six-joint absolute position commands to the follower at the canonical 30 Hz.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ ros2 launch so101_teleop teleop.launch.py
 ## Main files
 
 - `launch/teleop.launch.py` — forward-controller teleop node
-- `config/teleop.yaml` — publish rate, stale timeout, joint list
+- `config/teleop.yaml` — stale timeout and joint list
 - `src/teleop.cpp` — six-joint follower command relay
 
 ## Useful launch args

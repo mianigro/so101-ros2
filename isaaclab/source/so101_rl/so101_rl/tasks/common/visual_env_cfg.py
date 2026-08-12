@@ -22,6 +22,7 @@ from isaaclab_physx.physics import PhysxCfg
 from isaaclab_tasks.utils import PresetCfg
 
 from so101_rl.camera_profile import (
+    POLICY_FREQUENCY_HZ,
     POLICY_IMAGE_HEIGHT,
     POLICY_IMAGE_WIDTH,
     focal_length_mm,
@@ -343,7 +344,7 @@ class SO101VisualSceneCfg(InteractiveSceneCfg):
     wrist_housing = _housing_cfg("wrist", f"{_GRIPPER_PRIM_PATH}/WristCamera")
     wrist_camera = CameraCfg(
         prim_path=f"{_GRIPPER_PRIM_PATH}/WristCamera",
-        update_period=0.05,
+        update_period=1.0 / POLICY_FREQUENCY_HZ,
         spawn=None,
         data_types=["rgb"],
         width=POLICY_IMAGE_WIDTH,
@@ -363,7 +364,7 @@ class SO101VisualSceneCfg(InteractiveSceneCfg):
     )
     overhead_1_camera = CameraCfg(
         prim_path="{ENV_REGEX_NS}/CameraRig/OverheadCamera1",
-        update_period=0.05,
+        update_period=1.0 / POLICY_FREQUENCY_HZ,
         spawn=None,
         data_types=["rgb"],
         width=POLICY_IMAGE_WIDTH,
@@ -383,7 +384,7 @@ class SO101VisualSceneCfg(InteractiveSceneCfg):
     )
     overhead_2_camera = CameraCfg(
         prim_path="{ENV_REGEX_NS}/CameraRig/OverheadCamera2",
-        update_period=0.05,
+        update_period=1.0 / POLICY_FREQUENCY_HZ,
         spawn=None,
         data_types=["rgb"],
         width=POLICY_IMAGE_WIDTH,
@@ -553,10 +554,10 @@ class SO101VisualEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         require_vision_assets()
-        self.decimation = 5
+        self.decimation = 4
         self.episode_length_s = 15.0
         self.is_finite_horizon = False
-        self.sim.dt = 0.01
+        self.sim.dt = 1.0 / 120.0
         self.sim.render_interval = self.decimation
         self.sim.physics = SO101PhysicsCfg()
         self.sim.default_visualizer_cfg = VisualizerCfg(

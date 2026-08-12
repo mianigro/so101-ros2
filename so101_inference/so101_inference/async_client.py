@@ -30,6 +30,7 @@ from typing import Optional
 import numpy as np
 
 from lerobot.async_inference.helpers import FPSTracker, RemotePolicyConfig, TimedAction, TimedObservation
+from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.transport.base import PolicyTransport
 
 log = logging.getLogger(__name__)
@@ -53,10 +54,14 @@ class ClientCfg:
     policy_device: str
     actions_per_chunk: int
     chunk_size_threshold: float
-    fps: float
     max_age_s: float
     task: str
     aggregate_fn_name: str = "weighted_average"
+
+    @property
+    def fps(self) -> float:
+        """Return the fixed SO-101 control frequency."""
+        return CONTROL_FREQUENCY_HZ
 
 
 class AsyncInferenceClient:

@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as functional
 
+from so101_inference import CONTROL_FREQUENCY_HZ
+
 EXPECTED_CAMERAS = ("wrist", "overhead_1", "overhead_2")
 EXPECTED_JOINTS = (
     "shoulder_pan",
@@ -22,6 +24,8 @@ EXPECTED_JOINTS = (
     "gripper",
 )
 EXPECTED_IMAGE_SHAPE = (3, 120, 160)
+EXPECTED_DELTA_SCALES_RAD = (1.0 / 30.0,) * 5 + (0.10,)
+EXPECTED_COMMAND_TOPIC = "/follower/forward_controller/commands"
 
 
 def _sha256(path: Path) -> str:
@@ -39,7 +43,7 @@ def load_policy_manifest(model_dir: Path, camera_profile: str) -> dict:
     if not manifest_path.is_file():
         raise FileNotFoundError(f"policy manifest does not exist: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") != 2:
         raise ValueError("unsupported policy manifest schema")
     if manifest.get("camera_profile") != camera_profile or camera_profile != "dual_overhead":
         raise ValueError("RSL-RL visual policy requires camera_profile='dual_overhead'")
@@ -64,14 +68,35 @@ def load_policy_manifest(model_dir: Path, camera_profile: str) -> dict:
         raise ValueError("manifest joint order does not match the controller")
 
     policy = manifest.get("policy", {})
-    if not math.isclose(float(policy.get("frequency_hz", 0.0)), 20.0):
-        raise ValueError("manifest policy frequency must be 20 Hz")
+    if not math.isclose(
+        float(policy.get("frequency_hz", 0.0)), CONTROL_FREQUENCY_HZ
+    ):
+        raise ValueError("manifest policy frequency must be 30 Hz")
     if policy.get("action_order") != list(EXPECTED_JOINTS):
         raise ValueError("manifest action order does not match the controller")
+    if policy.get("action_representation") != "normalized_joint_position_delta":
+        raise ValueError("manifest PPO action representation is unsupported")
+    if policy.get("normalized_action_clip") != [-1.0, 1.0]:
+        raise ValueError("manifest normalized action clip must be [-1, 1]")
     scales = policy.get("delta_scales_rad", [])
     limits = policy.get("joint_limits_rad", [])
     if len(scales) != 6 or len(limits) != 6 or any(len(item) != 2 for item in limits):
         raise ValueError("manifest action scales or joint limits are malformed")
+    if not np.allclose(scales, EXPECTED_DELTA_SCALES_RAD, rtol=0.0, atol=1.0e-9):
+        raise ValueError("manifest action scales do not match the 30 Hz safety contract")
+    safety_margin = float(policy.get("joint_limit_safety_margin", 0.0))
+    if not 0.0 < safety_margin <= 1.0:
+        raise ValueError("manifest joint-limit safety margin must be in (0, 1]")
+
+    command = manifest.get("deployment", {}).get("controller_command", {})
+    if command.get("topic") != EXPECTED_COMMAND_TOPIC:
+        raise ValueError("manifest controller command topic is unsupported")
+    if command.get("message_type") != "std_msgs/msg/Float64MultiArray":
+        raise ValueError("manifest controller command message type is unsupported")
+    if command.get("representation") != "absolute_joint_position":
+        raise ValueError("manifest controller command must use absolute joint positions")
+    if command.get("units") != "rad" or command.get("names") != list(EXPECTED_JOINTS):
+        raise ValueError("manifest controller command units or joint order are invalid")
 
     artifacts = manifest.get("artifacts", {})
     policy_path = model_dir / str(artifacts.get("torchscript", ""))
@@ -131,10 +156,10 @@ def safe_absolute_targets(
         raise ValueError("SO-101 joint limits must have shape [6, 2]")
     if not 0.0 < safety_margin <= 1.0:
         raise ValueError("joint-limit safety margin must be in (0, 1]")
-    if not all(
-        np.all(np.isfinite(value)) for value in (action, measured, scales, limits)
-    ):
+    if not all(np.all(np.isfinite(value)) for value in (action, measured, scales, limits)):
         raise ValueError("policy action contract contains NaN or Inf")
+    if np.any(scales <= 0.0):
+        raise ValueError("SO-101 action scales must be positive")
     if np.any(limits[:, 0] >= limits[:, 1]):
         raise ValueError("joint lower limits must be less than upper limits")
 
@@ -143,4 +168,8 @@ def safe_absolute_targets(
     targets = measured + delta
     midpoint = limits.mean(axis=1)
     half_range = (limits[:, 1] - limits[:, 0]) * 0.5 * safety_margin
-    return np.clip(targets, midpoint - half_range, midpoint + half_range)
+    lower = midpoint - half_range
+    upper = midpoint + half_range
+    if np.any(targets < lower) or np.any(targets > upper):
+        raise ValueError("absolute target exceeds safety-adjusted joint limits")
+    return targets

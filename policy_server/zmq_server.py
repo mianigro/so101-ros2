@@ -23,7 +23,7 @@ Serialization: msgpack header + raw tensor bytes (no pickle).
 Dependencies: pyzmq, msgpack
 
 Usage:
-    python -m policy_server.zmq_server --host 0.0.0.0 --port 8090 --fps 50
+    python -m policy_server.zmq_server --host 0.0.0.0 --port 8090
 """
 
 from __future__ import annotations
@@ -38,7 +38,11 @@ import numpy as np
 import zmq
 
 from lerobot.async_inference.helpers import RemotePolicyConfig, TimedAction, TimedObservation, get_logger
-from policy_server.inference_engine import InferenceEngine, InferenceEngineConfig
+from policy_server.inference_engine import (
+    CONTROL_FREQUENCY_HZ,
+    InferenceEngine,
+    InferenceEngineConfig,
+)
 
 logger = get_logger("zmq_server", log_to_file=False)
 
@@ -52,9 +56,13 @@ logger = get_logger("zmq_server", log_to_file=False)
 class ZmqServerConfig:
     host: str = "0.0.0.0"
     port: int = 5555
-    fps: int = 30
     inference_latency: float = 0.033
     obs_queue_timeout: float = 2.0
+
+    @property
+    def fps(self) -> int:
+        """Return the fixed SO-101 policy frequency."""
+        return CONTROL_FREQUENCY_HZ
 
     @property
     def environment_dt(self) -> float:
@@ -142,7 +150,6 @@ class ZmqPolicyServer:
         self.config = config or ZmqServerConfig()
         self.engine = InferenceEngine(
             InferenceEngineConfig(
-                fps=self.config.fps,
                 inference_latency=self.config.inference_latency,
                 obs_queue_timeout=self.config.obs_queue_timeout,
             )
@@ -306,7 +313,6 @@ def main():
     parser = argparse.ArgumentParser(description="ZMQ Policy Server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5555)
-    parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--inference-latency", type=float, default=0.033)
     parser.add_argument("--obs-queue-timeout", type=float, default=2.0)
     args = parser.parse_args()
@@ -314,7 +320,6 @@ def main():
     config = ZmqServerConfig(
         host=args.host,
         port=args.port,
-        fps=args.fps,
         inference_latency=args.inference_latency,
         obs_queue_timeout=args.obs_queue_timeout,
     )

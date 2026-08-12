@@ -173,14 +173,14 @@ class ThreeBoxGeometryTests(unittest.TestCase):
         self.assertTrue(valid[0, 1, 1])
         self.assertTrue(valid[0, 2, 2])
 
-    def test_all_three_must_remain_valid_for_ten_steps(self):
+    def test_all_three_must_remain_valid_for_fifteen_steps(self):
         valid_pairs = torch.eye(3, dtype=torch.bool).unsqueeze(0)
         counter = torch.zeros(1, dtype=torch.long)
-        for _ in range(9):
+        for _ in range(14):
             counter = update_settle_counter(counter, complete_assignment(valid_pairs))
-        self.assertFalse((counter >= 10).item())
+        self.assertFalse((counter >= 15).item())
         counter = update_settle_counter(counter, complete_assignment(valid_pairs))
-        self.assertTrue((counter >= 10).item())
+        self.assertTrue((counter >= 15).item())
         valid_pairs[0, 2, 2] = False
         counter = update_settle_counter(counter, complete_assignment(valid_pairs))
         self.assertEqual(counter.item(), 0)

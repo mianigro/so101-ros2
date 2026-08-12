@@ -3,8 +3,7 @@
     leader_topic: "/leader/joint_states"
     fwd_topic: "/follower/forward_controller/commands"
 
-    # Timing
-    publish_rate_hz: 50.0
+    # Timing. Command publication is fixed at the canonical 30 Hz.
     stale_timeout_s: 0.25 # Stop if no leader data for this long
 
     # Joint Names

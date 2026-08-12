@@ -34,7 +34,6 @@ def generate_launch_description():
     repo_id = LaunchConfiguration("repo_id")
     policy_type = LaunchConfiguration("policy_type")
     task = LaunchConfiguration("task")
-    fps = LaunchConfiguration("fps")
     camera_profile = LaunchConfiguration("camera_profile")
     # device = LaunchConfiguration("device")
 
@@ -80,9 +79,6 @@ def generate_launch_description():
             ["policy_type:=", policy_type],
             "-p",
             ["task:=", task],
-            "-p",
-            ["fps:=", fps],
-            "-p",
             ["camera_profile:=", camera_profile],
             # "-p",
             # ["device:=", device],
@@ -183,7 +179,6 @@ def generate_launch_description():
                 "task",
                 description="Required runtime task instruction",
             ),
-            DeclareLaunchArgument("fps", default_value="30.0"),
             # DeclareLaunchArgument("device", default_value="cuda"),
             DeclareLaunchArgument("use_rerun", default_value="false"),
             DeclareLaunchArgument(

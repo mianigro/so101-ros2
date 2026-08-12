@@ -27,6 +27,7 @@ from lerobot.transport import services_pb2  # type: ignore
 from lerobot.transport import services_pb2_grpc  # type: ignore
 from lerobot.transport.utils import grpc_channel_options, send_bytes_in_chunks
 
+from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.transport.base import PolicyTransport
 
 log = logging.getLogger(__name__)
@@ -40,12 +41,11 @@ class GrpcTransport(PolicyTransport):
 
     Args:
         server_address: ``host:port`` of the policy server.
-        fps: Target FPS, used to derive the gRPC initial-backoff interval.
     """
 
-    def __init__(self, server_address: str, fps: float = 30.0, logger=None) -> None:
+    def __init__(self, server_address: str, logger=None) -> None:
         self._server_address = server_address
-        self._fps = fps
+        self._fps = CONTROL_FREQUENCY_HZ
         self._log = logger or logging.getLogger(__name__)
         self._channel: grpc.Channel | None = None
         self._stub: services_pb2_grpc.AsyncInferenceStub | None = None

@@ -21,7 +21,7 @@ ROS 2 inference package for the SO-101 robot arm. Runs [LeRobot 0.6.1](https://g
 - **Pluggable transports** — ZeroMQ (`zmq`) and gRPC (`grpc`) transport backends, selected via a single parameter.
 - **Built-in telemetry** — periodic summaries of FPS, queue depth, actions executed, observations sent/dropped, and round-trip latency.
 - **RSL-RL visual PPO deployment** — loads repository-exported TorchScript actors,
-  enforces the dual-overhead manifest/checksum, runs 20 Hz local GPU inference,
+  enforces the dual-overhead manifest/checksum, runs 30 Hz local GPU inference,
   and starts in safety-gated shadow mode.
 
 ## Nodes
@@ -44,7 +44,7 @@ ros2 launch so101_inference rsl_rl_infer.launch.py \
 The node validates `policy_manifest.json` and the TorchScript checksum, subscribes
 to all three raw RGB topics and `/follower/joint_states`, bilinearly resizes to
 160x120, applies `RGB / 255 - 0.5`, and computes bounded absolute joint targets at
-20 Hz. It publishes nothing in shadow mode. After simulation acceptance and
+30 Hz. It publishes nothing in shadow mode. After simulation acceptance and
 recorded-real-input shadow checks, arm with:
 
 ```bash
@@ -88,8 +88,7 @@ pixi run -e lerobot infer -- --ros-args \
     -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
     -p camera_profile:=dual_overhead \
     -p policy_type:=smolvla \
-    -p task:="Pick up the cube and place it in the container." \
-    -p fps:=50.0
+    -p task:="Pick up the cube and place it in the container."
 ```
 
 ### Asynchronous Inference (remote server)
@@ -103,7 +102,6 @@ pixi run -e lerobot async_infer -- --ros-args \
     -p policy_type:=smolvla \
     -p task:="Pick up the cube and place it in the container." \
     -p server_address:=192.168.1.100:8090 \
-    -p fps:=50.0 \
     -p actions_per_chunk:=50 \
     -p chunk_size_threshold:=0.6
 ```
@@ -161,14 +159,14 @@ newer than `max_age_s`. With async `use_compressed:=true`, the node appends
 | `camera_profile` | string | required | `single_overhead` or `dual_overhead`; must match the policy input schema |
 | `policy_type` | string | `act` | Policy architecture: `act` or `smolvla` |
 | `task` | string | `Put the green cube in the cup.` | Task description (used by VLA models) |
-| `fps` | float | `50.0` | Control loop frequency |
 | `max_age_s` | float | `0.2` | Max sensor data age before it's considered stale |
 | `fwd_topic` | string | `/follower/forward_controller/commands` | Topic to publish joint commands |
 | `joints_topic` | string | `/follower/joint_states` | Topic to subscribe for joint states |
 
 ### Asynchronous Node (`async_infer`)
 
-All parameters from the synchronous node plus:
+The control loop is fixed at the canonical 30 Hz. All configurable parameters
+from the synchronous node plus:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

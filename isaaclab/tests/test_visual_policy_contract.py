@@ -109,6 +109,7 @@ class VisualPolicyContractTests(unittest.TestCase):
                 "SO101-Object-In-Cup-Vision-v0", limits, policy, onnx
             )
         actor = manifest["actor_observations"]
+        self.assertEqual(manifest["schema_version"], 2)
         self.assertEqual(
             [camera["key"] for camera in actor["cameras"]],
             [
@@ -120,6 +121,14 @@ class VisualPolicyContractTests(unittest.TestCase):
         self.assertEqual(actor["joint_state"]["key"], "observation.state")
         self.assertNotIn("critic", str(actor).lower())
         self.assertNotIn("object", str(actor).lower())
+        self.assertEqual(manifest["policy"]["frequency_hz"], 30.0)
+        self.assertEqual(
+            manifest["deployment"]["controller_command"]["representation"],
+            "absolute_joint_position",
+        )
+        self.assertEqual(
+            manifest["deployment"]["controller_command"]["units"], "rad"
+        )
 
 
 if __name__ == "__main__":

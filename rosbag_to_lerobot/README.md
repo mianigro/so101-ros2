@@ -18,13 +18,19 @@ Each run creates a fresh dataset. If the resolved target already exists, convers
 
 ## How It Works
 
-The converter reads bags sequentially using a **reference-topic-driven** approach:
-every message on the reference topic (e.g. the wrist camera) emits one dataset frame.
-Other features (joint state, action, additional cameras) are sampled as-of the reference timestamp with a configurable freshness window (`max_age_s`). Frames where any feature is missing or stale are automatically dropped, and per-episode synchronization diagnostics are logged.
+The converter reads bags sequentially using the absolute controller-command topic
+as its reference. Every 30 Hz command emits one dataset frame; joint state and
+camera features are sampled as-of that command timestamp with a configurable
+freshness window (`max_age_s`). Frames where any feature is missing or stale are
+dropped, and conversion rejects a bag whose median or end-to-end average command
+cadence is not within 10% of 30 Hz.
 
 ### Alignment Guarantee
 
-Non-reference features are sampled as-of the reference timestamp using the latest message **≤ reference time**. This prevents "future leakage" (e.g. pairing an observation with an action that happened after it).
+Non-reference features are sampled as-of the command timestamp using the latest
+message **≤ reference time**. This prevents future observations from being paired
+with an action. The `action` values are copied unchanged from the absolute-radian
+`Float64MultiArray` controller targets.
 
 ## Prerequisites
 
@@ -53,9 +59,8 @@ pixi run -e lerobot convert -- \
 
 `--camera-profile` is required. `single_overhead` emits `wrist` and
 `overhead_1`; `dual_overhead` additionally emits `overhead_2`. The converter
-checks every episode for the exact selected camera set before it deletes or
-creates output. Use `config/so101_50hz.yaml` when controller commands, rather
-than wrist frames, should drive the dataset at 50 Hz.
+checks every episode for the exact selected camera set and canonical 30 Hz
+command cadence before it deletes or creates output.
 
 If `--output-dir` is omitted, LeRobot writes to its default cache location (typically `~/.cache/huggingface/lerobot/<repo-id>/`).
 
@@ -67,6 +72,7 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
 | `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
+| `--dataset-source` | Provenance tag set for the Hub dataset: `teleop` (default, imitation-learning) or `ppo` (reinforcement-learning). See [Publishing](#publishing-to-hugging-face-hub) |
 
 ---
 
@@ -103,6 +109,17 @@ pixi run -e lerobot convert -- \
 
 The `--push-hub` flag finalizes the dataset and uploads it to `https://huggingface.co/datasets/<repo-id>`.
 
+### Dataset provenance tags
+
+The Hub dataset is tagged from `--dataset-source` so its provenance is accurate:
+
+| `--dataset-source` | Recorded from | Hub tags |
+|--------------------|---------------|----------|
+| `teleop` (default) | Human teleoperation | `teleoperation`, `imitation-learning` |
+| `ppo`              | Autonomous rollouts of an exported PPO policy | `reinforcement-learning` |
+
+Both sources share the same 30 Hz command contract; only the provenance tag set differs. When pushing episodes recorded by a PPO policy (see the top-level README's "Record PPO demonstrations for VLA training"), pass `--dataset-source ppo` so the dataset is not mislabeled as teleoperation.
+
 ---
 
 ## Visualization
@@ -130,16 +147,16 @@ For a live example, see [legalaspro/so101-ros-physical-ai-test](https://huggingf
 
 ## Configuration
 
-Conversion uses a timing/non-camera YAML such as
+Conversion uses the canonical
 [`config/so101_30hz.yaml`](config/so101_30hz.yaml), plus the required camera
-profile. Camera schemas are built in code so 30 Hz and 50 Hz modes cannot
-silently disagree about camera membership.
+profile. The rate and command reference are validated rather than treated as
+alternate conversion modes.
 
 | Field | Purpose |
 |-------|---------|
 | `robot_type` | Robot identifier written into the dataset metadata |
-| `fps` | Target frame rate |
-| `reference_topic` | ROS topic whose messages drive frame emission |
+| `fps` | Canonical dataset rate; must be `30` |
+| `reference_topic` | Must be `/follower/forward_controller/commands` |
 | `task` | Task label written to every frame |
 | `default_max_age_s` | Default freshness window for feature sampling |
 | `features[]` | Non-camera features; camera entries are rejected because `--camera-profile` owns them |
@@ -179,6 +196,7 @@ usage: convert --input-dir DIR --config FILE --camera-profile PROFILE --repo-id 
   --vcodec          LeRobot RGB encoder (libsvtav1 | libaom-av1 | h264 |
                     hevc | auto | a supported hardware encoder)
   --push-hub        Push final dataset to HuggingFace Hub
+  --dataset-source  Provenance tags: teleop (default) | ppo
   --sync-p95        Collect p95 sync stats
   --overwrite       Delete the complete output directory and rebuild from MCAP
 ```

@@ -15,3 +15,5 @@
 """SO-101 policy inference package (ROS 2 nodes + helpers)."""
 
 __version__ = "0.1.0"
+
+CONTROL_FREQUENCY_HZ = 30.0

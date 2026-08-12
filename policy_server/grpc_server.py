@@ -32,7 +32,11 @@ from lerobot.transport import services_pb2  # type: ignore
 from lerobot.transport import services_pb2_grpc  # type: ignore
 from lerobot.transport.utils import receive_bytes_in_chunks
 
-from policy_server.inference_engine import InferenceEngine, InferenceEngineConfig
+from policy_server.inference_engine import (
+    CONTROL_FREQUENCY_HZ,
+    InferenceEngine,
+    InferenceEngineConfig,
+)
 
 logger = get_logger("grpc_server", log_to_file=False)
 
@@ -40,11 +44,16 @@ logger = get_logger("grpc_server", log_to_file=False)
 class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
     """gRPC servicer that wraps :class:`InferenceEngine`."""
 
-    def __init__(self, config: PolicyServerConfig, engine: InferenceEngine | None = None) -> None:
+    def __init__(
+        self, config: PolicyServerConfig, engine: InferenceEngine | None = None
+    ) -> None:
+        if config.fps != CONTROL_FREQUENCY_HZ:
+            raise ValueError(
+                f"SO-101 policy server frequency must be {CONTROL_FREQUENCY_HZ} Hz"
+            )
         self.config = config
         self.engine = engine or InferenceEngine(
             InferenceEngineConfig(
-                fps=config.fps,
                 inference_latency=config.inference_latency,
                 obs_queue_timeout=config.obs_queue_timeout,
             )

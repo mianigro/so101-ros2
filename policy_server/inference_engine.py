@@ -180,12 +180,18 @@ def observations_similar(
 # Config
 # ---------------------------------------------------------------------------
 
+CONTROL_FREQUENCY_HZ = 30
+
 
 @dataclass
 class InferenceEngineConfig:
-    fps: int = 30
     inference_latency: float = 0.033
     obs_queue_timeout: float = 2.0
+
+    @property
+    def fps(self) -> int:
+        """Return the fixed SO-101 policy frequency."""
+        return CONTROL_FREQUENCY_HZ
 
     @property
     def environment_dt(self) -> float:

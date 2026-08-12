@@ -60,10 +60,10 @@ learning failures.
 
 ## Environment and control loop
 
-Physics runs at 100 Hz (`sim.dt = 0.01 s`). Environment decimation is five, so
-actions, observations, rewards, terminations, and camera refresh run at 20 Hz
-(`0.05 s`). The single-box horizon is 15 seconds or 300 steps; the three-box
-horizon is 45 seconds or 900 steps.
+Physics runs at 120 Hz (`sim.dt = 1/120 s`). Environment decimation is four, so
+actions, observations, rewards, terminations, and camera refresh run at 30 Hz
+(`1/30 s`). The single-box horizon is 15 seconds or 450 steps; the three-box
+horizon is 45 seconds or 1,350 steps.
 
 Canonical joint/action order:
 
@@ -74,8 +74,8 @@ shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 For policy output `a_t` clipped to `[-1, 1]`:
 
 ```text
-arm target       = measured arm position + 0.05 * a_t
-gripper target   = measured gripper position + 0.15 * a_t
+arm target       = measured arm position + (1/30) * a_t
+gripper target   = measured gripper position + 0.10 * a_t
 ```
 
 This is a joint-position-delta controller, not torque control. Isaac Sim applies
@@ -207,10 +207,10 @@ center_z_min <= z_oc <= center_z_max
 q_g >= 1.20 rad
 ```
 
-Isaac Lab treats reward weights as rates. At the 20 Hz policy frequency:
+Isaac Lab treats reward weights as rates. At the 30 Hz policy frequency:
 
 ```text
-reward_t = 0.05 * sum(weight_i * raw_term_i)
+reward_t = (1/30) * sum(weight_i * raw_term_i)
 ```
 
 The dense terms are active every step; there is no hidden phase or scripted
@@ -233,12 +233,12 @@ reward alone does not prove the intended behavior.
 
 | Condition | Definition |
 |---|---|
-| Success | Stable-placement mask remains true for 10 consecutive policy steps |
+| Success | Stable-placement mask remains true for 15 consecutive policy steps |
 | Dropped | Object world height falls below `-0.02 m` |
 | Invalid | Object or robot joint state contains NaN/Inf |
-| Timeout | 15 seconds or 300 policy steps |
+| Timeout | 15 seconds or 450 policy steps |
 
-Ten steps at 20 Hz is a 0.5-second settling window. The counter resets whenever
+Fifteen steps at 30 Hz is a 0.5-second settling window. The counter resets whenever
 the mask becomes false, so a transient pass through the cup is not success.
 Timeout is a truncation, allowing PPO to bootstrap the value estimate.
 
@@ -258,11 +258,11 @@ A placed box is considered released when the gripper is open or the grasp frame
 has moved at least 50 mm away. The distance alternative is necessary for a
 sequential task: closing the gripper around the next box must not invalidate
 earlier placements. Success requires all three boxes to be slow and inside
-three distinct cups for ten consecutive steps. Any dropped box terminates the
+three distinct cups for fifteen consecutive steps. Any dropped box terminates the
 episode, and the horizon is 45 seconds.
 
 The fixed layout uses three deterministic pickup anchors and three placement
-anchors. The randomized variant expands over 30,000,000 environment steps into
+anchors. The randomized variant expands over 45,000,000 environment steps into
 separate reachable zones:
 
 ```text
@@ -290,7 +290,7 @@ The randomized variants include:
 - exposure, contrast, RGB gain, and Gaussian image noise;
 - zero/one-step camera and action latency.
 
-Layout variation grows linearly over 30,000,000 environment steps. The
+Layout variation grows linearly over 45,000,000 environment steps. The
 single-box ranges grow from small nominal offsets to 25 mm for the box and 20 mm
 for the cup. The three-box task grows from ±3 mm around fixed anchors into the
 zones above. Startup physics samples are chosen when the environment process is
@@ -347,12 +347,12 @@ advantage estimation (GAE), and performs clipped minibatch updates.
 
 | Parameter | Value |
 |---|---:|
-| Rollout length | 32 steps/environment |
+| Rollout length | 48 steps/environment |
 | Learning epochs/rollout | 5 |
 | Minibatches/epoch | 8 |
 | Learning rate | `7e-5`, fixed |
-| Discount `gamma` | `0.99` |
-| GAE `lambda` | `0.95` |
+| Discount `gamma` | `0.9933` |
+| GAE `lambda` | `0.9664` |
 | PPO clip | `0.2` |
 | Value-loss coefficient | `1.0` |
 | Entropy coefficient | `0.005` |
@@ -361,7 +361,7 @@ advantage estimation (GAE), and performs clipped minibatch updates.
 | Checkpoint interval | 250 iterations |
 | Maximum iterations | 15,000 |
 
-With 64 environments, one process collects `64 * 32 = 2,048` transitions per
+With 64 environments, one process collects `64 * 48 = 3,072` transitions per
 iteration. This environment count is only a starting point; rendering the three
 actor views usually determines capacity, while the critic adds a small MLP.
 
@@ -465,7 +465,7 @@ def my_reward(env, scale: float) -> torch.Tensor:
 my_term = RewTerm(func=mdp.my_reward, weight=1.0, params={"scale": 10.0})
 ```
 
-A raw term near `1.0` with weight `1.0` contributes about `0.05` per policy step
+A raw term near `1.0` with weight `1.0` contributes about `0.0333` per policy step
 at the current frequency.
 
 A stateless termination returns one boolean per environment. Stateful logic

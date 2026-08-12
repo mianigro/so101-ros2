@@ -199,7 +199,7 @@ class ThreeBoxesInCupsTerminationsCfg:
     success = DoneTerm(
         func=mdp.all_boxes_stably_placed,
         params={
-            "required_steps": 10,
+            "required_steps": 15,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
@@ -264,7 +264,7 @@ class ThreeBoxesInCupsEventsCfg(SO101VisualEventsCfg):
         func=mdp.reset_three_box_layout,
         mode="reset",
         params={
-            "curriculum_steps": 30_000_000,
+            "curriculum_steps": 45_000_000,
             "nominal_jitter": 0.003,
             "box_zone_low": (0.14, -0.13),
             "box_zone_high": (0.30, -0.04),

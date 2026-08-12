@@ -210,8 +210,8 @@ driver's package, executable, parameters, parameter-name mapping, and remaps in
 the external rig entry. There are no built-in alternate-driver presets.
 
 The same `camera_profile` selects recorder topics, Rerun subscriptions,
-conversion features, and inference inputs. Converter timing is the only choice
-left to its two configs: `so101_30hz.yaml` or `so101_50hz.yaml`.
+conversion features, and inference inputs. Commands and datasets use the fixed
+30 Hz contract in `so101_30hz.yaml`.
 
 ---
 

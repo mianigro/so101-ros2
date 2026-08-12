@@ -16,8 +16,8 @@
 
 Usage::
 
-    python -m policy_server.server --transport=grpc --host=0.0.0.0 --port=8090 --fps=50
-    python -m policy_server.server --transport=zmq  --host=0.0.0.0 --port=8090 --fps=50
+    python -m policy_server.server --transport=grpc --host=0.0.0.0 --port=8090
+    python -m policy_server.server --transport=zmq  --host=0.0.0.0 --port=8090
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ from concurrent import futures
 from dataclasses import asdict
 from pprint import pformat
 
-from policy_server.inference_engine import InferenceEngine, InferenceEngineConfig
+from policy_server.inference_engine import (
+    CONTROL_FREQUENCY_HZ,
+    InferenceEngine,
+    InferenceEngineConfig,
+)
 
 
 def _serve_grpc(args: argparse.Namespace) -> None:
@@ -43,7 +47,7 @@ def _serve_grpc(args: argparse.Namespace) -> None:
     cfg = PolicyServerConfig(
         host=args.host,
         port=args.port,
-        fps=args.fps,
+        fps=CONTROL_FREQUENCY_HZ,
         inference_latency=args.inference_latency,
         obs_queue_timeout=args.obs_queue_timeout,
     )
@@ -52,7 +56,6 @@ def _serve_grpc(args: argparse.Namespace) -> None:
 
     engine = InferenceEngine(
         InferenceEngineConfig(
-            fps=args.fps,
             inference_latency=args.inference_latency,
             obs_queue_timeout=args.obs_queue_timeout,
         )
@@ -77,7 +80,6 @@ def _serve_zmq(args: argparse.Namespace) -> None:
     config = ZmqServerConfig(
         host=args.host,
         port=args.port,
-        fps=args.fps,
         inference_latency=args.inference_latency,
         obs_queue_timeout=args.obs_queue_timeout,
     )
@@ -97,7 +99,6 @@ def main() -> None:
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host address to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port number")
-    parser.add_argument("--fps", type=int, default=30, help="Frames per second")
     parser.add_argument(
         "--inference-latency",
         type=float,

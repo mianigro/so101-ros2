@@ -154,7 +154,7 @@ class ObjectInCupTerminationsCfg:
     success = DoneTerm(
         func=mdp.stable_placement,
         params={
-            "required_steps": 10,
+            "required_steps": 15,
             "xy_tolerance": 0.0,
             "center_z_min": 0.0,
             "center_z_max": 0.0,
@@ -208,7 +208,7 @@ class ObjectInCupEventsCfg(SO101VisualEventsCfg):
         func=mdp.reset_task_layout,
         mode="reset",
         params={
-            "curriculum_steps": 30_000_000,
+            "curriculum_steps": 45_000_000,
             "object_xy_range_nominal": (0.004, 0.004),
             "object_xy_range_full": (0.025, 0.025),
             "cup_xy_range_nominal": (0.003, 0.003),

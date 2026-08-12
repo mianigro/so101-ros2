@@ -19,7 +19,6 @@ public:
     follower_fwd_topic_ =
       declare_parameter<std::string>("fwd_topic", "/follower/forward_controller/commands");
 
-    publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 50.0);
     stale_timeout_s_ = declare_parameter<double>("stale_timeout_s", 0.25);
 
     arm_joints_ = declare_parameter<std::vector<std::string>>(
@@ -28,7 +27,7 @@ public:
 
     RCLCPP_INFO(get_logger(), "Leader: %s", leader_topic_.c_str());
     RCLCPP_INFO(get_logger(), "Follower forward commands: %s", follower_fwd_topic_.c_str());
-    RCLCPP_INFO(get_logger(), "Rate: %.1f Hz, Arm joints: %zu", publish_rate_hz_,
+    RCLCPP_INFO(get_logger(), "Rate: %.1f Hz, Arm joints: %zu", kPublishRateHz,
                 arm_joints_.size());
 
     // ROS interfaces
@@ -39,7 +38,7 @@ public:
     forward_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(follower_fwd_topic_,
                                                                       rclcpp::QoS(10).reliable());
 
-    timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / publish_rate_hz_),
+    timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / kPublishRateHz),
                                std::bind(&FollowerCommandRelay::control_loop, this));
 
     raw_arm_.resize(arm_joints_.size(), 0.0);
@@ -49,9 +48,9 @@ public:
 
 private:
   // Parameters
+  static constexpr double kPublishRateHz = 30.0;
   std::string leader_topic_;
   std::string follower_fwd_topic_;
-  double publish_rate_hz_{50.0};
   double stale_timeout_s_{0.25};
   std::vector<std::string> arm_joints_;
 

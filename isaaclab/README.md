@@ -325,8 +325,8 @@ THREE_BOX_FIXED_CHECKPOINT=/absolute/path/to/model_<iteration>.pt
 ```
 
 Its 45-second episode succeeds only after all three interchangeable boxes have
-occupied three distinct cups for ten consecutive policy steps. The randomized
-variant grows separated pickup and placement zones over 30 million environment
+occupied three distinct cups for fifteen consecutive policy steps. The randomized
+variant grows separated pickup and placement zones over 45 million environment
 steps. `64` environments remains only a starting example.
 
 Fixed and randomized checkpoints are compatible within this scenario. A full
@@ -404,7 +404,7 @@ The node starts in shadow mode and requires fresh, synchronized data from:
 /follower/joint_states
 ```
 
-Validate preprocessing, 20 Hz inference, action bounds, timestamp rejection,
+Validate preprocessing, 30 Hz inference, action bounds, timestamp rejection,
 hold-on-failure behavior, and manual arming using recorded real inputs before
 publishing commands.
 
@@ -434,12 +434,12 @@ Canonical joint and action order:
 shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 ```
 
-The policy runs at 20 Hz over 100 Hz physics. Normalized outputs are clipped to
+The policy runs at 30 Hz over 120 Hz physics. Normalized outputs are clipped to
 `[-1, 1]` and converted to measured-position deltas:
 
 ```text
-arm target delta      0.05 rad * action
-gripper target delta  0.15 rad * action
+arm target delta      0.033333 rad * action
+gripper target delta  0.10 rad * action
 ```
 
 Each fixed task uses nominal geometry, appearance, physics, deterministic

@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import logging
 import shutil
+import statistics
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from lerobot.configs import RGBEncoderConfig
 from lerobot.datasets import CODEBASE_VERSION, LeRobotDataset
@@ -51,7 +52,7 @@ from rosbag_to_lerobot.bag_reader import (
 )
 from rosbag_to_lerobot.buffers import LastBuffer
 from rosbag_to_lerobot.camera_profiles import validate_profile_topics
-from rosbag_to_lerobot.config import Config, FeatureSpec
+from rosbag_to_lerobot.config import CANONICAL_FPS, Config, FeatureSpec
 from rosbag_to_lerobot.decoders import decode, get_lerobot_dtype
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,27 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 
 POS_KEYS = {"observation.state", "action"}
+REFERENCE_RATE_RELATIVE_TOLERANCE = 0.10
+
+# Provenance tags published with the dataset on the HuggingFace Hub. Both human
+# teleop and PPO rollouts are recorded on the same 30 Hz command topic, so the
+# source is chosen per-run (see --dataset-source), not in the timing YAML.
+DEFAULT_DATASET_SOURCE = "teleop"
+DATASET_TAGS_BY_SOURCE: Dict[str, List[str]] = {
+    "teleop": [
+        "so101",
+        "ros2",
+        "teleoperation",
+        "imitation-learning",
+        "so101-ros-physical-ai",
+    ],
+    "ppo": [
+        "so101",
+        "ros2",
+        "reinforcement-learning",
+        "so101-ros-physical-ai",
+    ],
+}
 
 
 def _is_visual(spec: FeatureSpec) -> bool:
@@ -114,6 +136,44 @@ def _fmt_sync_line(topic: str, s: dict) -> str:
         f"dt_mean={mean_ms:6.1f}ms dt_p95={p95_ms:6.1f}ms dt_max={max_ms:6.1f}ms  "
         f"miss(e/f/s)={miss_empty}/{miss_future}/{miss_stale}"
     )
+
+
+def _validate_reference_cadence(
+    timestamps_ns: list[int], expected_fps: int, source: str
+) -> None:
+    """Reject bags whose controller-command cadence is not the dataset rate."""
+    if expected_fps != CANONICAL_FPS:
+        raise ValueError(f"unsupported reference cadence: {expected_fps} Hz")
+    if len(timestamps_ns) < 3:
+        raise ValueError(f"{source}: at least three reference commands are required")
+
+    intervals_ns = [
+        current - previous
+        for previous, current in zip(timestamps_ns, timestamps_ns[1:])
+    ]
+    if any(interval <= 0 for interval in intervals_ns):
+        raise ValueError(f"{source}: reference command timestamps are not increasing")
+
+    median_fps = 1.0 / (statistics.median(intervals_ns) * 1.0e-9)
+    average_fps = (len(timestamps_ns) - 1) / (
+        (timestamps_ns[-1] - timestamps_ns[0]) * 1.0e-9
+    )
+    median_error = abs(median_fps - expected_fps) / expected_fps
+    average_error = abs(average_fps - expected_fps) / expected_fps
+    if max(median_error, average_error) > REFERENCE_RATE_RELATIVE_TOLERANCE:
+        raise ValueError(
+            f"{source}: reference command cadence is {average_fps:.2f} Hz average, "
+            f"{median_fps:.2f} Hz median; expected {expected_fps} Hz"
+        )
+
+
+def _validate_bag_reference_cadence(reader, cfg: Config, source: str) -> None:
+    timestamps_ns: list[int] = []
+    while reader.has_next():
+        topic, _data, bag_ts_ns = reader.read_next()
+        if topic == cfg.reference_topic:
+            timestamps_ns.append(bag_ts_ns)
+    _validate_reference_cadence(timestamps_ns, cfg.fps, source)
 
 
 def _build_lerobot_features(
@@ -325,6 +385,7 @@ def convert_all_bags(
     use_videos: bool = True,
     vcodec: str = "libsvtav1",
     push_to_hub: bool = False,
+    dataset_source: str = DEFAULT_DATASET_SOURCE,
     collect_p95: bool = False,
     overwrite: bool = False,
 ) -> None:
@@ -341,7 +402,16 @@ def convert_all_bags(
         push_to_hub (bool, optional):   If *True*, push final dataset to Hugging Face Hub. Defaults to False.
         collect_p95 (bool, optional): If *True*, collects additional data during episode sync.
         overwrite (bool, optional): If *True*, delete any existing dataset directory before writing
+        dataset_source (str, optional): Provenance used to tag the dataset on the Hub.
+            One of "teleop" (human teleoperation / imitation-learning, default) or
+            "ppo" (autonomous rollouts of an exported PPO policy / reinforcement-learning).
+            Only affects ``push_to_hub``.
     """
+    if dataset_source not in DATASET_TAGS_BY_SOURCE:
+        raise ValueError(
+            f"Unknown dataset_source {dataset_source!r}; expected one of "
+            f"{sorted(DATASET_TAGS_BY_SOURCE)}"
+        )
     if CODEBASE_VERSION != "v3.0":
         raise RuntimeError(
             "This converter requires the LeRobot v3.0 dataset writer, "
@@ -370,6 +440,7 @@ def convert_all_bags(
                     f"{bag_dir}: type mismatch for {spec.topic}: "
                     f"config={spec.msg_type}, bag={actual_type}"
                 )
+        _validate_bag_reference_cadence(reader, cfg, str(bag_dir))
 
     # 2. Build features dict
     features = _build_lerobot_features(cfg, use_videos)
@@ -425,13 +496,7 @@ def convert_all_bags(
     # 6. Optionally push to hub
     if push_to_hub:
         dataset.push_to_hub(
-            tags=[
-                "so101",
-                "ros2",
-                "teleoperation",
-                "imitation-learning",
-                "so101-ros-physical-ai",
-            ],
+            tags=DATASET_TAGS_BY_SOURCE[dataset_source],
             license="apache-2.0",
             url="https://github.com/legalaspro/so101-ros-physical-ai",
         )

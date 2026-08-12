@@ -22,7 +22,7 @@ class RslRlSpatialSoftmaxCNNModelCfg(RslRlCNNModelCfg):
 class SO101VisualPPOCfg(RslRlOnPolicyRunnerCfg):
     """Shared network, observation, rollout, and PPO contract for visual tasks."""
 
-    num_steps_per_env = 32
+    num_steps_per_env = 48
     max_iterations = 15_000
     save_interval = 250
     experiment_name = "so101_visual"
@@ -59,8 +59,8 @@ class SO101VisualPPOCfg(RslRlOnPolicyRunnerCfg):
         num_mini_batches=8,
         learning_rate=7.0e-5,
         schedule="fixed",
-        gamma=0.99,
-        lam=0.95,
+        gamma=0.9933,
+        lam=0.9664,
         desired_kl=0.01,
         max_grad_norm=1.0,
     )

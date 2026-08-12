@@ -14,7 +14,7 @@ from .paths import CAMERA_PROFILE_PATH
 CAMERA_NAMES = ("wrist", "overhead_1", "overhead_2")
 POLICY_IMAGE_WIDTH = 160
 POLICY_IMAGE_HEIGHT = 120
-POLICY_FREQUENCY_HZ = 20.0
+POLICY_FREQUENCY_HZ = 30.0
 
 
 def _vector(mapping: dict[str, Any], key: str, length: int) -> tuple[float, ...]:
