@@ -15,7 +15,6 @@ from .geometry import (
     update_settle_counter,
 )
 from .rewards import (
-    grasp_unplaced_box,
     insertion_progress,
     lift_unplaced_box,
     reach_unplaced_box,
@@ -34,7 +33,6 @@ __all__ = [
     "best_assignment_values",
     "complete_assignment",
     "critic_task_state",
-    "grasp_unplaced_box",
     "insertion_progress",
     "invalid_state",
     "lift_unplaced_box",

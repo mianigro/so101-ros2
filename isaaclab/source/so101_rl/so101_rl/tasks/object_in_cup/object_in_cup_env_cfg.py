@@ -29,6 +29,10 @@ from . import mdp
 OBJECT_START = (0.20, -0.065, 0.0125)
 CUP_START = (0.24, 0.070, 0.0)
 
+# Object centre height while resting on the table (half of the 0.025 m cube).
+# Used as the lift baseline so height *gained*, not absolute height, is rewarded.
+OBJECT_REST_HEIGHT = OBJECT_START[2]
+
 
 @configclass
 class ObjectInCupSceneCfg(SO101VisualSceneCfg):
@@ -95,17 +99,15 @@ class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
 
 @configclass
 class ObjectInCupRewardsCfg:
-    reach = RewTerm(func=mdp.reach_object, weight=1.0, params={"std": 0.06})
-    grasp = RewTerm(
-        func=mdp.grasp_object,
-        weight=0.5,
+    reach = RewTerm(func=mdp.reach_object, weight=0.5, params={"std": 0.06})
+    lift = RewTerm(
+        func=mdp.lift_object,
+        weight=2.0,
         params={
-            "distance_threshold": 0.035,
-            "closed_position_max": 0.45,
-            "robot_cfg": SO101_GRIPPER_CFG,
+            "lift_height": 0.075,
+            "object_rest_height": OBJECT_REST_HEIGHT,
         },
     )
-    lift = RewTerm(func=mdp.lift_object, weight=2.0, params={"lift_height": 0.075})
     transport = RewTerm(
         func=mdp.transport_object,
         weight=3.0,

@@ -81,45 +81,30 @@ def reach_unplaced_box(
     return scores.max(dim=-1).values
 
 
-def grasp_unplaced_box(
-    env: ManagerBasedRLEnv,
-    distance_threshold: float,
-    closed_position_max: float,
-    placement: dict,
-    box_names: tuple[str, str, str] = BOX_NAMES,
-    cup_names: tuple[str, str, str] = CUP_NAMES,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
-    ee_frame_name: str = "ee_frame",
-) -> torch.Tensor:
-    tensors = _task_tensors(env, box_names, cup_names, robot_cfg, ee_frame_name)
-    box_positions, _, _, _, end_effector, gripper = tensors
-    matched_boxes, _ = matched_entities(_placed_pairs(tensors, placement))
-    close = (
-        torch.linalg.vector_norm(box_positions - end_effector[:, None, :], dim=-1)
-        <= distance_threshold
-    )
-    grasped = close & (gripper <= closed_position_max)[:, None] & ~matched_boxes
-    return grasped.any(dim=-1).float()
-
-
 def lift_unplaced_box(
     env: ManagerBasedRLEnv,
     lift_height: float,
+    object_rest_height: float,
     placement: dict,
     box_names: tuple[str, str, str] = BOX_NAMES,
     cup_names: tuple[str, str, str] = CUP_NAMES,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
     ee_frame_name: str = "ee_frame",
 ) -> torch.Tensor:
+    """Reward picking up the best unplaced box: height gained above rest.
+
+    Goal-based term: it only cares that a box has been raised, not how. The
+    baseline is the box rest height (not the cup base), so this is zero while a
+    box sits on the table. Already-placed boxes are masked out and the best
+    unplaced box is taken.
+    """
     tensors = _task_tensors(env, box_names, cup_names, robot_cfg, ee_frame_name)
-    box_positions, cup_positions = tensors[:2]
+    box_positions = tensors[0]
     matched_boxes, _ = matched_entities(_placed_pairs(tensors, placement))
-    base_height = cup_positions[..., 2].min(dim=-1).values
-    scores = torch.clamp(
-        (box_positions[..., 2] - base_height[:, None]) / lift_height,
-        min=0.0,
-        max=1.0,
-    ).masked_fill(matched_boxes, 0.0)
+    height_gain = torch.clamp(
+        (box_positions[..., 2] - object_rest_height) / lift_height, 0.0, 1.0
+    )
+    scores = height_gain.masked_fill(matched_boxes, 0.0)
     return scores.max(dim=-1).values
 
 

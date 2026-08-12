@@ -39,6 +39,10 @@ CUP_STARTS = (
 BOX_NAMES = ("box_1", "box_2", "box_3")
 CUP_NAMES = ("cup_1", "cup_2", "cup_3")
 
+# Box centre height while resting on the table (half of the 0.025 m cube).
+# Lift rewards height *gained* above this baseline, not absolute height.
+BOX_REST_HEIGHT = BOX_STARTS[0][2]
+
 PLACEMENT_PARAMS = {
     "xy_tolerance": 0.0,
     "center_z_min": 0.0,
@@ -128,19 +132,9 @@ class ThreeBoxesInCupsObservationsCfg(SO101VisualObservationsCfg):
 class ThreeBoxesInCupsRewardsCfg:
     reach = RewTerm(
         func=mdp.reach_unplaced_box,
-        weight=1.0,
-        params={
-            "std": 0.06,
-            "placement": dict(PLACEMENT_PARAMS),
-            "robot_cfg": SO101_GRIPPER_CFG,
-        },
-    )
-    grasp = RewTerm(
-        func=mdp.grasp_unplaced_box,
         weight=0.5,
         params={
-            "distance_threshold": 0.035,
-            "closed_position_max": 0.45,
+            "std": 0.06,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
@@ -150,6 +144,7 @@ class ThreeBoxesInCupsRewardsCfg:
         weight=2.0,
         params={
             "lift_height": 0.075,
+            "object_rest_height": BOX_REST_HEIGHT,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
@@ -308,7 +303,7 @@ class SO101ThreeBoxesInCupsVisionEnvCfg(SO101VisualEnvCfg):
             "center_z_min": geometry["success_center_z_min_m"],
             "center_z_max": geometry["success_center_z_max_m"],
         }
-        for term_name in ("reach", "grasp", "lift", "transport", "release", "stable"):
+        for term_name in ("reach", "lift", "transport", "release", "stable"):
             getattr(self.rewards, term_name).params["placement"].update(placement)
         self.rewards.insertion.params.update(
             xy_tolerance=placement["xy_tolerance"],

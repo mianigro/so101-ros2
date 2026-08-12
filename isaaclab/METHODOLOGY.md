@@ -163,6 +163,7 @@ The reward is a dense task sequence plus two smoothness penalties. Let:
 - `r_oc = ||(p_o - p_c)_xy||`;
 - `z_oc = (p_o - p_c)_z`;
 - `q_g` be gripper position, with larger values more open;
+- `z_rest = 0.0125` m, the object-centre height while resting on the table;
 - `v_o` and `w_o` be object linear and angular velocity;
 - `a_t` be the normalized action.
 
@@ -181,10 +182,9 @@ Rebuilding different assets can change these values.
 
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
-| Reach | `1 - tanh(d_eo / 0.06)` | `+1.0` | Move the grasp frame to the object |
-| Grasp | `1[d_eo <= 0.035 and q_g <= 0.45]` | `+0.5` | Close near the object |
-| Lift | `clip((p_o.z - p_c.z) / 0.075, 0, 1)` | `+2.0` | Raise the object |
-| Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= 0.045]` | `+3.0` | Align above the cup |
+| Reach | `1 - tanh(d_eo / 0.06)` | `+0.5` | Move the grasp frame to the object |
+| Lift | `clip((p_o.z - z_rest) / 0.075, 0, 1)` | `+2.0` | Pick up the object |
+| Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= 0.045]` | `+3.0` | Move the object over the cup |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
 | Stable | `1[released, inside, and slow]` | `+20.0` | Complete a settled placement |
@@ -214,13 +214,36 @@ reward_t = (1/30) * sum(weight_i * raw_term_i)
 ```
 
 The dense terms are active every step; there is no hidden phase or scripted
-state machine. Height gates transport, alignment gates insertion, and the larger
-release/stability terms keep completion more valuable than hovering.
+state machine. The reward follows the goal, not gripper micro-state: reach the
+object, pick it up, move it over the cup, drop it in. Height gates transport,
+alignment gates insertion, and the larger release/stability terms keep
+completion more valuable than hovering.
+
+The reward follows the goal, not gripper micro-state: reach the object, pick it
+up, move it over the cup, drop it in. Height gates transport, alignment gates
+insertion, and the larger release/stability terms keep completion more valuable
+than hovering.
+
+There is deliberately no gripper-closure or contact-based grip term. Earlier
+attempts (`proximity * closure`, and contact-sensor gating) were all gameable --
+the SO-101 gripper's body-level contact sensing cannot distinguish a real grip
+(cube trapped between the jaws) from the closed jaw resting on top of the cube,
+and any closure-based gradient rewards closing onto the cube from any angle
+rather than a true grip. So grip is left to emerge from the goal rewards; a
+reliable grip signal would need dedicated inside-face sensor bodies on the jaws,
+which is a future asset change.
+
+Lift measures height *gained* above the rest pose `z_rest`. The earlier
+`clip((p_o.z - p_c.z)/0.075, 0, 1)` measured height relative to the cup base,
+which was already ~0.167 at rest (a free +0.333/step before any contact); the
+rest-pose baseline makes it zero until the object is actually picked up.
 
 ### Reward limitations
 
-- Grasp uses proximity and gripper closure rather than verified finger contact.
-- Lift rewards object height regardless of the cause of motion.
+- Nothing verifies a real grip. The reward only sees the object's pose, so any
+  way of raising and releasing the object into the cup (grip, pinch, or
+  forklift) is rewarded equally. Body-level contact sensing cannot fix this on
+  the current asset; it needs dedicated jaw sensor pads.
 - Transport can reward hovering when release/stability are too difficult.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.

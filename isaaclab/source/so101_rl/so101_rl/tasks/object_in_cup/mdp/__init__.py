@@ -8,7 +8,6 @@ from .critic_observations import (
 from .events import reset_task_layout
 from .geometry import placement_mask, update_settle_counter
 from .rewards import (
-    grasp_object,
     insert_object,
     lift_object,
     reach_object,
@@ -22,7 +21,6 @@ __all__ = [
     "CRITIC_STATE_COMPONENTS",
     "CRITIC_STATE_DIM",
     "critic_task_state",
-    "grasp_object",
     "insert_object",
     "invalid_state",
     "lift_object",

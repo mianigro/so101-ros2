@@ -28,38 +28,21 @@ def reach_object(
     return 1.0 - torch.tanh(distance / std)
 
 
-def grasp_object(
-    env: ManagerBasedRLEnv,
-    distance_threshold: float,
-    closed_position_max: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
-) -> torch.Tensor:
-    object_pos = env.scene[object_cfg.name].data.root_pos_w.torch
-    ee_pos = env.scene[ee_frame_cfg.name].data.target_pos_w.torch[:, 0, :]
-    gripper_pos = (
-        env.scene[robot_cfg.name]
-        .data.joint_pos.torch[:, robot_cfg.joint_ids]
-        .squeeze(-1)
-    )
-    close_enough = (
-        torch.linalg.vector_norm(object_pos - ee_pos, dim=-1) <= distance_threshold
-    )
-    closed = gripper_pos <= closed_position_max
-    return (close_enough & closed).float()
-
-
 def lift_object(
     env: ManagerBasedRLEnv,
     lift_height: float,
+    object_rest_height: float,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
 ) -> torch.Tensor:
+    """Reward picking up the object: height gained above its rest pose.
+
+    Goal-based term: it only cares that the object has been raised, not how.
+    The baseline is the object's rest height (not the cup base), so this is zero
+    while the object sits on the table and rises smoothly as it is picked up.
+    """
     object_height = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2]
-    cup_base_height = env.scene[cup_cfg.name].data.root_pos_w.torch[:, 2]
     return torch.clamp(
-        (object_height - cup_base_height) / lift_height, min=0.0, max=1.0
+        (object_height - object_rest_height) / lift_height, 0.0, 1.0
     )
 
 
