@@ -10,11 +10,15 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 
 from so101_rl.paths import CUBE_USD_PATH, CUP_USD_PATH, load_asset_manifest
 from so101_rl.tasks.common import (
+    SO101_FIXED_JAW_PAD_PRIM_PATH,
     SO101_GRIPPER_CFG,
+    SO101_MOVING_JAW_PAD_PRIM_PATH,
+    SO101_PAD_THICKNESS_M,
     SO101_ROBOT_JOINT_CFG,
     SO101VisualEnvCfg,
     SO101VisualEventsCfg,
@@ -106,6 +110,30 @@ class ThreeBoxesInCupsSceneCfg(SO101VisualSceneCfg):
     cup_1: RigidObjectCfg = _cup_cfg(0)
     cup_2: RigidObjectCfg = _cup_cfg(1)
     cup_3: RigidObjectCfg = _cup_cfg(2)
+    fixed_jaw_contact = ContactSensorCfg(
+        prim_path=SO101_FIXED_JAW_PAD_PRIM_PATH,
+        update_period=0.0,
+        history_length=4,
+        track_pose=True,
+        force_threshold=0.1,
+        filter_prim_paths_expr=[
+            "{ENV_REGEX_NS}/Box1",
+            "{ENV_REGEX_NS}/Box2",
+            "{ENV_REGEX_NS}/Box3",
+        ],
+    )
+    moving_jaw_contact = ContactSensorCfg(
+        prim_path=SO101_MOVING_JAW_PAD_PRIM_PATH,
+        update_period=0.0,
+        history_length=4,
+        track_pose=False,
+        force_threshold=0.1,
+        filter_prim_paths_expr=[
+            "{ENV_REGEX_NS}/Box1",
+            "{ENV_REGEX_NS}/Box2",
+            "{ENV_REGEX_NS}/Box3",
+        ],
+    )
 
 
 @configclass
@@ -130,18 +158,37 @@ class ThreeBoxesInCupsObservationsCfg(SO101VisualObservationsCfg):
 
 @configclass
 class ThreeBoxesInCupsRewardsCfg:
-    reach = RewTerm(
-        func=mdp.reach_unplaced_box,
-        weight=0.5,
+    approach_progress = RewTerm(
+        func=mdp.approach_progress,
+        weight=1.0,
         params={
-            "std": 0.06,
+            "half_extents": (0.0125, 0.0125, 0.0125),
+            "pad_thickness": SO101_PAD_THICKNESS_M,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
-    lift = RewTerm(
-        func=mdp.lift_unplaced_box,
+    closure_progress = RewTerm(
+        func=mdp.closure_progress,
+        weight=1.0,
+        params={
+            "half_extents": (0.0125, 0.0125, 0.0125),
+            "pad_thickness": SO101_PAD_THICKNESS_M,
+            "placement": dict(PLACEMENT_PARAMS),
+            "robot_cfg": SO101_GRIPPER_CFG,
+        },
+    )
+    grasp_acquired = RewTerm(
+        func=mdp.grasp_acquired,
         weight=2.0,
+        params={
+            "placement": dict(PLACEMENT_PARAMS),
+            "robot_cfg": SO101_GRIPPER_CFG,
+        },
+    )
+    lift_progress = RewTerm(
+        func=mdp.lift_progress,
+        weight=6.0,
         params={
             "lift_height": 0.075,
             "object_rest_height": BOX_REST_HEIGHT,
@@ -298,13 +345,24 @@ class SO101ThreeBoxesInCupsVisionEnvCfg(SO101VisualEnvCfg):
 
     def __post_init__(self):
         geometry = load_asset_manifest()["geometry"]
+        half_extents = tuple(float(value) * 0.5 for value in geometry["cube_extents_m"])
         placement = {
             "xy_tolerance": geometry["success_xy_tolerance_m"],
             "center_z_min": geometry["success_center_z_min_m"],
             "center_z_max": geometry["success_center_z_max_m"],
         }
-        for term_name in ("reach", "lift", "transport", "release", "stable"):
+        for term_name in (
+            "approach_progress",
+            "closure_progress",
+            "grasp_acquired",
+            "lift_progress",
+            "transport",
+            "release",
+            "stable",
+        ):
             getattr(self.rewards, term_name).params["placement"].update(placement)
+        self.rewards.approach_progress.params["half_extents"] = half_extents
+        self.rewards.closure_progress.params["half_extents"] = half_extents
         self.rewards.insertion.params.update(
             xy_tolerance=placement["xy_tolerance"],
             center_z_max=placement["center_z_max"],

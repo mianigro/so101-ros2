@@ -66,6 +66,11 @@ _GRIPPER_PRIM_PATH = (
     "{ENV_REGEX_NS}/Robot/Geometry/base_link/shoulder_link/upper_arm_link/"
     "lower_arm_link/wrist_link/gripper_link"
 )
+SO101_FIXED_JAW_PAD_PRIM_PATH = f"{_GRIPPER_PRIM_PATH}/fixed_jaw_contact_pad_link"
+SO101_MOVING_JAW_PAD_PRIM_PATH = (
+    f"{_GRIPPER_PRIM_PATH}/moving_jaw_so101_v1_link/moving_jaw_contact_pad_link"
+)
+SO101_PAD_THICKNESS_M = 0.0005
 
 
 def contact_properties() -> sim_utils.CollisionPropertiesCfg:
@@ -87,6 +92,7 @@ SO101_ROBOT_CFG = ArticulationCfg(
     articulation_root_prim_path="/Geometry",
     spawn=sim_utils.UsdFileCfg(
         usd_path=str(ROBOT_USD_PATH),
+        activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=5.0,
@@ -303,7 +309,9 @@ class SO101VisualSceneCfg(InteractiveSceneCfg):
                 prim_path=_GRIPPER_PRIM_PATH,
                 name="grasp_frame",
                 offset=OffsetCfg(
-                    pos=(-0.0079, -0.000218121, -0.0981274),
+                    # Nominal centre of an axis-aligned 25 mm cube against the
+                    # fixed contact pad, not a point on the fixed jaw surface.
+                    pos=(0.0052, -0.000218, -0.0925),
                     rot=(0.0, 1.0, 0.0, 0.0),
                 ),
             )
@@ -590,7 +598,10 @@ class SO101VisualEnvCfg(ManagerBasedRLEnvCfg):
 
 __all__ = [
     "SO101_GRIPPER_CFG",
+    "SO101_FIXED_JAW_PAD_PRIM_PATH",
+    "SO101_MOVING_JAW_PAD_PRIM_PATH",
     "SO101_NOMINAL_CAMERAS",
+    "SO101_PAD_THICKNESS_M",
     "SO101PhysicsCfg",
     "SO101_ROBOT_CFG",
     "SO101_ROBOT_JOINT_CFG",

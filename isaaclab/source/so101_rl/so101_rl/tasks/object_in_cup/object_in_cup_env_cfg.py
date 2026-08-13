@@ -10,11 +10,15 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 
 from so101_rl.paths import CUBE_USD_PATH, CUP_USD_PATH, load_asset_manifest
 from so101_rl.tasks.common import (
+    SO101_FIXED_JAW_PAD_PRIM_PATH,
     SO101_GRIPPER_CFG,
+    SO101_MOVING_JAW_PAD_PRIM_PATH,
+    SO101_PAD_THICKNESS_M,
     SO101_ROBOT_JOINT_CFG,
     SO101VisualEnvCfg,
     SO101VisualEventsCfg,
@@ -78,6 +82,23 @@ class ObjectInCupSceneCfg(SO101VisualSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=CUP_START),
     )
 
+    fixed_jaw_contact = ContactSensorCfg(
+        prim_path=SO101_FIXED_JAW_PAD_PRIM_PATH,
+        update_period=0.0,
+        history_length=4,
+        track_pose=True,
+        force_threshold=0.1,
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+    )
+    moving_jaw_contact = ContactSensorCfg(
+        prim_path=SO101_MOVING_JAW_PAD_PRIM_PATH,
+        update_period=0.0,
+        history_length=4,
+        track_pose=False,
+        force_threshold=0.1,
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+    )
+
 
 @configclass
 class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
@@ -99,10 +120,28 @@ class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
 
 @configclass
 class ObjectInCupRewardsCfg:
-    reach = RewTerm(func=mdp.reach_object, weight=0.5, params={"std": 0.06})
-    lift = RewTerm(
-        func=mdp.lift_object,
-        weight=2.0,
+    approach_progress = RewTerm(
+        func=mdp.approach_progress,
+        weight=1.0,
+        params={
+            "half_extents": (0.0125, 0.0125, 0.0125),
+            "pad_thickness": SO101_PAD_THICKNESS_M,
+            "robot_cfg": SO101_GRIPPER_CFG,
+        },
+    )
+    closure_progress = RewTerm(
+        func=mdp.closure_progress,
+        weight=1.0,
+        params={
+            "half_extents": (0.0125, 0.0125, 0.0125),
+            "pad_thickness": SO101_PAD_THICKNESS_M,
+            "robot_cfg": SO101_GRIPPER_CFG,
+        },
+    )
+    grasp_acquired = RewTerm(func=mdp.grasp_acquired, weight=2.0)
+    lift_progress = RewTerm(
+        func=mdp.lift_progress,
+        weight=6.0,
         params={
             "lift_height": 0.075,
             "object_rest_height": OBJECT_REST_HEIGHT,
@@ -255,6 +294,7 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
 
     def __post_init__(self):
         geometry = load_asset_manifest()["geometry"]
+        half_extents = tuple(float(value) * 0.5 for value in geometry["cube_extents_m"])
         placement = {
             "xy_tolerance": geometry["success_xy_tolerance_m"],
             "center_z_min": geometry["success_center_z_min_m"],
@@ -264,6 +304,8 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
             xy_tolerance=placement["xy_tolerance"],
             center_z_max=placement["center_z_max"],
         )
+        self.rewards.approach_progress.params["half_extents"] = half_extents
+        self.rewards.closure_progress.params["half_extents"] = half_extents
         self.rewards.release.params.update(placement)
         self.rewards.stable.params.update(placement)
         self.terminations.success.params.update(placement)

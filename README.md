@@ -126,8 +126,12 @@ source "$SO101_REPO/install/setup.bash"
   --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
 ```
 
-The first run expands the follower Xacro with `use_ros2_control:=false`, validates its six joints, and imports a
-fixed-base USD into the ignored `build/isaacsim_so101/` directory. Use `--rebuild-asset` after changing the Xacro or
+The first run expands the follower Xacro with `use_ros2_control:=false` and
+`simulation_contact_pads:=true`, validates its six movable joints and two
+collision-only jaw pads, and imports a fixed-base USD into the ignored
+`build/isaacsim_so101/` directory. Fixed-joint merging is disabled so the pads
+remain independently sensor-addressable rigid bodies; the ordinary ROS
+description defaults the pads off. Use `--rebuild-asset` after changing the Xacro or
 meshes. The importer creates no symlinks. The default `dual_overhead` camera profile also converts the two supplied
 mount STLs into that cache, assembles the left/right supports, and creates all three RTX cameras at 640×480 and 30 Hz.
 

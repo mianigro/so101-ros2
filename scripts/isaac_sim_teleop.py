@@ -65,6 +65,20 @@ JOINT_NAMES = [
     "wrist_roll",
     "gripper",
 ]
+CONTACT_PAD_SPECS = {
+    "fixed_jaw_contact_pad_link": {
+        "joint": "fixed_jaw_contact_pad_joint",
+        "parent": "gripper_link",
+        "size": [0.0005, 0.018, 0.025],
+        "origin": [-0.00805, -0.000218, -0.0925],
+    },
+    "moving_jaw_contact_pad_link": {
+        "joint": "moving_jaw_contact_pad_joint",
+        "parent": "moving_jaw_so101_v1_link",
+        "size": [0.0005, 0.025, 0.018],
+        "origin": [-0.01215, -0.0691, 0.0190],
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -345,6 +359,7 @@ def expand_follower_urdf(asset_dir: Path) -> Path:
         "variant:=follower",
         "use_ros2_control:=false",
         "add_transmissions:=false",
+        "simulation_contact_pads:=true",
     ]
     with temporary_path.open("w", encoding="utf-8") as output:
         result = subprocess.run(
@@ -381,6 +396,45 @@ def validate_follower_urdf(urdf_path: Path) -> None:
         )
     if not robot.findall(".//collision") or not robot.findall(".//inertial"):
         raise RuntimeError("generated URDF must contain collision and inertial data")
+
+    for link_name, spec in CONTACT_PAD_SPECS.items():
+        link = robot.find(f"./link[@name='{link_name}']")
+        if link is None:
+            raise RuntimeError(f"generated follower URDF is missing {link_name}")
+        if link.find("visual") is not None:
+            raise RuntimeError(f"{link_name} must remain collision-only")
+        box = link.find("./collision/geometry/box")
+        if box is None:
+            raise RuntimeError(f"{link_name} must use a box collision")
+        size = [float(value) for value in box.attrib.get("size", "").split()]
+        if len(size) != 3 or any(
+            not math.isclose(actual, expected, abs_tol=1e-12)
+            for actual, expected in zip(size, spec["size"])
+        ):
+            raise RuntimeError(f"unexpected {link_name} collision size: {size}")
+        mass = link.find("./inertial/mass")
+        if mass is None or not math.isclose(
+            float(mass.attrib.get("value", "nan")), 0.0001, abs_tol=1e-12
+        ):
+            raise RuntimeError(f"{link_name} must have a 0.1 g mass")
+        joint = robot.find(f"./joint[@name='{spec['joint']}']")
+        if joint is None or joint.attrib.get("type") != "fixed":
+            raise RuntimeError(f"{link_name} must be attached by a fixed joint")
+        parent = joint.find("parent")
+        child = joint.find("child")
+        if parent is None or parent.attrib.get("link") != spec["parent"]:
+            raise RuntimeError(f"unexpected parent for {spec['joint']}")
+        if child is None or child.attrib.get("link") != link_name:
+            raise RuntimeError(f"unexpected child for {spec['joint']}")
+        origin = joint.find("origin")
+        xyz = [] if origin is None else [
+            float(value) for value in origin.attrib.get("xyz", "").split()
+        ]
+        if len(xyz) != 3 or any(
+            not math.isclose(actual, expected, abs_tol=1e-12)
+            for actual, expected in zip(xyz, spec["origin"])
+        ):
+            raise RuntimeError(f"unexpected origin for {spec['joint']}: {xyz}")
 
     wrist_joint = robot.find("./joint[@name='wrist_camera_joint']")
     if wrist_joint is None:
@@ -645,7 +699,7 @@ def run_isaac_sim(args: argparse.Namespace, urdf_path: Path, camera_rig) -> None
         import isaacsim.core.experimental.utils.transform as transform_utils
         from isaacsim.core.simulation_manager import SimulationManager
         from isaacsim.core.utils.viewports import set_camera_view
-        from pxr import Gf, UsdGeom, UsdPhysics
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         extension_manager = omni.kit.app.get_app().get_extension_manager()
         extensions = [
@@ -661,6 +715,7 @@ def run_isaac_sim(args: argparse.Namespace, urdf_path: Path, camera_rig) -> None
         simulation_app.update()
 
         usd_path = import_or_reuse_asset(args, urdf_path, URDFImporter, URDFImporterConfig)
+        validate_generated_robot_usd(usd_path, Usd, UsdGeom, UsdPhysics)
         converted_mounts = {}
         rtx_camera_type = None
         if camera_rig is not None:
@@ -778,7 +833,9 @@ def import_or_reuse_asset(args, urdf_path, importer_type, config_type) -> Path:
     config = config_type(
         urdf_path=str(urdf_path),
         usd_path=str(asset_dir),
-        merge_fixed_joints=True,
+        # The collision-only jaw pads must remain separate rigid bodies so the
+        # two PhysX contact sensors can address them independently.
+        merge_fixed_joints=False,
         merge_mesh=False,
         collision_from_visuals=False,
         allow_self_collision=False,
@@ -796,6 +853,54 @@ def import_or_reuse_asset(args, urdf_path, importer_type, config_type) -> Path:
     if not usd_path.is_file():
         raise RuntimeError(f"URDF importer did not produce the expected USD file: {usd_path}")
     return usd_path
+
+
+def validate_generated_robot_usd(usd_path, usd, usd_geom, usd_physics) -> None:
+    """Validate the independently addressable pad and articulation contract."""
+    stage = usd.Stage.Open(str(usd_path))
+    if stage is None:
+        raise RuntimeError(f"could not open generated robot USD: {usd_path}")
+    prims = list(stage.Traverse())
+
+    movable_joints = {
+        prim.GetName()
+        for prim in prims
+        if prim.IsA(usd_physics.RevoluteJoint)
+        or prim.IsA(usd_physics.PrismaticJoint)
+    }
+    if movable_joints != set(JOINT_NAMES):
+        raise RuntimeError(
+            "generated USD joint mismatch: "
+            f"missing={sorted(set(JOINT_NAMES) - movable_joints)}, "
+            f"unexpected={sorted(movable_joints - set(JOINT_NAMES))}"
+        )
+
+    for link_name, spec in CONTACT_PAD_SPECS.items():
+        matches = [prim for prim in prims if prim.GetName() == link_name]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"generated USD must contain exactly one {link_name}; got {len(matches)}"
+            )
+        pad = matches[0]
+        if not pad.HasAPI(usd_physics.RigidBodyAPI):
+            raise RuntimeError(f"{link_name} is not an independently addressable rigid body")
+        geometry = [
+            prim
+            for prim in usd.PrimRange(pad)
+            if prim != pad and prim.IsA(usd_geom.Gprim)
+        ]
+        if not geometry or any(
+            not prim.HasAPI(usd_physics.CollisionAPI) for prim in geometry
+        ):
+            raise RuntimeError(f"{link_name} must contain collision-only geometry")
+
+        fixed_joint = [
+            prim
+            for prim in prims
+            if prim.GetName() == spec["joint"] and prim.IsA(usd_physics.FixedJoint)
+        ]
+        if len(fixed_joint) != 1:
+            raise RuntimeError(f"generated USD is missing fixed joint {spec['joint']}")
 
 
 def create_ros_action_graph(

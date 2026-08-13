@@ -4,6 +4,7 @@
   <xacro:arg name="variant" default="leader"/>          <!-- leader | follower -->
   <xacro:arg name="mesh_dir" default="package://so101_description/meshes"/>
   <xacro:arg name="add_transmissions" default="false"/>
+  <xacro:arg name="simulation_contact_pads" default="false"/>
   <xacro:arg name="use_ros2_control" default="false"/>
   <xacro:arg name="hardware_type" default="mock"/>
   <xacro:arg name="usb_port" default="/dev/ttyUSB0"/>
@@ -39,7 +40,8 @@
   <xacro:if value="${variant == 'follower'}">
     <xacro:so101_ee_follower
       mesh_dir="$(arg mesh_dir)"
-      add_transmissions="$(arg add_transmissions)"/>
+      add_transmissions="$(arg add_transmissions)"
+      simulation_contact_pads="$(arg simulation_contact_pads)"/>
   </xacro:if>
 
   <xacro:if value="${use_ros2_control}">

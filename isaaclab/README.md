@@ -143,6 +143,12 @@ source /home/anon/Documents/so101-ros2/install/setup.bash
 Use `--rebuild-asset` only after changing robot Xacro/meshes, camera mount
 meshes, or camera rig configuration.
 
+The Isaac expansion enables `simulation_contact_pads:=true`. It imports the
+two invisible inner-jaw pad links without fixed-joint merging so PhysX can
+address them independently; the normal ROS description keeps the option false.
+The generated articulation must still expose only the canonical six movable
+joints. Rebuilding after the pad or grasp-geometry change is mandatory.
+
 Prepare and validate the cube and cup:
 
 ```bash
@@ -176,6 +182,11 @@ Isaac Sim visualizer. Before training, verify:
 - wrist camera attachment and both overhead camera poses;
 - camera optical axes, FOV, image content, and support geometry;
 - joint ordering, limits, initial pose, gripper direction, actions, and resets.
+- no pad/cube contact at reset, bilateral pad contact during a centred pinch,
+  and stable contact forces without pad/jaw overlap;
+- pickup metrics firing in order: `approach_progress`, `closure_progress`,
+  `grasp_acquired`, then `lift_progress`, with no continuing approach reward
+  while camping.
 
 Exercise actions and resets with:
 
@@ -261,6 +272,12 @@ FIXED_CHECKPOINT=/absolute/path/to/model_<iteration>.pt
 Require at least 95% fixed-task success and inspect contacts, release behavior,
 and camera inputs before continuing. This is an acceptance target, not a result
 already achieved by the repository.
+
+Reward or checkpoint return alone is insufficient: reject a run whose approach
+or closure metric rises while grasp and lift remain zero. Because the jaw
+collision geometry and pickup semantics changed together, start fixed-task
+training from scratch; older checkpoints remain structurally loadable but are
+not valid continuation points for this experiment.
 
 ## 4. Resume on the randomized task
 
@@ -473,11 +490,13 @@ Run the focused Isaac Lab suite through the source-runtime bootstrap:
 "$ISAACLAB_PYTHON" isaaclab/test
 ```
 
-The suite checks asset geometry, the shared actor/action contract, both task
-families, the exact 34- and 84-value critics, permutation-invariant three-box
-success, reset spacing, camera calibration, latency resets, actor export
-signatures, and deployment validation. It does not prove PPO convergence,
-rendered-camera correctness, held-out success, or sim-to-real transfer.
+The suite checks asset geometry, projected grasp support, open-jaw gating,
+bounded/non-farmable progress, synchronous same-box bilateral contacts, the
+shared actor/action contract, both task families, the exact 34- and 84-value
+critics, permutation-invariant three-box success, reset spacing, camera
+calibration, latency resets, actor export signatures, and deployment
+validation. It does not prove PPO convergence, rendered-camera correctness,
+held-out success, or sim-to-real transfer.
 
 ## Troubleshooting
 

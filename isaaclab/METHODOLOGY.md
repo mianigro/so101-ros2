@@ -156,16 +156,43 @@ critic state invalidates checkpoints but does not change deployment.
 
 ## Single-box reward design
 
-The reward is a dense task sequence plus two smoothness penalties. Let:
+The reward is a bounded pickup sequence followed by the existing placement
+sequence and two smoothness penalties. Let:
 
-- `p_o`, `p_c`, and `p_e` be object, cup, and end-effector positions;
-- `d_eo = ||p_o - p_e||`;
+- `p_o`, `p_c`, and `p_t` be object, cup, and dynamic grasp-target positions;
+- `d_ot = ||p_o - p_t||`;
 - `r_oc = ||(p_o - p_c)_xy||`;
 - `z_oc = (p_o - p_c)_z`;
 - `q_g` be gripper position, with larger values more open;
 - `z_rest = 0.0125` m, the object-centre height while resting on the table;
 - `v_o` and `w_o` be object linear and angular velocity;
 - `a_t` be the normalized action.
+
+The nominal grasp frame is `(0.0052, -0.000218, -0.0925)` m in
+`gripper_link`, at the centre of an axis-aligned 25 mm cube against the fixed
+pad. It is not on the fixed-jaw collision surface. For randomized cube yaw the
+reward does not use that fixed offset. If `n` is the fixed pad's world-space
+inward normal and `h` is the cube half-extent vector, it computes:
+
+```text
+support(n) = sum(abs(R_object^T n) * h)
+p_t = p_pad_center + n * (pad_thickness / 2 + support(n) + 0.0005)
+```
+
+This moves a 45-degree cube farther into the open gap by its projected support
+distance while keeping the other two coordinates aligned with the pad centre.
+
+The simulation robot has invisible collision-only bodies on the two inner jaw
+faces. Each is a 0.5 mm-thick, 18 x 25 mm pad with 0.1 g mass and a face 0.1 mm
+proud of the original mesh. Fixed-joint merging is disabled during URDF import,
+so the pads remain separate rigid bodies without adding controllable joints.
+The ordinary ROS Xacro leaves them out unless
+`simulation_contact_pads:=true` is explicitly selected.
+
+One PhysX contact sensor addresses each pad. Both retain four 120 Hz force
+samples. A valid grasp requires force greater than 0.1 N from both pads against
+the same cube in the same stored physics substep. Unilateral, asynchronous,
+exterior-jaw, and different-cube contacts are not valid grasps.
 
 The generated asset manifest supplies placement geometry. For the current cube
 and cup it is approximately:
@@ -182,8 +209,10 @@ Rebuilding different assets can change these values.
 
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
-| Reach | `1 - tanh(d_eo / 0.06)` | `+0.5` | Move the grasp frame to the object |
-| Lift | `clip((p_o.z - z_rest) / 0.075, 0, 1)` | `+2.0` | Pick up the object |
+| Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04)) * clip((q_g - 0.9) / 0.3, 0, 1)` | `+1.0` | Approach the attainable target with an open gripper |
+| Closure progress | new credited closing motion `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power | `+1.0` | Close only at the grasp target |
+| Grasp acquired | one impulse on first valid bilateral contact | `+2.0` | Confirm a physical same-cube pinch |
+| Lift progress | new episode-best `clip((p_o.z - z_rest) / 0.075, 0, 1)` while the grasp remains valid | `+6.0` | Lift while pinching the object |
 | Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= 0.045]` | `+3.0` | Move the object over the cup |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
@@ -207,43 +236,28 @@ center_z_min <= z_oc <= center_z_max
 q_g >= 1.20 rad
 ```
 
-Isaac Lab treats reward weights as rates. At the 30 Hz policy frequency:
+Isaac Lab treats reward weights as rates. The four pickup terms divide their
+positive progress or impulse by `env.step_dt`, cancelling the manager's later
+time-step multiplication. Their integrated episode budgets are therefore
+exactly their weights: approach `1`, closure `1`, grasp `2`, and lift `6` per
+cube. The remaining dense terms retain the normal rate form. At 30 Hz:
 
 ```text
 reward_t = (1/30) * sum(weight_i * raw_term_i)
 ```
 
-The dense terms are active every step; there is no hidden phase or scripted
-state machine. The reward follows the goal, not gripper micro-state: reach the
-object, pick it up, move it over the cup, drop it in. Height gates transport,
-alignment gates insertion, and the larger release/stability terms keep
-completion more valuable than hovering.
-
-The reward follows the goal, not gripper micro-state: reach the object, pick it
-up, move it over the cup, drop it in. Height gates transport, alignment gates
-insertion, and the larger release/stability terms keep completion more valuable
-than hovering.
-
-There is deliberately no gripper-closure or contact-based grip term. Earlier
-attempts (`proximity * closure`, and contact-sensor gating) were all gameable --
-the SO-101 gripper's body-level contact sensing cannot distinguish a real grip
-(cube trapped between the jaws) from the closed jaw resting on top of the cube,
-and any closure-based gradient rewards closing onto the cube from any angle
-rather than a true grip. So grip is left to emerge from the goal rewards; a
-reliable grip signal would need dedicated inside-face sensor bodies on the jaws,
-which is a future asset change.
-
-Lift measures height *gained* above the rest pose `z_rest`. The earlier
-`clip((p_o.z - p_c.z)/0.075, 0, 1)` measured height relative to the cup base,
-which was already ~0.167 at rest (a free +0.333/step before any contact); the
-rest-pose baseline makes it zero until the object is actually picked up.
+Episode-best and cumulative-credit buffers make approach and closure
+non-farmable: camping earns nothing, backing off cannot repay approach, and
+reopening/reclosing cannot refill closure. Lift measures height gained above
+the table rest pose and advances only while the bilateral grasp predicate is
+true. Pushing or throwing the cube upward does not earn lift credit. Transport,
+insertion, release, stable placement, action rate, and joint velocity are
+unchanged.
 
 ### Reward limitations
 
-- Nothing verifies a real grip. The reward only sees the object's pose, so any
-  way of raising and releasing the object into the cup (grip, pinch, or
-  forklift) is rewarded equally. Body-level contact sensing cannot fix this on
-  the current asset; it needs dedicated jaw sensor pads.
+- The pads are a thin simulator-only approximation of the inner jaw surfaces;
+  they validate a bilateral pinch but do not model tactile pressure fields.
 - Transport can reward hovering when release/stability are too difficult.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.
@@ -272,10 +286,15 @@ task evaluates all six possible one-to-one assignments and selects the
 highest-scoring assignment. Consequently, a box may enter any cup, but two
 boxes in the same cup can never satisfy all-three success.
 
-Reach and grasp operate on the best unplaced box. Lift ignores placed boxes,
-and transport considers only unplaced boxes and empty cups. Insertion, release,
-and stable-placement progress sum the best assignment and divide by three so
-their maximum raw values remain `1.0`, matching the single-box reward scale.
+Approach tracks bounded best alignment independently for every unplaced box;
+closure credits the best-aligned unplaced box at each step. Their buffers
+remain per box. Grasp and lift use the sensor filter
+for each box, so contacts on two different boxes cannot combine. The existing
+permutation-invariant placement mask excludes already placed boxes from all
+four pickup terms. Each sequential pickup therefore receives its own bounded
+`1 + 1 + 2 + 6` budget. Transport considers only unplaced boxes and empty cups.
+Insertion, release, and stable-placement progress sum the best assignment and
+divide by three so their maximum raw values remain `1.0`.
 
 A placed box is considered released when the gripper is open or the grasp frame
 has moved at least 50 mm away. The distance alternative is necessary for a

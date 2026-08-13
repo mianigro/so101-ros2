@@ -14,6 +14,10 @@ from so101_rl.camera_profile import (
 )
 from so101_rl.export_manifest import validate_deployable_contract
 from so101_rl.tasks.common import SO101VisualObservationsCfg
+from so101_rl.tasks.common.visual_env_cfg import (
+    SO101_FIXED_JAW_PAD_PRIM_PATH,
+    SO101_MOVING_JAW_PAD_PRIM_PATH,
+)
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.tasks.object_in_cup.agents.rsl_rl_vision_ppo_cfg import (
     SO101ObjectInCupVisionPPOCfg,
@@ -45,6 +49,7 @@ from so101_rl.visual_contract import (
 
 _MANIFEST = {
     "geometry": {
+        "cube_extents_m": [0.025, 0.025, 0.025],
         "success_xy_tolerance_m": 0.0038,
         "success_center_z_min_m": 0.0145,
         "success_center_z_max_m": 0.0385,
@@ -110,6 +115,37 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(cfg.terminations.success.params["required_steps"], 15)
         self.assertEqual(cfg.events.reset_layout.params["curriculum_steps"], 45_000_000)
         self.assertEqual(cfg.terminations.success.params["xy_tolerance"], 0.0038)
+        self.assertEqual(
+            tuple(cfg.rewards.__dataclass_fields__)[:4],
+            (
+                "approach_progress",
+                "closure_progress",
+                "grasp_acquired",
+                "lift_progress",
+            ),
+        )
+        self.assertEqual(cfg.rewards.approach_progress.weight, 1.0)
+        self.assertEqual(cfg.rewards.closure_progress.weight, 1.0)
+        self.assertEqual(cfg.rewards.grasp_acquired.weight, 2.0)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 6.0)
+        self.assertEqual(
+            cfg.rewards.approach_progress.params["half_extents"],
+            (0.0125, 0.0125, 0.0125),
+        )
+        self.assertEqual(cfg.scene.fixed_jaw_contact.history_length, 4)
+        self.assertEqual(cfg.scene.fixed_jaw_contact.update_period, 0.0)
+        self.assertTrue(cfg.scene.fixed_jaw_contact.track_pose)
+        self.assertEqual(cfg.scene.fixed_jaw_contact.force_threshold, 0.1)
+        self.assertEqual(
+            cfg.scene.fixed_jaw_contact.prim_path, SO101_FIXED_JAW_PAD_PRIM_PATH
+        )
+        self.assertEqual(
+            cfg.scene.moving_jaw_contact.prim_path, SO101_MOVING_JAW_PAD_PRIM_PATH
+        )
+        self.assertEqual(
+            cfg.scene.ee_frame.target_frames[0].offset.pos,
+            (0.0052, -0.000218, -0.0925),
+        )
 
     def test_visual_actor_and_simulator_critic_contract(self):
         cfg = self._config()
@@ -219,6 +255,15 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(agent.critic.hidden_dims, [256, 256, 128])
         for name in (*BOX_NAMES, *CUP_NAMES):
             self.assertTrue(hasattr(cfg.scene, name))
+        self.assertEqual(
+            cfg.scene.fixed_jaw_contact.filter_prim_paths_expr,
+            [
+                "{ENV_REGEX_NS}/Box1",
+                "{ENV_REGEX_NS}/Box2",
+                "{ENV_REGEX_NS}/Box3",
+            ],
+        )
+        self.assertEqual(cfg.rewards.lift_progress.weight, 6.0)
         validate_deployable_contract(
             "SO101-Three-Boxes-In-Cups-Vision-v0", cfg, agent
         )

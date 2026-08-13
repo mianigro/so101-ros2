@@ -1,49 +1,268 @@
-"""Dense phase rewards for grasping and placing the object in the cup."""
+"""Bounded pickup stages and placement rewards for the object-in-cup task."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import torch
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
+
+from so101_rl.tasks.common.mdp.pickup import (
+    bilateral_same_step_contact,
+    bounded_closure_increment,
+    episode_best_increment,
+    first_event_increment,
+    grasp_targets_from_fixed_pad,
+    pickup_alignment_score,
+    target_alignment_score,
+)
 
 from .geometry import placement_mask
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.managers import RewardTermCfg
 
 
-def reach_object(
+def _gripper_position(
     env: ManagerBasedRLEnv,
-    std: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+    robot_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    distance = torch.linalg.vector_norm(
-        env.scene[object_cfg.name].data.root_pos_w.torch
-        - env.scene[ee_frame_cfg.name].data.target_pos_w.torch[:, 0, :],
-        dim=-1,
+    return (
+        env.scene[robot_cfg.name]
+        .data.joint_pos.torch[:, robot_cfg.joint_ids]
+        .squeeze(-1)
     )
-    return 1.0 - torch.tanh(distance / std)
 
 
-def lift_object(
+def _pickup_alignment(
     env: ManagerBasedRLEnv,
-    lift_height: float,
-    object_rest_height: float,
+    half_extents: tuple[float, float, float],
+    pad_thickness: float,
+    clearance: float,
+    position_scale: float,
+    *,
+    gate_open: bool,
+    open_position_min: float,
+    fully_open_position: float,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
+    fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
 ) -> torch.Tensor:
-    """Reward picking up the object: height gained above its rest pose.
-
-    Goal-based term: it only cares that the object has been raised, not how.
-    The baseline is the object's rest height (not the cup base), so this is zero
-    while the object sits on the table and rises smoothly as it is picked up.
-    """
-    object_height = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2]
-    return torch.clamp(
-        (object_height - object_rest_height) / lift_height, 0.0, 1.0
+    object_asset = env.scene[object_cfg.name]
+    fixed_pad = env.scene[fixed_sensor_cfg.name]
+    target = grasp_targets_from_fixed_pad(
+        fixed_pad.data.pos_w.torch[:, 0, :],
+        fixed_pad.data.quat_w.torch[:, 0, :],
+        object_asset.data.root_quat_w.torch,
+        half_extents,
+        pad_thickness=pad_thickness,
+        clearance=clearance,
     )
+    if gate_open:
+        return pickup_alignment_score(
+            object_asset.data.root_pos_w.torch,
+            target,
+            _gripper_position(env, robot_cfg),
+            position_scale=position_scale,
+            open_position_min=open_position_min,
+            fully_open_position=fully_open_position,
+        ).unsqueeze(-1)
+    return target_alignment_score(
+        object_asset.data.root_pos_w.torch,
+        target,
+        position_scale=position_scale,
+    ).unsqueeze(-1)
+
+
+def _bilateral_contact(
+    env: ManagerBasedRLEnv,
+    force_threshold: float,
+    fixed_sensor_cfg: SceneEntityCfg,
+    moving_sensor_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    fixed = env.scene[fixed_sensor_cfg.name].data.force_matrix_w_history
+    moving = env.scene[moving_sensor_cfg.name].data.force_matrix_w_history
+    if fixed is None or moving is None:
+        raise RuntimeError("pickup rewards require filtered contact-force history")
+    return bilateral_same_step_contact(
+        fixed.torch, moving.torch, force_threshold=force_threshold
+    )
+
+
+class approach_progress(ManagerTermBase):
+    """Pay only new episode-best open-jaw alignment, at most one per episode."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._best = torch.zeros((env.num_envs, 1), device=env.device)
+        self._initialized = torch.ones(
+            (env.num_envs, 1), dtype=torch.bool, device=env.device
+        )
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        env_ids = slice(None) if env_ids is None else env_ids
+        self._best[env_ids] = 0.0
+        self._initialized[env_ids] = True
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        half_extents: tuple[float, float, float],
+        pad_thickness: float,
+        clearance: float = 0.0005,
+        position_scale: float = 0.04,
+        open_position_min: float = 0.9,
+        fully_open_position: float = 1.2,
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
+        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+    ) -> torch.Tensor:
+        score = _pickup_alignment(
+            env,
+            half_extents,
+            pad_thickness,
+            clearance,
+            position_scale,
+            gate_open=True,
+            open_position_min=open_position_min,
+            fully_open_position=fully_open_position,
+            object_cfg=object_cfg,
+            robot_cfg=robot_cfg,
+            fixed_sensor_cfg=fixed_sensor_cfg,
+        )
+        eligible = torch.ones_like(score, dtype=torch.bool)
+        increment, self._best, self._initialized = episode_best_increment(
+            score, self._best, self._initialized, eligible
+        )
+        return increment.squeeze(-1) / env.step_dt
+
+
+class closure_progress(ManagerTermBase):
+    """Pay aligned physical jaw closure, capped to one per episode."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._previous = torch.zeros(env.num_envs, device=env.device)
+        self._credited = torch.zeros((env.num_envs, 1), device=env.device)
+        self._initialized = torch.zeros(
+            env.num_envs, dtype=torch.bool, device=env.device
+        )
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        env_ids = slice(None) if env_ids is None else env_ids
+        self._previous[env_ids] = 0.0
+        self._credited[env_ids] = 0.0
+        self._initialized[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        half_extents: tuple[float, float, float],
+        pad_thickness: float,
+        clearance: float = 0.0005,
+        position_scale: float = 0.04,
+        closure_range: float = 1.2,
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
+        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+    ) -> torch.Tensor:
+        alignment = _pickup_alignment(
+            env,
+            half_extents,
+            pad_thickness,
+            clearance,
+            position_scale,
+            gate_open=False,
+            open_position_min=0.0,
+            fully_open_position=1.0,
+            object_cfg=object_cfg,
+            robot_cfg=robot_cfg,
+            fixed_sensor_cfg=fixed_sensor_cfg,
+        )
+        current = _gripper_position(env, robot_cfg)
+        increment, self._credited, self._initialized = bounded_closure_increment(
+            self._previous,
+            current,
+            alignment,
+            self._credited,
+            torch.ones_like(alignment, dtype=torch.bool),
+            self._initialized,
+            closure_range=closure_range,
+        )
+        self._previous.copy_(current)
+        return increment.sum(dim=-1) / env.step_dt
+
+
+class grasp_acquired(ManagerTermBase):
+    """Pay once when both pads contact the cube in the same physics substep."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._credited = torch.zeros(
+            (env.num_envs, 1), dtype=torch.bool, device=env.device
+        )
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        env_ids = slice(None) if env_ids is None else env_ids
+        self._credited[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        force_threshold: float = 0.1,
+        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
+    ) -> torch.Tensor:
+        contact = _bilateral_contact(
+            env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
+        )
+        increment, self._credited = first_event_increment(
+            contact,
+            self._credited,
+            torch.ones_like(contact, dtype=torch.bool),
+        )
+        return increment.sum(dim=-1) / env.step_dt
+
+
+class lift_progress(ManagerTermBase):
+    """Pay new best height only while the cube has bilateral pad contact."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._best = torch.zeros((env.num_envs, 1), device=env.device)
+        self._initialized = torch.zeros(
+            (env.num_envs, 1), dtype=torch.bool, device=env.device
+        )
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        env_ids = slice(None) if env_ids is None else env_ids
+        self._best[env_ids] = 0.0
+        self._initialized[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        lift_height: float,
+        object_rest_height: float,
+        force_threshold: float = 0.1,
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
+    ) -> torch.Tensor:
+        height = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2:3]
+        score = torch.clamp(
+            (height - object_rest_height) / lift_height, 0.0, 1.0
+        )
+        contact = _bilateral_contact(
+            env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
+        )
+        increment, self._best, self._initialized = episode_best_increment(
+            score, self._best, self._initialized, contact
+        )
+        return increment.squeeze(-1) / env.step_dt
 
 
 def transport_object(
