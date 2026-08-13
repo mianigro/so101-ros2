@@ -13,8 +13,9 @@ from so101_rl.tasks.common.mdp.pickup import (
     bilateral_same_step_contact,
     bounded_closure_increment,
     episode_best_increment,
-    first_event_increment,
     grasp_targets_from_fixed_pad,
+    object_between_jaws,
+    retryable_event_increment,
     target_alignment_score,
 )
 
@@ -183,7 +184,7 @@ class approach_progress(ManagerTermBase):
 
 
 class closure_progress(ManagerTermBase):
-    """Pay aligned physical closure with a separate one-point budget per box."""
+    """Pay closure after an unplaced box edge enters between the pads."""
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -208,11 +209,14 @@ class closure_progress(ManagerTermBase):
         clearance: float = 0.0005,
         position_scale: float = 0.04,
         closure_range: float = 1.2,
+        fixed_pad_length: float = 0.025,
+        minimum_insertion: float = 0.001,
         box_names: tuple[str, str, str] = BOX_NAMES,
         cup_names: tuple[str, str, str] = CUP_NAMES,
         robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
         ee_frame_name: str = "ee_frame",
         fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
     ) -> torch.Tensor:
         alignment, current, eligible = _pickup_alignment(
             env,
@@ -227,12 +231,30 @@ class closure_progress(ManagerTermBase):
             ee_frame_name=ee_frame_name,
             fixed_sensor_cfg=fixed_sensor_cfg,
         )
+        positions = torch.stack(
+            [env.scene[name].data.root_pos_w.torch for name in box_names], dim=1
+        )
+        quaternions = torch.stack(
+            [env.scene[name].data.root_quat_w.torch for name in box_names], dim=1
+        )
+        fixed_pad = env.scene[fixed_sensor_cfg.name].data
+        moving_pad = env.scene[moving_sensor_cfg.name].data
+        between = object_between_jaws(
+            positions,
+            quaternions,
+            fixed_pad.pos_w.torch[:, 0, :],
+            fixed_pad.quat_w.torch[:, 0, :],
+            moving_pad.pos_w.torch[:, 0, :],
+            half_extents,
+            fixed_pad_length=fixed_pad_length,
+            minimum_insertion=minimum_insertion,
+        )
         increment, self._credited, self._initialized = bounded_closure_increment(
             self._previous,
             current,
             alignment,
             self._credited,
-            eligible,
+            eligible & between,
             self._initialized,
             closure_range=closure_range,
         )
@@ -241,17 +263,22 @@ class closure_progress(ManagerTermBase):
 
 
 class grasp_acquired(ManagerTermBase):
-    """Pay once per unplaced box for synchronous bilateral same-box contact."""
+    """Pay once per grasp attempt for synchronous bilateral same-box contact.
+
+    The per-box impulse re-arms whenever contact is lost, so re-grasping a box
+    after a drop earns the reward again.  Within one continuous contact
+    session it still fires at most once per box (rising edge).
+    """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        self._credited = torch.zeros(
+        self._in_contact = torch.zeros(
             (env.num_envs, len(BOX_NAMES)), dtype=torch.bool, device=env.device
         )
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
         env_ids = slice(None) if env_ids is None else env_ids
-        self._credited[env_ids] = False
+        self._in_contact[env_ids] = False
 
     def __call__(
         self,
@@ -271,10 +298,63 @@ class grasp_acquired(ManagerTermBase):
         eligible = _pickup_tensors(
             env, placement, box_names, cup_names, robot_cfg, ee_frame_name
         )[-1]
-        increment, self._credited = first_event_increment(
-            contact, self._credited, eligible
+        increment, self._in_contact = retryable_event_increment(
+            contact, self._in_contact, eligible
         )
         return increment.sum(dim=-1) / env.step_dt
+
+
+def grasp_held(
+    env: ManagerBasedRLEnv,
+    half_extents: tuple[float, float, float],
+    placement: dict,
+    *,
+    closed_threshold: float = 0.15,
+    fixed_pad_length: float = 0.025,
+    minimum_insertion: float = 0.001,
+    box_names: tuple[str, str, str] = BOX_NAMES,
+    cup_names: tuple[str, str, str] = CUP_NAMES,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
+    ee_frame_name: str = "ee_frame",
+    fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+    moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
+) -> torch.Tensor:
+    """Dense per-box reward for holding an unplaced box clamped in the jaws.
+
+    Geometry-based (box between the pads with the gripper closed) so the
+    policy gets a continuous grip gradient regardless of contact-force
+    margins, and gated to unplaced boxes so a placed box stops earning it.
+    Bridges ``closure_progress`` and ``lift_progress`` for each box.
+    """
+    _, _, _, eligible = _pickup_tensors(
+        env, placement, box_names, cup_names, robot_cfg, ee_frame_name
+    )
+    positions = torch.stack(
+        [env.scene[name].data.root_pos_w.torch for name in box_names], dim=1
+    )
+    quaternions = torch.stack(
+        [env.scene[name].data.root_quat_w.torch for name in box_names], dim=1
+    )
+    fixed_pad = env.scene[fixed_sensor_cfg.name].data
+    moving_pad = env.scene[moving_sensor_cfg.name].data
+    between = object_between_jaws(
+        positions,
+        quaternions,
+        fixed_pad.pos_w.torch[:, 0, :],
+        fixed_pad.quat_w.torch[:, 0, :],
+        moving_pad.pos_w.torch[:, 0, :],
+        half_extents,
+        fixed_pad_length=fixed_pad_length,
+        minimum_insertion=minimum_insertion,
+    )
+    gripper = (
+        env.scene[robot_cfg.name]
+        .data.joint_pos.torch[:, robot_cfg.joint_ids]
+        .squeeze(-1)
+    )
+    closed = (gripper <= closed_threshold).unsqueeze(-1)
+    held = between & eligible & closed
+    return held.to(dtype=positions.dtype).sum(dim=-1)
 
 
 class lift_progress(ManagerTermBase):

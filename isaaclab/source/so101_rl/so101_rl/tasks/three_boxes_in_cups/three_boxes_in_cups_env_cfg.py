@@ -127,7 +127,7 @@ class ThreeBoxesInCupsSceneCfg(SO101VisualSceneCfg):
         prim_path=SO101_MOVING_JAW_PAD_PRIM_PATH,
         update_period=0.0,
         history_length=4,
-        track_pose=False,
+        track_pose=True,
         force_threshold=0.1,
         filter_prim_paths_expr=[
             "{ENV_REGEX_NS}/Box1",
@@ -171,25 +171,38 @@ class ThreeBoxesInCupsRewardsCfg:
     )
     closure_progress = RewTerm(
         func=mdp.closure_progress,
-        weight=1.0,
+        weight=0.1,
         params={
             "half_extents": (0.0125, 0.0125, 0.0125),
             "pad_thickness": SO101_PAD_THICKNESS_M,
+            "fixed_pad_length": 0.025,
+            "minimum_insertion": 0.001,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
     grasp_acquired = RewTerm(
         func=mdp.grasp_acquired,
-        weight=2.0,
+        weight=1.0,
         params={
+            "placement": dict(PLACEMENT_PARAMS),
+            "robot_cfg": SO101_GRIPPER_CFG,
+        },
+    )
+    grasp_held = RewTerm(
+        func=mdp.grasp_held,
+        weight=0.5,
+        params={
+            "half_extents": (0.0125, 0.0125, 0.0125),
+            "fixed_pad_length": 0.025,
+            "minimum_insertion": 0.001,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=0.1,
+        weight=0.2,
         params={
             "lift_clearance": BOX_LIFT_CLEARANCE,
             "object_rest_height": BOX_REST_HEIGHT,
@@ -356,6 +369,7 @@ class SO101ThreeBoxesInCupsVisionEnvCfg(SO101VisualEnvCfg):
             "approach_progress",
             "closure_progress",
             "grasp_acquired",
+            "grasp_held",
             "lift_progress",
             "transport",
             "release",
@@ -364,6 +378,7 @@ class SO101ThreeBoxesInCupsVisionEnvCfg(SO101VisualEnvCfg):
             getattr(self.rewards, term_name).params["placement"].update(placement)
         self.rewards.approach_progress.params["half_extents"] = half_extents
         self.rewards.closure_progress.params["half_extents"] = half_extents
+        self.rewards.grasp_held.params["half_extents"] = half_extents
         self.rewards.insertion.params.update(
             xy_tolerance=placement["xy_tolerance"],
             center_z_max=placement["center_z_max"],

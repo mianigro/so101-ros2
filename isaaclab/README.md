@@ -185,8 +185,10 @@ Isaac Sim visualizer. Before training, verify:
 - no pad/cube contact at reset, bilateral pad contact during a centred pinch,
   and stable contact forces without pad/jaw overlap;
 - pickup metrics firing in order: `approach_progress`, `closure_progress`,
-  `grasp_acquired`, then `lift_progress`, with no continuing approach reward
-  while camping.
+  `grasp_held`, `grasp_acquired`, then `lift_progress`, with no continuing
+  approach reward while camping. `grasp_held` (dense, geometry-based) is the
+  bridge that should rise as the gripper clamps the cube, ahead of the
+  contact-validated `grasp_acquired` and `lift_progress`.
 
 Exercise actions and resets with:
 
@@ -274,10 +276,17 @@ and camera inputs before continuing. This is an acceptance target, not a result
 already achieved by the repository.
 
 Reward or checkpoint return alone is insufficient: reject a run whose approach
-or closure metric rises while grasp and lift remain zero. Because the jaw
-collision geometry and pickup semantics changed together, start fixed-task
-training from scratch; older checkpoints remain structurally loadable but are
-not valid continuation points for this experiment.
+or closure metric rises while grasp and lift remain zero. The dense
+`grasp_held` term is the intended remedy for that stall — it should rise as the
+gripper clamps the cube (geometry-based, gated on a near-closed gripper) before
+the contact-validated `grasp_acquired` and `lift_progress`. `grasp_acquired` is
+now retryable per grasp attempt, so re-pinch after a drop is rewarded too. If
+`grasp_held` rises but `grasp_acquired`/`lift_progress` stay flat, the gripper
+is closing near the cube without achieving a real pinch — tighten the grasp
+(contact tuning) before resuming. Because the jaw collision geometry and pickup
+semantics changed together, start fixed-task training from scratch; older
+checkpoints remain structurally loadable but are not valid continuation points
+for this experiment.
 
 ## 4. Resume on the randomized task
 
@@ -490,9 +499,9 @@ Run the focused Isaac Lab suite through the source-runtime bootstrap:
 "$ISAACLAB_PYTHON" isaaclab/test
 ```
 
-The suite checks asset geometry, projected grasp support, bounded/non-farmable
-progress, synchronous same-box bilateral contacts, the
-shared actor/action contract, both task families, the exact 34- and 84-value
+The suite checks asset geometry, projected grasp support, bounded approach and
+retryable closure after 1 mm of edge insertion, synchronous same-box bilateral
+contacts, the shared actor/action contract, both task families, the exact 34- and 84-value
 critics, permutation-invariant three-box success, reset spacing, camera
 calibration, latency resets, actor export signatures, and deployment
 validation. It does not prove PPO convergence, rendered-camera correctness,

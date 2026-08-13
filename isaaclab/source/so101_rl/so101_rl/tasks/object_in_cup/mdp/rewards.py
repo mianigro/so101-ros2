@@ -13,8 +13,9 @@ from so101_rl.tasks.common.mdp.pickup import (
     bilateral_same_step_contact,
     bounded_closure_increment,
     episode_best_increment,
-    first_event_increment,
     grasp_targets_from_fixed_pad,
+    object_between_jaws,
+    retryable_event_increment,
     target_alignment_score,
 )
 
@@ -122,7 +123,7 @@ class approach_progress(ManagerTermBase):
 
 
 class closure_progress(ManagerTermBase):
-    """Pay aligned physical jaw closure, capped to one per episode."""
+    """Pay jaw closure after the cube edge enters between the pads."""
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -146,9 +147,12 @@ class closure_progress(ManagerTermBase):
         clearance: float = 0.0005,
         position_scale: float = 0.04,
         closure_range: float = 1.2,
+        fixed_pad_length: float = 0.025,
+        minimum_insertion: float = 0.001,
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
         robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
         fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
     ) -> torch.Tensor:
         alignment = _pickup_alignment(
             env,
@@ -160,12 +164,25 @@ class closure_progress(ManagerTermBase):
             fixed_sensor_cfg=fixed_sensor_cfg,
         )
         current = _gripper_position(env, robot_cfg)
+        object_position = env.scene[object_cfg.name].data.root_pos_w.torch
+        fixed_pad = env.scene[fixed_sensor_cfg.name].data
+        moving_pad = env.scene[moving_sensor_cfg.name].data
+        between = object_between_jaws(
+            object_position,
+            env.scene[object_cfg.name].data.root_quat_w.torch,
+            fixed_pad.pos_w.torch[:, 0, :],
+            fixed_pad.quat_w.torch[:, 0, :],
+            moving_pad.pos_w.torch[:, 0, :],
+            half_extents,
+            fixed_pad_length=fixed_pad_length,
+            minimum_insertion=minimum_insertion,
+        ).unsqueeze(-1)
         increment, self._credited, self._initialized = bounded_closure_increment(
             self._previous,
             current,
             alignment,
             self._credited,
-            torch.ones_like(alignment, dtype=torch.bool),
+            between,
             self._initialized,
             closure_range=closure_range,
         )
@@ -174,17 +191,23 @@ class closure_progress(ManagerTermBase):
 
 
 class grasp_acquired(ManagerTermBase):
-    """Pay once when both pads contact the cube in the same physics substep."""
+    """Pay once per grasp attempt when both pads contact the cube.
+
+    The impulse re-arms whenever bilateral contact is lost, so a fresh pinch
+    after a drop earns the reward again.  Within one continuous contact
+    session it still fires at most once (rising edge), so holding the grasp
+    cannot farm it.
+    """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        self._credited = torch.zeros(
+        self._in_contact = torch.zeros(
             (env.num_envs, 1), dtype=torch.bool, device=env.device
         )
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
         env_ids = slice(None) if env_ids is None else env_ids
-        self._credited[env_ids] = False
+        self._in_contact[env_ids] = False
 
     def __call__(
         self,
@@ -196,12 +219,51 @@ class grasp_acquired(ManagerTermBase):
         contact = _bilateral_contact(
             env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
         )
-        increment, self._credited = first_event_increment(
+        increment, self._in_contact = retryable_event_increment(
             contact,
-            self._credited,
+            self._in_contact,
             torch.ones_like(contact, dtype=torch.bool),
         )
         return increment.sum(dim=-1) / env.step_dt
+
+
+def grasp_held(
+    env: ManagerBasedRLEnv,
+    half_extents: tuple[float, float, float],
+    *,
+    closed_threshold: float = 0.15,
+    fixed_pad_length: float = 0.025,
+    minimum_insertion: float = 0.001,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
+    fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+    moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
+) -> torch.Tensor:
+    """Dense reward for holding the cube clamped between the jaws.
+
+    Uses grasp *geometry* (cube between the pads with the gripper closed)
+    rather than contact force, so the policy gets a continuous gradient into
+    and through the pinch even when bilateral contact is marginal.  This
+    bridges ``closure_progress`` (closing motion) and ``lift_progress``
+    (contact-validated lift), which otherwise share no dense signal, and is
+    the primary lever for escaping the reach-and-fake-close stall.
+    """
+    object_asset = env.scene[object_cfg.name]
+    fixed_pad = env.scene[fixed_sensor_cfg.name].data
+    moving_pad = env.scene[moving_sensor_cfg.name].data
+    between = object_between_jaws(
+        object_asset.data.root_pos_w.torch,
+        object_asset.data.root_quat_w.torch,
+        fixed_pad.pos_w.torch[:, 0, :],
+        fixed_pad.quat_w.torch[:, 0, :],
+        moving_pad.pos_w.torch[:, 0, :],
+        half_extents,
+        fixed_pad_length=fixed_pad_length,
+        minimum_insertion=minimum_insertion,
+    )
+    gripper_pos = _gripper_position(env, robot_cfg)
+    closed = gripper_pos <= closed_threshold
+    return (between & closed).to(dtype=gripper_pos.dtype)
 
 
 class lift_progress(ManagerTermBase):

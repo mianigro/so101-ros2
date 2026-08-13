@@ -210,9 +210,10 @@ Rebuilding different assets can change these values.
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
 | Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04))` | `+1.0` | Bring the fixed pad to the grasp target (jaw position does not enter) |
-| Closure progress | new credited closing motion `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power | `+1.0` | Close only at the grasp target |
-| Grasp acquired | one impulse on first valid bilateral contact | `+2.0` | Confirm a physical same-cube pinch |
-| Lift progress | `1[p_o.z >= z_rest + 0.001]` each step while bilateral contact holds (dense) | `+0.1` | Hold the pinched object off the table, independent of height |
+| Closure progress | `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power once the cube edge is 1 mm inside the jaw tips | `+0.1` | Close around the cube on every pickup attempt |
+| Grasp acquired | one impulse per grasp attempt on rising-edge bilateral contact (re-arms when contact drops) | `+1.0` | Confirm a physical same-cube pinch and reward retries |
+| Grasp held | `1[cube between pads and q_g <= 0.15]` each step (dense) | `+0.5` | Continuous hold signal bridging closure and lift (geometry, not force) |
+| Lift progress | `1[p_o.z >= z_rest + 0.001]` each step while bilateral contact holds (dense) | `+0.2` | Hold the pinched object off the table, independent of height |
 | Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= z_rest + 0.001]` | `+3.0` | Move the object toward the cup as soon as it clears the table |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
@@ -222,34 +223,55 @@ Rebuilding different assets can change these values.
 
 ### Pickup reward chain (approach → grasp → lift)
 
-The four pickup terms form a gated cascade; each stage unlocks the next:
+The five pickup terms form a gated cascade; each stage unlocks the next:
 
 1. **Approach** (weight `+1.0`) — episode-best alignment `1 - tanh(d_ot / 0.04)`
    between the cube and the grasp target derived from the fixed pad. Pays only
    new improvement, total budget `1`. Jaw position does not enter, so approach
    never rewards being open and does not compete with closing.
 
-2. **Closure** (weight `+1.0`) — closing motion `max(q_prev - q_g, 0) / 1.2`
-   multiplied by `alignment^4` and capped at total credit `1`. The fourth power
-   means closing is rewarded only once the cube is well aligned, so the jaw
-   closes onto the cube rather than in free space.
+2. **Closure** (weight `+0.1`) — closing motion
+   `max(q_prev - q_g, 0) / 1.2` multiplied by `alignment^4`, gated on the cube
+   lying between the fixed and moving pads with its leading edge at least 1 mm
+   past the fixed-pad tip. Cube orientation is included when locating that
+   edge. Reopening pays zero, while a later aligned close can pay again after a
+   failed grip.
 
-3. **Grasp** (weight `+2.0`) — one impulse the first substep both pads exceed
-   `0.1 N` against the same cube (bilateral contact). Fires once per episode.
+3. **Grasp acquired** (weight `+1.0`) — one impulse the first substep both pads
+   exceed `0.1 N` against the same cube (bilateral contact). It is retryable:
+   the impulse re-arms the step bilateral contact is lost, so each fresh
+   pinch after a drop earns it again. Within one continuous contact session it
+   still fires at most once (rising edge), so holding cannot farm it.
 
-4. **Lift** (weight `+0.1`, dense) — pays a constant `1` every step when
+4. **Grasp held** (weight `+0.5`, dense) — pays a constant `1` every step the
+   cube is between the pads and the gripper is at or below `q_g = 0.15` rad.
+   It is based on grasp *geometry*, not contact force, so it gives a continuous
+   hold signal while the cube is clamped even when bilateral contact is
+   marginal. The `0.15` rad threshold corresponds to a jaw gap only slightly
+   wider than the 25 mm cube (the cube physically stops the gripper near
+   `0.10` rad), so the term means "actually squeezing" rather than merely
+   "closing near the cube." This is the dense bridge between Closure and Lift
+   that prevents the reach-and-fake-close stall where approach/closure rise but
+   grasp and lift stay flat.
+
+5. **Lift** (weight `+0.2`, dense) — pays a constant `1` every step when
    `p_o.z >= z_rest + 0.001` and bilateral contact holds. The reward is the
    same whether the cube is 1 mm or 100 mm above its resting height, so it
    encourages maintaining an off-table grip without driving the arm overhead.
    Dropping or lowering the cube below the clearance makes the term zero.
 
-Alignment gates closure, and bilateral contact gates lift. Approach and
-closure are non-farmable (episode-best / cumulative-credit): camping earns
-nothing, backing off cannot repay approach, and reopening/reclosing cannot
-refill closure. Lift is deliberately dense but height-invariant: it rewards
-continued off-table holding, while pushing or throwing the cube without a
-maintained bilateral grip earns no Lift reward. Transport activates at the
-same 1 mm clearance and supplies the directional signal toward the cup.
+Alignment and the between-pads geometry gate Closure; the between-pads geometry
+plus the closed-gripper gate drive Grasp held; bilateral contact gates Lift.
+Approach remains non-farmable through its episode-best score. Closure is
+retryable so a failed grip does not remove its gradient, and its `+0.1` weight
+keeps a complete extra close well below the value of the physical grasp.
+Grasp acquired is retryable per attempt but bounded to one impulse per contact
+session, so sustained holding earns the dense Grasp-held and Lift rewards
+instead of farming the landmark. Lift is deliberately dense but
+height-invariant: it rewards continued off-table holding, while pushing or
+throwing the cube without a maintained bilateral grip earns no Lift reward.
+Transport activates at the same 1 mm clearance and supplies the directional
+signal toward the cup.
 
 Insertion progress is:
 
@@ -267,15 +289,18 @@ center_z_min <= z_oc <= center_z_max
 q_g >= 1.20 rad
 ```
 
-Isaac Lab treats reward weights as rates. The three bounded pickup terms
-(approach, closure, grasp) divide their positive progress or impulse by
-`env.step_dt`, cancelling the manager's later time-step multiplication, so
-their integrated episode budgets are exactly their weights: approach `1`,
-closure `1`, grasp `2` per cube. Lift is dense (rate form): it pays
-`0.1 * lifted * contact` each step, so its episode total grows only with how
-long the cube is held off the table, not with its height. A full 15-second
-single-box episode of uninterrupted holding contributes at most `1.5`. At
-30 Hz:
+Isaac Lab treats reward weights as rates. Approach, Closure, and Grasp
+acquired divide their positive progress or impulse by `env.step_dt`, cancelling
+the manager's later time-step multiplication. Approach retains an episode
+budget of `1` and Grasp acquired `1` per grasp attempt (re-arming on loss).
+Each complete eligible close is worth at most `0.1`, and can pay again on a
+later retry. Grasp held and Lift are dense (rate form). Grasp held pays
+`0.5 * held` each step (about `0.017` per held step), so it dominates the
+gradient while the cube is clamped and falls to zero the instant the gripper
+opens past `0.15` rad. Lift pays `0.2 * lifted * contact` each step, so its
+episode total grows only with how long the cube is held off the table, not with
+its height. A full 15-second single-box episode of uninterrupted holding
+contributes at most `3.0` from Lift. At 30 Hz:
 
 ```text
 reward_t = (1/30) * sum(weight_i * raw_term_i)
@@ -292,8 +317,16 @@ velocity are dense or penalty terms outside the pickup chain.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.
 - Excessive smoothness penalties can suppress motion needed within 15 seconds.
+- Closure can be farmed by repeatedly reopening and reclosing around the cube;
+  its `+0.1` weight keeps a full extra close well below a real grasp.
+- Grasp held is the intended remedy for the reach-and-fake-close stall
+  (approach/closure rising while grasp and lift stay flat): it supplies a
+  dense geometry-based hold signal between Closure and Lift. It can reward
+  holding just above the table without transporting, but the `0.15` rad
+  closed-gripper gate keeps it focused on an actual squeeze and Lift/Transport
+  take over once the cube clears the table.
 - Dense Lift can reward holding just above the table without transporting, but
-  its `+0.1` weight is intentionally small and Transport begins at the same
+  its `+0.2` weight is intentionally small and Transport begins at the same
   clearance.
 
 Inspect `Episode_Reward/<term>` metrics and trajectories. Increasing total

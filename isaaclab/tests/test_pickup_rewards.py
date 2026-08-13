@@ -1,4 +1,4 @@
-"""Focused tensor tests for the non-farmable pickup reward contract."""
+"""Focused tensor tests for pickup reward geometry and state transitions."""
 
 from __future__ import annotations
 
@@ -15,12 +15,15 @@ from so101_rl.tasks.common.mdp.pickup import (
     episode_best_increment,
     first_event_increment,
     grasp_targets_from_fixed_pad,
+    object_between_jaws,
     projected_half_extent,
+    retryable_event_increment,
 )
 from so101_rl.tasks.object_in_cup.mdp.rewards import (
     approach_progress as ApproachProgress,
     closure_progress as ClosureProgress,
     grasp_acquired as GraspAcquired,
+    grasp_held as GraspHeld,
     lift_progress as LiftProgress,
 )
 from so101_rl.tasks.three_boxes_in_cups.mdp import rewards as three_box_rewards
@@ -63,6 +66,42 @@ class GraspTargetTests(unittest.TestCase):
         self.assertAlmostEqual(target[0, 2].item(), -0.0925, places=7)
         self.assertGreater(target[1, 0].item(), target[0, 0].item())
 
+    def test_cube_edge_needs_one_millimetre_of_jaw_insertion(self):
+        objects = torch.tensor(
+            [
+                [0.05, 0.0, -0.024000],
+                [0.05, 0.0, -0.024001],
+                [-0.001, 0.0, 0.0],
+                [0.101, 0.0, 0.0],
+                [0.05, 0.013, 0.0],
+                [0.05, 0.0, 0.013],
+            ],
+            dtype=torch.float64,
+        ).unsqueeze(0)
+        object_quaternions = torch.tensor(
+            [[[0.0, 0.0, 0.0, 1.0]]], dtype=torch.float64
+        ).expand(1, objects.shape[1], -1)
+        fixed = torch.zeros((1, 3), dtype=torch.float64)
+        fixed_quaternion = torch.tensor(
+            [[0.0, 0.0, 0.0, 1.0]], dtype=torch.float64
+        )
+        moving = torch.tensor([[0.1, 0.0, 0.0]], dtype=torch.float64)
+
+        between = object_between_jaws(
+            objects,
+            object_quaternions,
+            fixed,
+            fixed_quaternion,
+            moving,
+            (0.0125, 0.0125, 0.0125),
+            fixed_pad_length=0.025,
+            minimum_insertion=0.001,
+        )
+
+        self.assertEqual(
+            between.tolist(), [[True, False, False, False, False, False]]
+        )
+
 
 class BoundedProgressTests(unittest.TestCase):
     def test_best_progress_cannot_be_farmed_by_backing_off(self):
@@ -92,7 +131,7 @@ class BoundedProgressTests(unittest.TestCase):
         self.assertAlmostEqual(first.item(), 0.6, places=6)
         self.assertAlmostEqual(second.item(), 0.3, places=6)
 
-    def test_closure_is_bounded_and_reopening_does_not_refill_it(self):
+    def test_closure_can_reward_an_aligned_reclose(self):
         credited = torch.zeros((1, 1))
         initialized = torch.zeros(1, dtype=torch.bool)
         eligible = torch.ones((1, 1), dtype=torch.bool)
@@ -137,8 +176,8 @@ class BoundedProgressTests(unittest.TestCase):
         self.assertEqual(first.item(), 0.0)
         self.assertEqual(close.item(), 1.0)
         self.assertEqual(reopen.item(), 0.0)
-        self.assertEqual(reclose.item(), 0.0)
-        self.assertEqual(credited.item(), 1.0)
+        self.assertEqual(reclose.item(), 1.0)
+        self.assertEqual(credited.item(), 2.0)
 
 
 class BilateralContactTests(unittest.TestCase):
@@ -178,13 +217,47 @@ class BilateralContactTests(unittest.TestCase):
         self.assertFalse(credited.any().item())
 
 
+class RetryableEventTests(unittest.TestCase):
+    def test_rising_edge_re_arms_after_contact_loss(self):
+        in_contact = torch.zeros((1, 2), dtype=torch.bool)
+        eligible = torch.ones((1, 2), dtype=torch.bool)
+        impulses = []
+        # Box 0 contact over time: absent, appear, hold, drop, reappear.
+        # Box 1 never contacts. Expected impulses fire only on rising edges.
+        events = [
+            torch.tensor([[False, False]]),
+            torch.tensor([[True, False]]),
+            torch.tensor([[True, False]]),
+            torch.tensor([[False, False]]),
+            torch.tensor([[True, False]]),
+        ]
+        expected = [[0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [1.0, 0.0]]
+        for event in events:
+            impulse, in_contact = retryable_event_increment(
+                event, in_contact, eligible
+            )
+            impulses.append(impulse.tolist()[0])
+        self.assertEqual(impulses, expected)
+
+    def test_ineligible_entity_never_fires(self):
+        in_contact = torch.zeros((1, 1), dtype=torch.bool)
+        eligible = torch.zeros((1, 1), dtype=torch.bool)
+        impulse, in_contact = retryable_event_increment(
+            torch.tensor([[True]]), in_contact, eligible
+        )
+        self.assertEqual(impulse.item(), 0.0)
+        self.assertFalse(in_contact.item())
+
+
 class ScriptedPickupSequenceTests(unittest.TestCase):
-    def test_rewards_fire_once_in_approach_close_grasp_lift_order(self):
+    def test_pickup_sequence_and_retryable_between_jaws_closure(self):
         object_position = torch.tensor([[0.30, 0.0, 0.0125]])
         object_quaternion = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
         gripper_position = torch.tensor([[1.2]])
         pad_position = torch.tensor([[[0.18675, 0.0, 0.0125]]])
         pad_quaternion = torch.tensor([[[0.0, 0.0, 0.0, 1.0]]])
+        moving_pad_position = torch.tensor([[[0.28675, 0.0, 0.0125]]])
+        moving_pad_quaternion = pad_quaternion.clone()
         fixed_forces = torch.zeros((1, 4, 1, 1, 3))
         moving_forces = torch.zeros_like(fixed_forces)
 
@@ -211,6 +284,8 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 ),
                 "moving_jaw_contact": SimpleNamespace(
                     data=SimpleNamespace(
+                        pos_w=_proxy(moving_pad_position),
+                        quat_w=_proxy(moving_pad_quaternion),
                         force_matrix_w_history=_proxy(moving_forces)
                     )
                 ),
@@ -275,6 +350,55 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             delta=1e-3,
         )
 
+        gripper_position[:, 0] = 1.2
+        self.assertEqual(
+            closure(
+                env,
+                (0.0125, 0.0125, 0.0125),
+                0.0005,
+                robot_cfg=robot_cfg,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            0.0,
+        )
+        object_position[:, 0] = 0.30
+        gripper_position[:, 0] = 0.0
+        self.assertEqual(
+            closure(
+                env,
+                (0.0125, 0.0125, 0.0125),
+                0.0005,
+                robot_cfg=robot_cfg,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            0.0,
+        )
+        gripper_position[:, 0] = 1.2
+        closure(
+            env,
+            (0.0125, 0.0125, 0.0125),
+            0.0005,
+            robot_cfg=robot_cfg,
+            fixed_sensor_cfg=fixed_cfg,
+            moving_sensor_cfg=moving_cfg,
+        )
+        object_position[:, 0] = 0.20
+        gripper_position[:, 0] = 0.0
+        self.assertAlmostEqual(
+            closure(
+                env,
+                (0.0125, 0.0125, 0.0125),
+                0.0005,
+                robot_cfg=robot_cfg,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            30.0,
+            delta=1e-3,
+        )
+
         self.assertEqual(
             grasp(
                 env,
@@ -301,6 +425,29 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 moving_sensor_cfg=moving_cfg,
             ).item(),
             0.0,
+        )
+        # Retryable grasp: dropping contact re-arms the landmark, so a fresh
+        # pinch after a drop pays again.
+        fixed_forces.zero_()
+        moving_forces.zero_()
+        self.assertEqual(
+            grasp(
+                env,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            0.0,
+        )
+        fixed_forces[0, 0, 0, 0, 0] = 0.2
+        moving_forces[0, 0, 0, 0, 0] = 0.2
+        self.assertAlmostEqual(
+            grasp(
+                env,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            30.0,
+            delta=1e-3,
         )
 
         # Dense lift: pays a constant once the held cube clears the table.
@@ -385,6 +532,74 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             )
 
         self.assertEqual(reward.item(), 1.0)
+
+    def test_grasp_held_rewards_clamped_geometry(self):
+        object_position = torch.tensor([[0.025, 0.0, 0.0]])
+        object_quaternion = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+        gripper_position = torch.tensor([[0.0]])  # closed
+        pad_position = torch.tensor([[[0.0, 0.0, 0.0]]])
+        pad_quaternion = torch.tensor([[[0.0, 0.0, 0.0, 1.0]]])
+        moving_pad_position = torch.tensor([[[0.05, 0.0, 0.0]]])
+        moving_pad_quaternion = pad_quaternion.clone()
+
+        env = SimpleNamespace(
+            scene={
+                "object": SimpleNamespace(
+                    data=SimpleNamespace(
+                        root_pos_w=_proxy(object_position),
+                        root_quat_w=_proxy(object_quaternion),
+                    )
+                ),
+                "robot": SimpleNamespace(
+                    data=SimpleNamespace(joint_pos=_proxy(gripper_position))
+                ),
+                "fixed_jaw_contact": SimpleNamespace(
+                    data=SimpleNamespace(
+                        pos_w=_proxy(pad_position),
+                        quat_w=_proxy(pad_quaternion),
+                    )
+                ),
+                "moving_jaw_contact": SimpleNamespace(
+                    data=SimpleNamespace(
+                        pos_w=_proxy(moving_pad_position),
+                        quat_w=_proxy(moving_pad_quaternion),
+                    )
+                ),
+            }
+        )
+        robot_cfg = SimpleNamespace(name="robot", joint_ids=torch.tensor([0]))
+        fixed_cfg = SimpleNamespace(name="fixed_jaw_contact")
+        moving_cfg = SimpleNamespace(name="moving_jaw_contact")
+
+        common = {
+            "robot_cfg": robot_cfg,
+            "fixed_sensor_cfg": fixed_cfg,
+            "moving_sensor_cfg": moving_cfg,
+            "closed_threshold": 0.15,
+        }
+
+        # Gripper clamped on a cube sitting between the pads -> dense 1.0.
+        gripper_position[:, 0] = 0.0
+        self.assertEqual(
+            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 1.0
+        )
+        # A loose hold (gripper at 0.20 rad => ~32 mm gap, wider than the
+        # 25 mm cube) does not count as holding under the tightened threshold.
+        gripper_position[:, 0] = 0.20
+        self.assertEqual(
+            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+        )
+        # Opening the gripper fully also drops the reward.
+        gripper_position[:, 0] = 1.2
+        self.assertEqual(
+            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+        )
+        # Cube pushed out of the gap -> 0 even with the gripper clamped.
+        gripper_position[:, 0] = 0.0
+        object_position[:, 0] = 0.20
+        self.assertEqual(
+            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+        )
 
 
 if __name__ == "__main__":

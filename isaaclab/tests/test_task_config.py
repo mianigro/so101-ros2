@@ -116,18 +116,27 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(cfg.events.reset_layout.params["curriculum_steps"], 45_000_000)
         self.assertEqual(cfg.terminations.success.params["xy_tolerance"], 0.0038)
         self.assertEqual(
-            tuple(cfg.rewards.__dataclass_fields__)[:4],
+            tuple(cfg.rewards.__dataclass_fields__)[:5],
             (
                 "approach_progress",
                 "closure_progress",
                 "grasp_acquired",
+                "grasp_held",
                 "lift_progress",
             ),
         )
         self.assertEqual(cfg.rewards.approach_progress.weight, 1.0)
-        self.assertEqual(cfg.rewards.closure_progress.weight, 1.0)
-        self.assertEqual(cfg.rewards.grasp_acquired.weight, 2.0)
-        self.assertEqual(cfg.rewards.lift_progress.weight, 0.1)
+        self.assertEqual(cfg.rewards.closure_progress.weight, 0.1)
+        self.assertEqual(
+            cfg.rewards.closure_progress.params["minimum_insertion"], 0.001
+        )
+        self.assertEqual(
+            cfg.rewards.closure_progress.params["fixed_pad_length"], 0.025
+        )
+        self.assertEqual(cfg.rewards.grasp_acquired.weight, 1.0)
+        self.assertEqual(cfg.rewards.grasp_held.weight, 0.5)
+        self.assertEqual(cfg.rewards.grasp_held.params["minimum_insertion"], 0.001)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 0.2)
         self.assertEqual(cfg.rewards.lift_progress.params["lift_clearance"], 0.001)
         self.assertNotIn("lift_height", cfg.rewards.lift_progress.params)
         self.assertAlmostEqual(
@@ -147,6 +156,7 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(
             cfg.scene.moving_jaw_contact.prim_path, SO101_MOVING_JAW_PAD_PRIM_PATH
         )
+        self.assertTrue(cfg.scene.moving_jaw_contact.track_pose)
         self.assertEqual(
             cfg.scene.ee_frame.target_frames[0].offset.pos,
             (0.0052, -0.000218, -0.0925),
@@ -268,7 +278,17 @@ class TaskConfigTests(unittest.TestCase):
                 "{ENV_REGEX_NS}/Box3",
             ],
         )
-        self.assertEqual(cfg.rewards.lift_progress.weight, 0.1)
+        self.assertEqual(cfg.rewards.closure_progress.weight, 0.1)
+        self.assertEqual(
+            cfg.rewards.closure_progress.params["minimum_insertion"], 0.001
+        )
+        self.assertEqual(
+            cfg.rewards.closure_progress.params["fixed_pad_length"], 0.025
+        )
+        self.assertTrue(cfg.scene.moving_jaw_contact.track_pose)
+        self.assertEqual(cfg.rewards.grasp_acquired.weight, 1.0)
+        self.assertEqual(cfg.rewards.grasp_held.weight, 0.5)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 0.2)
         self.assertEqual(cfg.rewards.lift_progress.params["lift_clearance"], 0.001)
         self.assertNotIn("lift_height", cfg.rewards.lift_progress.params)
         self.assertAlmostEqual(

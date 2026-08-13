@@ -69,6 +69,56 @@ def target_alignment_score(
     return 1.0 - torch.tanh(position_error / position_scale)
 
 
+def object_between_jaws(
+    object_position_w: torch.Tensor,
+    object_quaternion_w: torch.Tensor,
+    fixed_pad_position_w: torch.Tensor,
+    fixed_pad_quaternion_w: torch.Tensor,
+    moving_pad_position_w: torch.Tensor,
+    half_extents: tuple[float, float, float],
+    *,
+    fixed_pad_length: float,
+    minimum_insertion: float,
+) -> torch.Tensor:
+    """Return whether an object has entered the gap between the jaw pads."""
+    while fixed_pad_position_w.ndim < object_position_w.ndim:
+        fixed_pad_position_w = fixed_pad_position_w.unsqueeze(-2)
+        fixed_pad_quaternion_w = fixed_pad_quaternion_w.unsqueeze(-2)
+        moving_pad_position_w = moving_pad_position_w.unsqueeze(-2)
+
+    inverse_fixed_quaternion = fixed_pad_quaternion_w.clone()
+    inverse_fixed_quaternion[..., :3].neg_()
+    object_in_fixed = rotate_vectors_xyzw(
+        inverse_fixed_quaternion, object_position_w - fixed_pad_position_w
+    )
+    moving_in_fixed = rotate_vectors_xyzw(
+        inverse_fixed_quaternion, moving_pad_position_w - fixed_pad_position_w
+    )
+    extents = torch.as_tensor(
+        half_extents,
+        dtype=object_position_w.dtype,
+        device=object_position_w.device,
+    )
+    fixed_longitudinal_w = torch.zeros_like(object_position_w)
+    fixed_longitudinal_w[..., 2] = 1.0
+    fixed_longitudinal_w = rotate_vectors_xyzw(
+        fixed_pad_quaternion_w, fixed_longitudinal_w
+    )
+    object_longitudinal_extent = projected_half_extent(
+        object_quaternion_w, fixed_longitudinal_w, extents
+    )
+    within_depth = (object_in_fixed[..., 0] >= 0.0) & (
+        object_in_fixed[..., 0] <= moving_in_fixed[..., 0]
+    )
+    within_width = object_in_fixed[..., 1].abs() <= extents[1]
+    pad_half_length = 0.5 * fixed_pad_length
+    leading_edge = object_in_fixed[..., 2] + object_longitudinal_extent
+    within_length = (
+        leading_edge >= -pad_half_length + minimum_insertion
+    ) & (object_in_fixed[..., 2] <= pad_half_length)
+    return within_depth & within_width & within_length
+
+
 def bilateral_same_step_contact(
     fixed_force_history_w: torch.Tensor,
     moving_force_history_w: torch.Tensor,
@@ -119,7 +169,7 @@ def bounded_closure_increment(
     *,
     closure_range: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Credit actual closing motion to the best-aligned eligible object once."""
+    """Credit actual closing motion to the best-aligned eligible object."""
     if alignment.shape != credited.shape or alignment.shape != eligible.shape:
         raise ValueError("per-object closure tensors must have identical shapes")
     candidate = alignment.masked_fill(~eligible, -1.0)
@@ -133,7 +183,7 @@ def bounded_closure_increment(
     raw = closing / closure_range * selected_alignment.pow(4)
     raw = torch.where(initialized, raw, 0.0)
     per_object = selected * raw.unsqueeze(-1)
-    increment = torch.minimum(per_object, torch.clamp(1.0 - credited, min=0.0))
+    increment = per_object
     return increment, credited + increment, torch.ones_like(initialized)
 
 
@@ -143,3 +193,25 @@ def first_event_increment(
     """Return a one-shot per-object event impulse."""
     increment = event & eligible & ~credited
     return increment.to(dtype=torch.float32), credited | (event & eligible)
+
+
+def retryable_event_increment(
+    event: torch.Tensor,
+    in_contact: torch.Tensor,
+    eligible: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return a per-object rising-edge impulse that re-arms on contact loss.
+
+    Unlike :func:`first_event_increment`, which fires at most once per episode,
+    this re-arms the moment the event becomes false so each new contiguous
+    contact session (for example a fresh grasp attempt after a drop) can earn
+    the impulse again.  Within a single continuous session it still fires at
+    most once: a full no-contact step is required before the next rising edge,
+    so sustained contact cannot farm the reward and sub-step chatter cannot
+    double-fire.
+    """
+    if not (event.shape == in_contact.shape == eligible.shape):
+        raise ValueError("retryable event tensors must have identical shapes")
+    contact = event & eligible
+    rising = contact & ~in_contact
+    return rising.to(dtype=torch.float32), contact
