@@ -36,7 +36,9 @@ class ContactPadDescriptionTests(unittest.TestCase):
             ),
             "moving_jaw_contact_pad_link": (
                 "0.0005 0.025 0.018",
-                "-0.01215 -0.0691 0.0190",
+                # Origin X calibrated so the pad face is flush with the
+                # moving-jaw finger mesh at the grasp angle (see METHODOLOGY).
+                "-0.00996 -0.0691 0.0190",
                 "7.908333333e-09",
                 "2.702083333e-09",
                 "5.210416667e-09",

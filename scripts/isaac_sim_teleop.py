@@ -76,7 +76,10 @@ CONTACT_PAD_SPECS = {
         "joint": "moving_jaw_contact_pad_joint",
         "parent": "moving_jaw_so101_v1_link",
         "size": [0.0005, 0.025, 0.018],
-        "origin": [-0.01215, -0.0691, 0.0190],
+        # Origin X calibrated so the pad face is flush with the moving-jaw
+        # finger mesh at the grasp angle (pad protrudes ~0.1 mm, not the
+        # ~2.7 mm invisible gap produced by the previous -0.01215 value).
+        "origin": [-0.00996, -0.0691, 0.0190],
     },
 }
 

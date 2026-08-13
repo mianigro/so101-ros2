@@ -209,16 +209,47 @@ Rebuilding different assets can change these values.
 
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
-| Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04)) * clip((q_g - 0.9) / 0.3, 0, 1)` | `+1.0` | Approach the attainable target with an open gripper |
+| Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04))` | `+1.0` | Bring the fixed pad to the grasp target (jaw position does not enter) |
 | Closure progress | new credited closing motion `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power | `+1.0` | Close only at the grasp target |
 | Grasp acquired | one impulse on first valid bilateral contact | `+2.0` | Confirm a physical same-cube pinch |
-| Lift progress | new episode-best `clip((p_o.z - z_rest) / 0.075, 0, 1)` while the grasp remains valid | `+6.0` | Lift while pinching the object |
+| Lift progress | `clip((p_o.z - z_rest) / 0.05, 0, 1)` each step while bilateral contact holds (dense) | `+2.0` | Lift and hold while pinching the object |
 | Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= 0.045]` | `+3.0` | Move the object over the cup |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
 | Stable | `1[released, inside, and slow]` | `+20.0` | Complete a settled placement |
 | Action rate | `||a_t - a_(t-1)||^2` | `-0.02` | Discourage abrupt commands |
 | Joint velocity | `||joint_velocity||^2` | `-0.0005` | Discourage unnecessary speed |
+
+### Pickup reward chain (approach → grasp → lift)
+
+The four pickup terms form a gated cascade; each stage unlocks the next:
+
+1. **Approach** (weight `+1.0`) — episode-best alignment `1 - tanh(d_ot / 0.04)`
+   between the cube and the grasp target derived from the fixed pad. Pays only
+   new improvement, total budget `1`. Jaw position does not enter, so approach
+   never rewards being open and does not compete with closing.
+
+2. **Closure** (weight `+1.0`) — closing motion `max(q_prev - q_g, 0) / 1.2`
+   multiplied by `alignment^4` and capped at total credit `1`. The fourth power
+   means closing is rewarded only once the cube is well aligned, so the jaw
+   closes onto the cube rather than in free space.
+
+3. **Grasp** (weight `+2.0`) — one impulse the first substep both pads exceed
+   `0.1 N` against the same cube (bilateral contact). Fires once per episode.
+
+4. **Lift** (weight `+2.0`, dense) — pays
+   `clip((p_o.z - z_rest) / 0.05, 0, 1)` every step while bilateral contact
+   holds. Unlike an episode-best term, marginal lifts are reinforced
+   continuously, so a brief lift cannot extinguish. Drop the cube and it goes
+   to zero. This is the dominant pickup signal: once the jaw pinches the cube,
+   the gradient drives the arm up and rewards holding the grip.
+
+Alignment gates closure, and bilateral contact gates lift. Approach and
+closure are non-farmable (episode-best / cumulative-credit): camping earns
+nothing, backing off cannot repay approach, and reopening/reclosing cannot
+refill closure. Lift is deliberately dense rather than non-farmable, so
+repeated marginal lifts keep being reinforced; pushing or throwing the cube up
+without a maintained bilateral grip still earns nothing.
 
 Insertion progress is:
 
@@ -236,23 +267,20 @@ center_z_min <= z_oc <= center_z_max
 q_g >= 1.20 rad
 ```
 
-Isaac Lab treats reward weights as rates. The four pickup terms divide their
-positive progress or impulse by `env.step_dt`, cancelling the manager's later
-time-step multiplication. Their integrated episode budgets are therefore
-exactly their weights: approach `1`, closure `1`, grasp `2`, and lift `6` per
-cube. The remaining dense terms retain the normal rate form. At 30 Hz:
+Isaac Lab treats reward weights as rates. The three bounded pickup terms
+(approach, closure, grasp) divide their positive progress or impulse by
+`env.step_dt`, cancelling the manager's later time-step multiplication, so
+their integrated episode budgets are exactly their weights: approach `1`,
+closure `1`, grasp `2` per cube. Lift is dense (rate form): it pays
+`weight * height_score * contact` each step, so its episode total grows with
+how high and how long the cube is held while gripped. At 30 Hz:
 
 ```text
 reward_t = (1/30) * sum(weight_i * raw_term_i)
 ```
 
-Episode-best and cumulative-credit buffers make approach and closure
-non-farmable: camping earns nothing, backing off cannot repay approach, and
-reopening/reclosing cannot refill closure. Lift measures height gained above
-the table rest pose and advances only while the bilateral grasp predicate is
-true. Pushing or throwing the cube upward does not earn lift credit. Transport,
-insertion, release, stable placement, action rate, and joint velocity are
-unchanged.
+Transport, insertion, release, stable placement, action rate, and joint
+velocity are dense or penalty terms outside the pickup chain.
 
 ### Reward limitations
 
@@ -262,6 +290,8 @@ unchanged.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.
 - Excessive smoothness penalties can suppress motion needed within 15 seconds.
+- Dense lift can reward holding the cube up without transporting it; the
+  placement weights (insertion/release/stable) must outweigh sustained holding.
 
 Inspect `Episode_Reward/<term>` metrics and trajectories. Increasing total
 reward alone does not prove the intended behavior.

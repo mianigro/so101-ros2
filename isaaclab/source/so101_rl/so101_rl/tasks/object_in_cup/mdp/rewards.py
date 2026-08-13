@@ -15,7 +15,6 @@ from so101_rl.tasks.common.mdp.pickup import (
     episode_best_increment,
     first_event_increment,
     grasp_targets_from_fixed_pad,
-    pickup_alignment_score,
     target_alignment_score,
 )
 
@@ -44,11 +43,7 @@ def _pickup_alignment(
     clearance: float,
     position_scale: float,
     *,
-    gate_open: bool,
-    open_position_min: float,
-    fully_open_position: float,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
     fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
 ) -> torch.Tensor:
     object_asset = env.scene[object_cfg.name]
@@ -61,15 +56,6 @@ def _pickup_alignment(
         pad_thickness=pad_thickness,
         clearance=clearance,
     )
-    if gate_open:
-        return pickup_alignment_score(
-            object_asset.data.root_pos_w.torch,
-            target,
-            _gripper_position(env, robot_cfg),
-            position_scale=position_scale,
-            open_position_min=open_position_min,
-            fully_open_position=fully_open_position,
-        ).unsqueeze(-1)
     return target_alignment_score(
         object_asset.data.root_pos_w.torch,
         target,
@@ -93,7 +79,7 @@ def _bilateral_contact(
 
 
 class approach_progress(ManagerTermBase):
-    """Pay only new episode-best open-jaw alignment, at most one per episode."""
+    """Pay only new episode-best alignment, at most one per episode."""
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -114,23 +100,18 @@ class approach_progress(ManagerTermBase):
         pad_thickness: float,
         clearance: float = 0.0005,
         position_scale: float = 0.04,
-        open_position_min: float = 0.9,
-        fully_open_position: float = 1.2,
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
         fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
     ) -> torch.Tensor:
+        # Pure alignment only: no open-jaw gate, so approach never rewards
+        # being open and no longer competes with closure/lift at the cube.
         score = _pickup_alignment(
             env,
             half_extents,
             pad_thickness,
             clearance,
             position_scale,
-            gate_open=True,
-            open_position_min=open_position_min,
-            fully_open_position=fully_open_position,
             object_cfg=object_cfg,
-            robot_cfg=robot_cfg,
             fixed_sensor_cfg=fixed_sensor_cfg,
         )
         eligible = torch.ones_like(score, dtype=torch.bool)
@@ -175,11 +156,7 @@ class closure_progress(ManagerTermBase):
             pad_thickness,
             clearance,
             position_scale,
-            gate_open=False,
-            open_position_min=0.0,
-            fully_open_position=1.0,
             object_cfg=object_cfg,
-            robot_cfg=robot_cfg,
             fixed_sensor_cfg=fixed_sensor_cfg,
         )
         current = _gripper_position(env, robot_cfg)
@@ -228,19 +205,13 @@ class grasp_acquired(ManagerTermBase):
 
 
 class lift_progress(ManagerTermBase):
-    """Pay new best height only while the cube has bilateral pad contact."""
+    """Pay cube height continuously while bilateral pad contact holds.
 
-    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
-        super().__init__(cfg, env)
-        self._best = torch.zeros((env.num_envs, 1), device=env.device)
-        self._initialized = torch.zeros(
-            (env.num_envs, 1), dtype=torch.bool, device=env.device
-        )
-
-    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
-        env_ids = slice(None) if env_ids is None else env_ids
-        self._best[env_ids] = 0.0
-        self._initialized[env_ids] = False
+    Dense rate form: each step pays the cube's lifted fraction, but only while
+    both pads grip it. Marginal lifts are reinforced every step instead of only
+    on a new episode-best height, so a brief lift cannot extinguish the way the
+    episode-best form allowed. Drop the cube and this term goes to zero.
+    """
 
     def __call__(
         self,
@@ -259,10 +230,7 @@ class lift_progress(ManagerTermBase):
         contact = _bilateral_contact(
             env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
         )
-        increment, self._best, self._initialized = episode_best_increment(
-            score, self._best, self._initialized, contact
-        )
-        return increment.squeeze(-1) / env.step_dt
+        return (score * contact.to(dtype=score.dtype)).squeeze(-1)
 
 
 def transport_object(

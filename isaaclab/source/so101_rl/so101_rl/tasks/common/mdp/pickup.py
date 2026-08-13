@@ -69,44 +69,6 @@ def target_alignment_score(
     return 1.0 - torch.tanh(position_error / position_scale)
 
 
-def open_gripper_gate(
-    gripper_position: torch.Tensor,
-    *,
-    open_position_min: float,
-    fully_open_position: float,
-) -> torch.Tensor:
-    """Return zero for a closed jaw and one for a fully open jaw."""
-    return torch.clamp(
-        (gripper_position - open_position_min)
-        / (fully_open_position - open_position_min),
-        0.0,
-        1.0,
-    )
-
-
-def pickup_alignment_score(
-    object_position_w: torch.Tensor,
-    target_position_w: torch.Tensor,
-    gripper_position: torch.Tensor,
-    *,
-    position_scale: float,
-    open_position_min: float,
-    fully_open_position: float,
-) -> torch.Tensor:
-    """Return geometric alignment gated continuously by actual jaw position."""
-    alignment = target_alignment_score(
-        object_position_w, target_position_w, position_scale=position_scale
-    )
-    open_gate = open_gripper_gate(
-        gripper_position,
-        open_position_min=open_position_min,
-        fully_open_position=fully_open_position,
-    )
-    while open_gate.ndim < alignment.ndim:
-        open_gate = open_gate.unsqueeze(-1)
-    return alignment * open_gate
-
-
 def bilateral_same_step_contact(
     fixed_force_history_w: torch.Tensor,
     moving_force_history_w: torch.Tensor,

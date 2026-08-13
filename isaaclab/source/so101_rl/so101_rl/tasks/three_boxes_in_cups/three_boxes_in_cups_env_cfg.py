@@ -188,9 +188,9 @@ class ThreeBoxesInCupsRewardsCfg:
     )
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=6.0,
+        weight=2.0,
         params={
-            "lift_height": 0.075,
+            "lift_height": 0.05,
             "object_rest_height": BOX_REST_HEIGHT,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,

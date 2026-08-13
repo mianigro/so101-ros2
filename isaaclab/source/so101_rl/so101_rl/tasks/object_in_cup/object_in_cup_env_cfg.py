@@ -126,7 +126,6 @@ class ObjectInCupRewardsCfg:
         params={
             "half_extents": (0.0125, 0.0125, 0.0125),
             "pad_thickness": SO101_PAD_THICKNESS_M,
-            "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
     closure_progress = RewTerm(
@@ -141,9 +140,9 @@ class ObjectInCupRewardsCfg:
     grasp_acquired = RewTerm(func=mdp.grasp_acquired, weight=2.0)
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=6.0,
+        weight=2.0,
         params={
-            "lift_height": 0.075,
+            "lift_height": 0.05,
             "object_rest_height": OBJECT_REST_HEIGHT,
         },
     )

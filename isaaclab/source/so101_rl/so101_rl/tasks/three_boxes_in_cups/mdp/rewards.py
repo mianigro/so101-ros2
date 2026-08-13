@@ -15,7 +15,6 @@ from so101_rl.tasks.common.mdp.pickup import (
     episode_best_increment,
     first_event_increment,
     grasp_targets_from_fixed_pad,
-    pickup_alignment_score,
     target_alignment_score,
 )
 
@@ -98,9 +97,6 @@ def _pickup_alignment(
     position_scale: float,
     placement: dict,
     *,
-    gate_open: bool,
-    open_position_min: float,
-    fully_open_position: float,
     box_names: tuple[str, str, str],
     cup_names: tuple[str, str, str],
     robot_cfg: SceneEntityCfg,
@@ -119,19 +115,7 @@ def _pickup_alignment(
         pad_thickness=pad_thickness,
         clearance=clearance,
     )
-    if gate_open:
-        score = pickup_alignment_score(
-            positions,
-            target,
-            gripper,
-            position_scale=position_scale,
-            open_position_min=open_position_min,
-            fully_open_position=fully_open_position,
-        )
-    else:
-        score = target_alignment_score(
-            positions, target, position_scale=position_scale
-        )
+    score = target_alignment_score(positions, target, position_scale=position_scale)
     return score, gripper, eligible
 
 
@@ -151,7 +135,7 @@ def _bilateral_contact(
 
 
 class approach_progress(ManagerTermBase):
-    """Pay episode-best open-jaw alignment independently for each unplaced box."""
+    """Pay episode-best alignment independently for each unplaced box."""
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -171,14 +155,14 @@ class approach_progress(ManagerTermBase):
         placement: dict,
         clearance: float = 0.0005,
         position_scale: float = 0.04,
-        open_position_min: float = 0.9,
-        fully_open_position: float = 1.2,
         box_names: tuple[str, str, str] = BOX_NAMES,
         cup_names: tuple[str, str, str] = CUP_NAMES,
         robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
         ee_frame_name: str = "ee_frame",
         fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
     ) -> torch.Tensor:
+        # Pure alignment only: no open-jaw gate, so approach never rewards
+        # being open and no longer competes with closure/lift at the box.
         score, _, eligible = _pickup_alignment(
             env,
             half_extents,
@@ -186,9 +170,6 @@ class approach_progress(ManagerTermBase):
             clearance,
             position_scale,
             placement,
-            gate_open=True,
-            open_position_min=open_position_min,
-            fully_open_position=fully_open_position,
             box_names=box_names,
             cup_names=cup_names,
             robot_cfg=robot_cfg,
@@ -240,9 +221,6 @@ class closure_progress(ManagerTermBase):
             clearance,
             position_scale,
             placement,
-            gate_open=False,
-            open_position_min=0.0,
-            fully_open_position=1.0,
             box_names=box_names,
             cup_names=cup_names,
             robot_cfg=robot_cfg,
@@ -300,17 +278,7 @@ class grasp_acquired(ManagerTermBase):
 
 
 class lift_progress(ManagerTermBase):
-    """Pay per-box best height only under synchronous bilateral contact."""
-
-    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
-        super().__init__(cfg, env)
-        self._best = torch.zeros((env.num_envs, len(BOX_NAMES)), device=env.device)
-        self._initialized = torch.zeros_like(self._best, dtype=torch.bool)
-
-    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
-        env_ids = slice(None) if env_ids is None else env_ids
-        self._best[env_ids] = 0.0
-        self._initialized[env_ids] = False
+    """Pay per-box height continuously under synchronous bilateral contact."""
 
     def __call__(
         self,
@@ -335,10 +303,8 @@ class lift_progress(ManagerTermBase):
         contact = _bilateral_contact(
             env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
         )
-        increment, self._best, self._initialized = episode_best_increment(
-            score, self._best, self._initialized, contact & eligible
-        )
-        return increment.sum(dim=-1) / env.step_dt
+        gated = (contact & eligible).to(dtype=score.dtype)
+        return (score * gated).sum(dim=-1)
 
 
 def transport_to_empty_cup(

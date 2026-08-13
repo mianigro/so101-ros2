@@ -14,7 +14,6 @@ from so101_rl.tasks.common.mdp.pickup import (
     episode_best_increment,
     first_event_increment,
     grasp_targets_from_fixed_pad,
-    pickup_alignment_score,
     projected_half_extent,
 )
 from so101_rl.tasks.object_in_cup.mdp.rewards import (
@@ -61,18 +60,6 @@ class GraspTargetTests(unittest.TestCase):
         self.assertAlmostEqual(target[0, 1].item(), -0.000218, places=7)
         self.assertAlmostEqual(target[0, 2].item(), -0.0925, places=7)
         self.assertGreater(target[1, 0].item(), target[0, 0].item())
-
-    def test_approach_gate_requires_an_open_gripper(self):
-        position = torch.zeros((3, 3))
-        score = pickup_alignment_score(
-            position,
-            position,
-            torch.tensor([0.9, 1.05, 1.2]),
-            position_scale=0.04,
-            open_position_min=0.9,
-            fully_open_position=1.2,
-        )
-        torch.testing.assert_close(score, torch.tensor([0.0, 0.5, 1.0]))
 
 
 class BoundedProgressTests(unittest.TestCase):
@@ -240,7 +227,6 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             env,
             (0.0125, 0.0125, 0.0125),
             0.0005,
-            robot_cfg=robot_cfg,
             fixed_sensor_cfg=fixed_cfg,
         )
         self.assertGreater(initial_approach.item(), 0.0)
@@ -249,7 +235,6 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 env,
                 (0.0125, 0.0125, 0.0125),
                 0.0005,
-                robot_cfg=robot_cfg,
                 fixed_sensor_cfg=fixed_cfg,
             ).item(),
             0.0,
@@ -260,7 +245,6 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 env,
                 (0.0125, 0.0125, 0.0125),
                 0.0005,
-                robot_cfg=robot_cfg,
                 fixed_sensor_cfg=fixed_cfg,
             ).item(),
             0.0,
@@ -317,6 +301,8 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             0.0,
         )
 
+        # Dense lift: pays the lifted fraction each step while contact holds,
+        # and keeps paying (does not extinguish like the old episode-best form).
         self.assertEqual(
             lift(
                 env,
@@ -325,9 +311,9 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
-            0.0,
+            0.0,  # at rest height -> score 0
         )
-        object_position[:, 2] += 0.075
+        object_position[:, 2] += 0.0375  # half of lift_height
         self.assertAlmostEqual(
             lift(
                 env,
@@ -336,10 +322,11 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
-            30.0,
-            delta=1e-3,
+            0.5,  # score 0.5, dense
+            delta=1e-6,
         )
-        self.assertEqual(
+        object_position[:, 2] += 0.0375  # full lift_height
+        self.assertAlmostEqual(
             lift(
                 env,
                 lift_height=0.075,
@@ -347,7 +334,19 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
-            0.0,
+            1.0,
+            delta=1e-6,
+        )
+        self.assertAlmostEqual(  # dense: repeats every step, does not extinguish
+            lift(
+                env,
+                lift_height=0.075,
+                object_rest_height=0.0125,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            1.0,
+            delta=1e-6,
         )
 
 

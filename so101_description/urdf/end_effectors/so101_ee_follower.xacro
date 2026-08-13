@@ -24,7 +24,15 @@
         <material name="3d_printed"/>
       </visual>
 
-      <!-- Keep the original wrist-roll collision mesh to avoid a dense camera-mount collider. -->
+      <!-- Fixed-jaw finger: visible AND collision so the cameras render the real
+           gripping surface (at the contact pad) instead of only the camera bracket. -->
+      <visual>
+        <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/wrist_roll_follower_so101_v1.stl"/>
+        </geometry>
+        <material name="3d_printed"/>
+      </visual>
       <collision>
         <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
         <geometry>
@@ -94,7 +102,10 @@
         </collision>
       </link>
       <joint name="moving_jaw_contact_pad_joint" type="fixed">
-        <origin xyz="-0.01215 -0.0691 0.0190" rpy="0 0 0"/>
+        <!-- Origin X calibrated so the pad face is flush with the moving-jaw
+             finger mesh at the grasp angle (pad protrudes ~0.1 mm, not the
+             ~2.7 mm invisible gap produced by the previous -0.01215 value). -->
+        <origin xyz="-0.00996 -0.0691 0.0190" rpy="0 0 0"/>
         <parent link="moving_jaw_so101_v1_link"/>
         <child link="moving_jaw_contact_pad_link"/>
       </joint>

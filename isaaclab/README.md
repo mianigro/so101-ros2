@@ -490,8 +490,8 @@ Run the focused Isaac Lab suite through the source-runtime bootstrap:
 "$ISAACLAB_PYTHON" isaaclab/test
 ```
 
-The suite checks asset geometry, projected grasp support, open-jaw gating,
-bounded/non-farmable progress, synchronous same-box bilateral contacts, the
+The suite checks asset geometry, projected grasp support, bounded/non-farmable
+progress, synchronous same-box bilateral contacts, the
 shared actor/action contract, both task families, the exact 34- and 84-value
 critics, permutation-invariant three-box success, reset spacing, camera
 calibration, latency resets, actor export signatures, and deployment
