@@ -201,7 +201,7 @@ class ThreeBoxesInCupsRewardsCfg:
         weight=3.0,
         params={
             "std": 0.08,
-            "minimum_height": 0.045,
+            "minimum_height": 0.1,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },

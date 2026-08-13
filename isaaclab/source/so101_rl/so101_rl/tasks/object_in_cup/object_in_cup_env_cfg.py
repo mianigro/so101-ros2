@@ -149,7 +149,7 @@ class ObjectInCupRewardsCfg:
     transport = RewTerm(
         func=mdp.transport_object,
         weight=3.0,
-        params={"std": 0.08, "minimum_height": 0.045},
+        params={"std": 0.08, "minimum_height": 0.1},
     )
     insertion = RewTerm(
         func=mdp.insert_object,
