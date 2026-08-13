@@ -34,8 +34,9 @@ OBJECT_START = (0.20, -0.065, 0.0125)
 CUP_START = (0.24, 0.070, 0.0)
 
 # Object centre height while resting on the table (half of the 0.025 m cube).
-# Used as the lift baseline so height *gained*, not absolute height, is rewarded.
+# Lift pays once the centre clears this baseline by the configured clearance.
 OBJECT_REST_HEIGHT = OBJECT_START[2]
+OBJECT_LIFT_CLEARANCE = 0.001
 
 
 @configclass
@@ -140,16 +141,19 @@ class ObjectInCupRewardsCfg:
     grasp_acquired = RewTerm(func=mdp.grasp_acquired, weight=2.0)
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=2.0,
+        weight=0.1,
         params={
-            "lift_height": 0.05,
+            "lift_clearance": OBJECT_LIFT_CLEARANCE,
             "object_rest_height": OBJECT_REST_HEIGHT,
         },
     )
     transport = RewTerm(
         func=mdp.transport_object,
         weight=3.0,
-        params={"std": 0.08, "minimum_height": 0.1},
+        params={
+            "std": 0.08,
+            "minimum_height": OBJECT_REST_HEIGHT + OBJECT_LIFT_CLEARANCE,
+        },
     )
     insertion = RewTerm(
         func=mdp.insert_object,

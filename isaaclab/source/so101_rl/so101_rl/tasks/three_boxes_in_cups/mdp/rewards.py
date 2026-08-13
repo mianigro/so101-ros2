@@ -278,12 +278,12 @@ class grasp_acquired(ManagerTermBase):
 
 
 class lift_progress(ManagerTermBase):
-    """Pay per-box height continuously under synchronous bilateral contact."""
+    """Pay a constant reward for each gripped, unplaced box off the table."""
 
     def __call__(
         self,
         env: ManagerBasedRLEnv,
-        lift_height: float,
+        lift_clearance: float,
         object_rest_height: float,
         placement: dict,
         force_threshold: float = 0.1,
@@ -297,14 +297,11 @@ class lift_progress(ManagerTermBase):
         positions, _, _, eligible = _pickup_tensors(
             env, placement, box_names, cup_names, robot_cfg, ee_frame_name
         )
-        score = torch.clamp(
-            (positions[..., 2] - object_rest_height) / lift_height, 0.0, 1.0
-        )
+        lifted = positions[..., 2] >= object_rest_height + lift_clearance
         contact = _bilateral_contact(
             env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
         )
-        gated = (contact & eligible).to(dtype=score.dtype)
-        return (score * gated).sum(dim=-1)
+        return (lifted & contact & eligible).to(dtype=positions.dtype).sum(dim=-1)
 
 
 def transport_to_empty_cup(

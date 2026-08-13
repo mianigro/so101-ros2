@@ -44,8 +44,9 @@ BOX_NAMES = ("box_1", "box_2", "box_3")
 CUP_NAMES = ("cup_1", "cup_2", "cup_3")
 
 # Box centre height while resting on the table (half of the 0.025 m cube).
-# Lift rewards height *gained* above this baseline, not absolute height.
+# Lift pays once the centre clears this baseline by the configured clearance.
 BOX_REST_HEIGHT = BOX_STARTS[0][2]
+BOX_LIFT_CLEARANCE = 0.001
 
 PLACEMENT_PARAMS = {
     "xy_tolerance": 0.0,
@@ -188,9 +189,9 @@ class ThreeBoxesInCupsRewardsCfg:
     )
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=2.0,
+        weight=0.1,
         params={
-            "lift_height": 0.05,
+            "lift_clearance": BOX_LIFT_CLEARANCE,
             "object_rest_height": BOX_REST_HEIGHT,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
@@ -201,7 +202,7 @@ class ThreeBoxesInCupsRewardsCfg:
         weight=3.0,
         params={
             "std": 0.08,
-            "minimum_height": 0.1,
+            "minimum_height": BOX_REST_HEIGHT + BOX_LIFT_CLEARANCE,
             "placement": dict(PLACEMENT_PARAMS),
             "robot_cfg": SO101_GRIPPER_CFG,
         },

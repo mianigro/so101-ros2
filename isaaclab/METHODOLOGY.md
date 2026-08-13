@@ -212,8 +212,8 @@ Rebuilding different assets can change these values.
 | Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04))` | `+1.0` | Bring the fixed pad to the grasp target (jaw position does not enter) |
 | Closure progress | new credited closing motion `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power | `+1.0` | Close only at the grasp target |
 | Grasp acquired | one impulse on first valid bilateral contact | `+2.0` | Confirm a physical same-cube pinch |
-| Lift progress | `clip((p_o.z - z_rest) / 0.05, 0, 1)` each step while bilateral contact holds (dense) | `+2.0` | Lift and hold while pinching the object |
-| Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= 0.045]` | `+3.0` | Move the object over the cup |
+| Lift progress | `1[p_o.z >= z_rest + 0.001]` each step while bilateral contact holds (dense) | `+0.1` | Hold the pinched object off the table, independent of height |
+| Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= z_rest + 0.001]` | `+3.0` | Move the object toward the cup as soon as it clears the table |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
 | Stable | `1[released, inside, and slow]` | `+20.0` | Complete a settled placement |
@@ -237,19 +237,19 @@ The four pickup terms form a gated cascade; each stage unlocks the next:
 3. **Grasp** (weight `+2.0`) — one impulse the first substep both pads exceed
    `0.1 N` against the same cube (bilateral contact). Fires once per episode.
 
-4. **Lift** (weight `+2.0`, dense) — pays
-   `clip((p_o.z - z_rest) / 0.05, 0, 1)` every step while bilateral contact
-   holds. Unlike an episode-best term, marginal lifts are reinforced
-   continuously, so a brief lift cannot extinguish. Drop the cube and it goes
-   to zero. This is the dominant pickup signal: once the jaw pinches the cube,
-   the gradient drives the arm up and rewards holding the grip.
+4. **Lift** (weight `+0.1`, dense) — pays a constant `1` every step when
+   `p_o.z >= z_rest + 0.001` and bilateral contact holds. The reward is the
+   same whether the cube is 1 mm or 100 mm above its resting height, so it
+   encourages maintaining an off-table grip without driving the arm overhead.
+   Dropping or lowering the cube below the clearance makes the term zero.
 
 Alignment gates closure, and bilateral contact gates lift. Approach and
 closure are non-farmable (episode-best / cumulative-credit): camping earns
 nothing, backing off cannot repay approach, and reopening/reclosing cannot
-refill closure. Lift is deliberately dense rather than non-farmable, so
-repeated marginal lifts keep being reinforced; pushing or throwing the cube up
-without a maintained bilateral grip still earns nothing.
+refill closure. Lift is deliberately dense but height-invariant: it rewards
+continued off-table holding, while pushing or throwing the cube without a
+maintained bilateral grip earns no Lift reward. Transport activates at the
+same 1 mm clearance and supplies the directional signal toward the cup.
 
 Insertion progress is:
 
@@ -272,8 +272,10 @@ Isaac Lab treats reward weights as rates. The three bounded pickup terms
 `env.step_dt`, cancelling the manager's later time-step multiplication, so
 their integrated episode budgets are exactly their weights: approach `1`,
 closure `1`, grasp `2` per cube. Lift is dense (rate form): it pays
-`weight * height_score * contact` each step, so its episode total grows with
-how high and how long the cube is held while gripped. At 30 Hz:
+`0.1 * lifted * contact` each step, so its episode total grows only with how
+long the cube is held off the table, not with its height. A full 15-second
+single-box episode of uninterrupted holding contributes at most `1.5`. At
+30 Hz:
 
 ```text
 reward_t = (1/30) * sum(weight_i * raw_term_i)
@@ -290,8 +292,9 @@ velocity are dense or penalty terms outside the pickup chain.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.
 - Excessive smoothness penalties can suppress motion needed within 15 seconds.
-- Dense lift can reward holding the cube up without transporting it; the
-  placement weights (insertion/release/stable) must outweigh sustained holding.
+- Dense Lift can reward holding just above the table without transporting, but
+  its `+0.1` weight is intentionally small and Transport begins at the same
+  clearance.
 
 Inspect `Episode_Reward/<term>` metrics and trajectories. Increasing total
 reward alone does not prove the intended behavior.

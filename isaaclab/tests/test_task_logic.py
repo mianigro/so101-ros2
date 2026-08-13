@@ -17,6 +17,7 @@ from so101_rl.tasks.object_in_cup.mdp.geometry import (
     placement_mask,
     update_settle_counter,
 )
+from so101_rl.tasks.object_in_cup.mdp.rewards import transport_object
 from so101_rl.tasks.object_in_cup.mdp.terminations import object_dropped
 from so101_rl.tasks.common.mdp.observations import camera_rgb
 
@@ -153,6 +154,30 @@ class PlacementLogicTests(unittest.TestCase):
         self.assertEqual(
             object_dropped(env, minimum_height=-0.02).tolist(), [True, False]
         )
+
+    def test_transport_starts_at_off_ground_threshold(self):
+        object_positions = torch.tensor(
+            [[0.0, 0.0, 0.0134], [0.0, 0.0, 0.0135]]
+        )
+        cup_positions = torch.zeros_like(object_positions)
+        env = SimpleNamespace(
+            scene={
+                "object": SimpleNamespace(
+                    data=SimpleNamespace(
+                        root_pos_w=SimpleNamespace(torch=object_positions)
+                    )
+                ),
+                "cup": SimpleNamespace(
+                    data=SimpleNamespace(
+                        root_pos_w=SimpleNamespace(torch=cup_positions)
+                    )
+                ),
+            }
+        )
+
+        reward = transport_object(env, std=0.08, minimum_height=0.0135)
+
+        self.assertEqual(reward.tolist(), [0.0, 1.0])
 
 
 class VisualLatencyResetTests(unittest.TestCase):

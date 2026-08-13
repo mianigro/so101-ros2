@@ -127,7 +127,12 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(cfg.rewards.approach_progress.weight, 1.0)
         self.assertEqual(cfg.rewards.closure_progress.weight, 1.0)
         self.assertEqual(cfg.rewards.grasp_acquired.weight, 2.0)
-        self.assertEqual(cfg.rewards.lift_progress.weight, 6.0)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 0.1)
+        self.assertEqual(cfg.rewards.lift_progress.params["lift_clearance"], 0.001)
+        self.assertNotIn("lift_height", cfg.rewards.lift_progress.params)
+        self.assertAlmostEqual(
+            cfg.rewards.transport.params["minimum_height"], 0.0135
+        )
         self.assertEqual(
             cfg.rewards.approach_progress.params["half_extents"],
             (0.0125, 0.0125, 0.0125),
@@ -263,7 +268,12 @@ class TaskConfigTests(unittest.TestCase):
                 "{ENV_REGEX_NS}/Box3",
             ],
         )
-        self.assertEqual(cfg.rewards.lift_progress.weight, 6.0)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 0.1)
+        self.assertEqual(cfg.rewards.lift_progress.params["lift_clearance"], 0.001)
+        self.assertNotIn("lift_height", cfg.rewards.lift_progress.params)
+        self.assertAlmostEqual(
+            cfg.rewards.transport.params["minimum_height"], 0.0135
+        )
         validate_deployable_contract(
             "SO101-Three-Boxes-In-Cups-Vision-v0", cfg, agent
         )

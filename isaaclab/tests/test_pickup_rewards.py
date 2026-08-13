@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -22,6 +23,7 @@ from so101_rl.tasks.object_in_cup.mdp.rewards import (
     grasp_acquired as GraspAcquired,
     lift_progress as LiftProgress,
 )
+from so101_rl.tasks.three_boxes_in_cups.mdp import rewards as three_box_rewards
 
 
 def _proxy(tensor: torch.Tensor) -> SimpleNamespace:
@@ -301,53 +303,88 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             0.0,
         )
 
-        # Dense lift: pays the lifted fraction each step while contact holds,
-        # and keeps paying (does not extinguish like the old episode-best form).
+        # Dense lift: pays a constant once the held cube clears the table.
         self.assertEqual(
             lift(
                 env,
-                lift_height=0.075,
+                lift_clearance=0.001,
                 object_rest_height=0.0125,
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
-            0.0,  # at rest height -> score 0
+            0.0,
         )
-        object_position[:, 2] += 0.0375  # half of lift_height
-        self.assertAlmostEqual(
+        object_position[:, 2] = 0.0134  # below the 1 mm clearance
+        self.assertEqual(
             lift(
                 env,
-                lift_height=0.075,
+                lift_clearance=0.001,
                 object_rest_height=0.0125,
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
-            0.5,  # score 0.5, dense
-            delta=1e-6,
+            0.0,
         )
-        object_position[:, 2] += 0.0375  # full lift_height
-        self.assertAlmostEqual(
+        object_position[:, 2] = 0.0135  # exactly at the inclusive threshold
+        self.assertEqual(
             lift(
                 env,
-                lift_height=0.075,
+                lift_clearance=0.001,
                 object_rest_height=0.0125,
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
             1.0,
-            delta=1e-6,
         )
-        self.assertAlmostEqual(  # dense: repeats every step, does not extinguish
+        object_position[:, 2] = 0.20
+        self.assertEqual(
             lift(
                 env,
-                lift_height=0.075,
+                lift_clearance=0.001,
                 object_rest_height=0.0125,
                 fixed_sensor_cfg=fixed_cfg,
                 moving_sensor_cfg=moving_cfg,
             ).item(),
             1.0,
-            delta=1e-6,
         )
+        moving_forces.zero_()
+        self.assertEqual(
+            lift(
+                env,
+                lift_clearance=0.001,
+                object_rest_height=0.0125,
+                fixed_sensor_cfg=fixed_cfg,
+                moving_sensor_cfg=moving_cfg,
+            ).item(),
+            0.0,
+        )
+
+    def test_three_box_lift_is_constant_and_masks_ineligible_boxes(self):
+        positions = torch.tensor(
+            [[[0.0, 0.0, 0.0134], [0.0, 0.0, 0.0135], [0.0, 0.0, 0.20]]]
+        )
+        eligible = torch.tensor([[True, True, False]])
+        contact = torch.tensor([[True, True, True]])
+        pickup_tensors = (positions, torch.empty(0), torch.empty(0), eligible)
+        env = SimpleNamespace(num_envs=1, device="cpu")
+        lift = three_box_rewards.lift_progress(SimpleNamespace(), env)
+
+        with (
+            patch.object(
+                three_box_rewards, "_pickup_tensors", return_value=pickup_tensors
+            ),
+            patch.object(
+                three_box_rewards, "_bilateral_contact", return_value=contact
+            ),
+        ):
+            reward = lift(
+                env,
+                lift_clearance=0.001,
+                object_rest_height=0.0125,
+                placement={},
+            )
+
+        self.assertEqual(reward.item(), 1.0)
 
 
 if __name__ == "__main__":

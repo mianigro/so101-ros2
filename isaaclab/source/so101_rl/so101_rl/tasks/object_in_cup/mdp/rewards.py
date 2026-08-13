@@ -205,18 +205,12 @@ class grasp_acquired(ManagerTermBase):
 
 
 class lift_progress(ManagerTermBase):
-    """Pay cube height continuously while bilateral pad contact holds.
-
-    Dense rate form: each step pays the cube's lifted fraction, but only while
-    both pads grip it. Marginal lifts are reinforced every step instead of only
-    on a new episode-best height, so a brief lift cannot extinguish the way the
-    episode-best form allowed. Drop the cube and this term goes to zero.
-    """
+    """Pay a constant reward while the gripped cube is off the table."""
 
     def __call__(
         self,
         env: ManagerBasedRLEnv,
-        lift_height: float,
+        lift_clearance: float,
         object_rest_height: float,
         force_threshold: float = 0.1,
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -224,13 +218,11 @@ class lift_progress(ManagerTermBase):
         moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
     ) -> torch.Tensor:
         height = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2:3]
-        score = torch.clamp(
-            (height - object_rest_height) / lift_height, 0.0, 1.0
-        )
+        lifted = height >= object_rest_height + lift_clearance
         contact = _bilateral_contact(
             env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
         )
-        return (score * contact.to(dtype=score.dtype)).squeeze(-1)
+        return (lifted & contact).to(dtype=height.dtype).squeeze(-1)
 
 
 def transport_object(
