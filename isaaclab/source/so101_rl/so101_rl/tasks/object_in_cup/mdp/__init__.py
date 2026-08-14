@@ -9,9 +9,6 @@ from .events import reset_task_layout
 from .geometry import placement_mask, update_settle_counter
 from .rewards import (
     approach_progress,
-    closure_progress,
-    grasp_acquired,
-    grasp_held,
     insert_object,
     lift_progress,
     release_object,
@@ -23,11 +20,8 @@ from .terminations import invalid_state, object_dropped, stable_placement
 __all__ = [
     "CRITIC_STATE_COMPONENTS",
     "CRITIC_STATE_DIM",
-    "critic_task_state",
     "approach_progress",
-    "closure_progress",
-    "grasp_acquired",
-    "grasp_held",
+    "critic_task_state",
     "insert_object",
     "invalid_state",
     "lift_progress",

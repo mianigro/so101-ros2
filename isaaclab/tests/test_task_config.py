@@ -14,10 +14,6 @@ from so101_rl.camera_profile import (
 )
 from so101_rl.export_manifest import validate_deployable_contract
 from so101_rl.tasks.common import SO101VisualObservationsCfg
-from so101_rl.tasks.common.visual_env_cfg import (
-    SO101_FIXED_JAW_PAD_PRIM_PATH,
-    SO101_MOVING_JAW_PAD_PRIM_PATH,
-)
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.tasks.object_in_cup.agents.rsl_rl_vision_ppo_cfg import (
     SO101ObjectInCupVisionPPOCfg,
@@ -116,47 +112,32 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(cfg.events.reset_layout.params["curriculum_steps"], 45_000_000)
         self.assertEqual(cfg.terminations.success.params["xy_tolerance"], 0.0038)
         self.assertEqual(
-            tuple(cfg.rewards.__dataclass_fields__)[:5],
+            tuple(cfg.rewards.__dataclass_fields__)[:6],
             (
-                "approach_progress",
-                "closure_progress",
-                "grasp_acquired",
-                "grasp_held",
+                "approach",
                 "lift_progress",
+                "transport",
+                "insertion",
+                "release",
+                "stable",
             ),
         )
-        self.assertEqual(cfg.rewards.approach_progress.weight, 1.0)
-        self.assertEqual(cfg.rewards.closure_progress.weight, 0.1)
+        self.assertEqual(cfg.rewards.approach.weight, 1.0)
+        self.assertEqual(cfg.rewards.approach.params["position_scale"], 0.08)
+        self.assertEqual(cfg.rewards.lift_progress.weight, 1.0)
         self.assertEqual(
-            cfg.rewards.closure_progress.params["minimum_insertion"], 0.001
+            cfg.rewards.lift_progress.params["object_rest_height"], 0.0125
         )
-        self.assertEqual(
-            cfg.rewards.closure_progress.params["fixed_pad_length"], 0.025
-        )
-        self.assertEqual(cfg.rewards.grasp_acquired.weight, 1.0)
-        self.assertEqual(cfg.rewards.grasp_held.weight, 0.5)
-        self.assertEqual(cfg.rewards.grasp_held.params["minimum_insertion"], 0.001)
-        self.assertEqual(cfg.rewards.lift_progress.weight, 0.2)
-        self.assertEqual(cfg.rewards.lift_progress.params["lift_clearance"], 0.001)
-        self.assertNotIn("lift_height", cfg.rewards.lift_progress.params)
+        self.assertEqual(cfg.rewards.lift_progress.params["height_scale"], 0.05)
+        # Outcome-only rewards: no contact-gated params on any term.
+        self.assertNotIn("force_threshold", cfg.rewards.lift_progress.params)
+        self.assertNotIn("force_threshold", cfg.rewards.approach.params)
         self.assertAlmostEqual(
             cfg.rewards.transport.params["minimum_height"], 0.0135
         )
-        self.assertEqual(
-            cfg.rewards.approach_progress.params["half_extents"],
-            (0.0125, 0.0125, 0.0125),
-        )
-        self.assertEqual(cfg.scene.fixed_jaw_contact.history_length, 4)
-        self.assertEqual(cfg.scene.fixed_jaw_contact.update_period, 0.0)
-        self.assertTrue(cfg.scene.fixed_jaw_contact.track_pose)
-        self.assertEqual(cfg.scene.fixed_jaw_contact.force_threshold, 0.1)
-        self.assertEqual(
-            cfg.scene.fixed_jaw_contact.prim_path, SO101_FIXED_JAW_PAD_PRIM_PATH
-        )
-        self.assertEqual(
-            cfg.scene.moving_jaw_contact.prim_path, SO101_MOVING_JAW_PAD_PRIM_PATH
-        )
-        self.assertTrue(cfg.scene.moving_jaw_contact.track_pose)
+        # The pincer contact sensors are removed from this task's scene.
+        self.assertFalse(hasattr(cfg.scene, "fixed_jaw_contact"))
+        self.assertFalse(hasattr(cfg.scene, "moving_jaw_contact"))
         self.assertEqual(
             cfg.scene.ee_frame.target_frames[0].offset.pos,
             (0.0052, -0.000218, -0.0925),

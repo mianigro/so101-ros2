@@ -1,4 +1,16 @@
-"""Bounded pickup stages and placement rewards for the object-in-cup task."""
+"""Rewards for the object-in-cup task.
+
+Every term uses only object/cup/gripper state -- there is no contact sensing
+and no prescribed grasp geometry, so any method the policy finds earns its
+reward.  The outcome terms pay for task *outcomes* (the cube is picked up,
+moved to the cup, and placed inside) and cannot be farmed because earning them
+requires the outcome itself.  The single shaping term that opens the ladder,
+``approach_progress``, pays only the episode-best improvement of a bounded
+gripper-to-cube proximity score: it says "bring the gripper's grasp region to
+the cube" -- nothing about approach direction, orientation, or jaw geometry --
+and its episode-best bookkeeping makes it impossible to farm by hovering or
+re-approaching.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +22,7 @@ import torch
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 
 from so101_rl.tasks.common.mdp.pickup import (
-    bilateral_same_step_contact,
-    bounded_closure_increment,
     episode_best_increment,
-    grasp_targets_from_fixed_pad,
-    object_between_jaws,
-    retryable_event_increment,
     target_alignment_score,
 )
 
@@ -26,68 +33,23 @@ if TYPE_CHECKING:
     from isaaclab.managers import RewardTermCfg
 
 
-def _gripper_position(
-    env: ManagerBasedRLEnv,
-    robot_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    return (
-        env.scene[robot_cfg.name]
-        .data.joint_pos.torch[:, robot_cfg.joint_ids]
-        .squeeze(-1)
-    )
-
-
-def _pickup_alignment(
-    env: ManagerBasedRLEnv,
-    half_extents: tuple[float, float, float],
-    pad_thickness: float,
-    clearance: float,
-    position_scale: float,
-    *,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
-) -> torch.Tensor:
-    object_asset = env.scene[object_cfg.name]
-    fixed_pad = env.scene[fixed_sensor_cfg.name]
-    target = grasp_targets_from_fixed_pad(
-        fixed_pad.data.pos_w.torch[:, 0, :],
-        fixed_pad.data.quat_w.torch[:, 0, :],
-        object_asset.data.root_quat_w.torch,
-        half_extents,
-        pad_thickness=pad_thickness,
-        clearance=clearance,
-    )
-    return target_alignment_score(
-        object_asset.data.root_pos_w.torch,
-        target,
-        position_scale=position_scale,
-    ).unsqueeze(-1)
-
-
-def _bilateral_contact(
-    env: ManagerBasedRLEnv,
-    force_threshold: float,
-    fixed_sensor_cfg: SceneEntityCfg,
-    moving_sensor_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    fixed = env.scene[fixed_sensor_cfg.name].data.force_matrix_w_history
-    moving = env.scene[moving_sensor_cfg.name].data.force_matrix_w_history
-    if fixed is None or moving is None:
-        raise RuntimeError("pickup rewards require filtered contact-force history")
-    return bilateral_same_step_contact(
-        fixed.torch, moving.torch, force_threshold=force_threshold
-    )
-
-
 class approach_progress(ManagerTermBase):
-    """Pay only new episode-best alignment, at most one per episode."""
+    """Grasp-agnostic reaching reward: episode-best gripper-to-cube proximity.
+
+    Scores ``1 - tanh(dist / position_scale)`` between the cube centre and the
+    nominal grasp point (the ``ee_frame`` ``grasp_frame`` offset, i.e. where a
+    25 mm cube centre sits against the fixed pad) and pays only the improvement
+    over the episode's best score, so hovering at the cube or backing off and
+    re-approaching cannot farm it.  Any approach direction, orientation, or
+    grasp strategy earns it identically -- the term prescribes nothing about
+    *how* the cube is grabbed, it only bridges the gap between flailing in the
+    void and the first lucky grasp that ``lift_progress`` can reward.
+    """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        self._best = torch.zeros((env.num_envs, 1), device=env.device)
-        self._initialized = torch.ones(
-            (env.num_envs, 1), dtype=torch.bool, device=env.device
-        )
+        self._best = torch.zeros(env.num_envs, device=env.device)
+        self._initialized = torch.ones_like(self._best, dtype=torch.bool)
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
         env_ids = slice(None) if env_ids is None else env_ids
@@ -97,210 +59,42 @@ class approach_progress(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRLEnv,
-        half_extents: tuple[float, float, float],
-        pad_thickness: float,
-        clearance: float = 0.0005,
-        position_scale: float = 0.04,
+        *,
+        position_scale: float = 0.08,
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
+        ee_frame_name: str = "ee_frame",
     ) -> torch.Tensor:
-        # Pure alignment only: no open-jaw gate, so approach never rewards
-        # being open and no longer competes with closure/lift at the cube.
-        score = _pickup_alignment(
-            env,
-            half_extents,
-            pad_thickness,
-            clearance,
-            position_scale,
-            object_cfg=object_cfg,
-            fixed_sensor_cfg=fixed_sensor_cfg,
+        grasp_point = env.scene[ee_frame_name].data.target_pos_w.torch[:, 0, :]
+        cube = env.scene[object_cfg.name].data.root_pos_w.torch
+        score = target_alignment_score(
+            cube, grasp_point, position_scale=position_scale
         )
-        eligible = torch.ones_like(score, dtype=torch.bool)
         increment, self._best, self._initialized = episode_best_increment(
-            score, self._best, self._initialized, eligible
-        )
-        return increment.squeeze(-1) / env.step_dt
-
-
-class closure_progress(ManagerTermBase):
-    """Pay jaw closure after the cube edge enters between the pads."""
-
-    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
-        super().__init__(cfg, env)
-        self._previous = torch.zeros(env.num_envs, device=env.device)
-        self._credited = torch.zeros((env.num_envs, 1), device=env.device)
-        self._initialized = torch.zeros(
-            env.num_envs, dtype=torch.bool, device=env.device
-        )
-
-    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
-        env_ids = slice(None) if env_ids is None else env_ids
-        self._previous[env_ids] = 0.0
-        self._credited[env_ids] = 0.0
-        self._initialized[env_ids] = False
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        half_extents: tuple[float, float, float],
-        pad_thickness: float,
-        clearance: float = 0.0005,
-        position_scale: float = 0.04,
-        closure_range: float = 1.2,
-        fixed_pad_length: float = 0.025,
-        minimum_insertion: float = 0.001,
-        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
-        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
-        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
-    ) -> torch.Tensor:
-        alignment = _pickup_alignment(
-            env,
-            half_extents,
-            pad_thickness,
-            clearance,
-            position_scale,
-            object_cfg=object_cfg,
-            fixed_sensor_cfg=fixed_sensor_cfg,
-        )
-        current = _gripper_position(env, robot_cfg)
-        object_position = env.scene[object_cfg.name].data.root_pos_w.torch
-        fixed_pad = env.scene[fixed_sensor_cfg.name].data
-        moving_pad = env.scene[moving_sensor_cfg.name].data
-        between = object_between_jaws(
-            object_position,
-            env.scene[object_cfg.name].data.root_quat_w.torch,
-            fixed_pad.pos_w.torch[:, 0, :],
-            fixed_pad.quat_w.torch[:, 0, :],
-            moving_pad.pos_w.torch[:, 0, :],
-            half_extents,
-            fixed_pad_length=fixed_pad_length,
-            minimum_insertion=minimum_insertion,
-        ).unsqueeze(-1)
-        increment, self._credited, self._initialized = bounded_closure_increment(
-            self._previous,
-            current,
-            alignment,
-            self._credited,
-            between,
+            score,
+            self._best,
             self._initialized,
-            closure_range=closure_range,
+            torch.ones_like(self._best, dtype=torch.bool),
         )
-        self._previous.copy_(current)
-        return increment.sum(dim=-1) / env.step_dt
+        return increment / env.step_dt
 
 
-class grasp_acquired(ManagerTermBase):
-    """Pay once per grasp attempt when both pads contact the cube.
-
-    The impulse re-arms whenever bilateral contact is lost, so a fresh pinch
-    after a drop earns the reward again.  Within one continuous contact
-    session it still fires at most once (rising edge), so holding the grasp
-    cannot farm it.
-    """
-
-    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
-        super().__init__(cfg, env)
-        self._in_contact = torch.zeros(
-            (env.num_envs, 1), dtype=torch.bool, device=env.device
-        )
-
-    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
-        env_ids = slice(None) if env_ids is None else env_ids
-        self._in_contact[env_ids] = False
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        force_threshold: float = 0.1,
-        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
-        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
-    ) -> torch.Tensor:
-        contact = _bilateral_contact(
-            env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
-        )
-        increment, self._in_contact = retryable_event_increment(
-            contact,
-            self._in_contact,
-            torch.ones_like(contact, dtype=torch.bool),
-        )
-        return increment.sum(dim=-1) / env.step_dt
-
-
-def grasp_held(
+def lift_progress(
     env: ManagerBasedRLEnv,
-    half_extents: tuple[float, float, float],
     *,
-    closed_threshold: float = 0.15,
-    fixed_pad_length: float = 0.025,
-    minimum_insertion: float = 0.001,
     object_rest_height: float = 0.0125,
     height_scale: float = 0.05,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
-    fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
-    moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
 ) -> torch.Tensor:
-    """Dense reward for holding the cube clamped between the jaws.
+    """Outcome reward: the cube is picked up, however achieved.
 
-    Uses grasp *geometry* (cube between the pads with the gripper closed)
-    rather than contact force, so the policy gets a continuous gradient into
-    and through the pinch even when bilateral contact is marginal.  This
-    bridges ``closure_progress`` (closing motion) and ``lift_progress``
-    (contact-validated lift), which otherwise share no dense signal, and is
-    the primary lever for escaping the reach-and-fake-close stall.
-
-    The binary ``between & closed`` mask is scaled by a height-progress term so
-    that clamping the cube on the table pays a fraction (``hold_floor``) of the
-    credit while a genuine lift toward ``object_rest_height + height_scale``
-    earns the full amount.  This keeps the pinch-to-lift gradient but removes
-    the incentive to sit on the table indefinitely.
+    Pays a smooth ramp on the cube's height above its resting height,
+    saturating at ``height_scale`` above rest.  Any method that raises the cube
+    earns this -- the first upward nudge pays a sliver and a genuine hold pays
+    the full amount -- and it cannot be farmed, because earning it requires the
+    cube to actually be up.
     """
-    object_asset = env.scene[object_cfg.name]
-    fixed_pad = env.scene[fixed_sensor_cfg.name].data
-    moving_pad = env.scene[moving_sensor_cfg.name].data
-    between = object_between_jaws(
-        object_asset.data.root_pos_w.torch,
-        object_asset.data.root_quat_w.torch,
-        fixed_pad.pos_w.torch[:, 0, :],
-        fixed_pad.quat_w.torch[:, 0, :],
-        moving_pad.pos_w.torch[:, 0, :],
-        half_extents,
-        fixed_pad_length=fixed_pad_length,
-        minimum_insertion=minimum_insertion,
-    )
-    gripper_pos = _gripper_position(env, robot_cfg)
-    closed = gripper_pos <= closed_threshold
-    held = (between & closed).to(dtype=gripper_pos.dtype)
-    # 0.3 on the table, ramping to 1.0 over height_scale above the rest height.
-    height_progress = torch.clamp(
-        (object_asset.data.root_pos_w.torch[:, 2] - object_rest_height) / height_scale,
-        0.0,
-        1.0,
-    )
-    hold_floor = 0.3
-    return held * (hold_floor + (1.0 - hold_floor) * height_progress)
-
-
-class lift_progress(ManagerTermBase):
-    """Pay a constant reward while the gripped cube is off the table."""
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        lift_clearance: float,
-        object_rest_height: float,
-        force_threshold: float = 0.1,
-        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-        fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
-        moving_sensor_cfg: SceneEntityCfg = SceneEntityCfg("moving_jaw_contact"),
-    ) -> torch.Tensor:
-        height = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2:3]
-        lifted = height >= object_rest_height + lift_clearance
-        contact = _bilateral_contact(
-            env, force_threshold, fixed_sensor_cfg, moving_sensor_cfg
-        )
-        return (lifted & contact).to(dtype=height.dtype).squeeze(-1)
+    object_z = env.scene[object_cfg.name].data.root_pos_w.torch[:, 2]
+    return torch.clamp((object_z - object_rest_height) / height_scale, 0.0, 1.0)
 
 
 class transport_object(ManagerTermBase):

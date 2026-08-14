@@ -143,6 +143,32 @@ def bilateral_same_step_contact(
     return same_substep.any(dim=1)
 
 
+def any_pad_contact(
+    fixed_force_history_w: torch.Tensor,
+    moving_force_history_w: torch.Tensor,
+    *,
+    force_threshold: float,
+) -> torch.Tensor:
+    """Return filters contacted by EITHER pad in at least one substep.
+
+    Looser than :func:`bilateral_same_step_contact`: a single pad touching the
+    object in any stored substep is enough, so this provides a dense gradient
+    into *making* contact before a full two-pad pinch is achieved.  Input
+    layout and output shape match ``bilateral_same_step_contact`` -> ``(env,
+    filter)``.
+    """
+    if fixed_force_history_w.shape != moving_force_history_w.shape:
+        raise ValueError("fixed and moving contact histories must have identical shapes")
+    if fixed_force_history_w.ndim != 5 or fixed_force_history_w.shape[-1] != 3:
+        raise ValueError(
+            "contact histories must have shape (env, history, sensor, filter, 3)"
+        )
+    fixed = torch.linalg.vector_norm(fixed_force_history_w, dim=-1) > force_threshold
+    moving = torch.linalg.vector_norm(moving_force_history_w, dim=-1) > force_threshold
+    either = fixed.any(dim=2) | moving.any(dim=2)
+    return either.any(dim=1)
+
+
 def episode_best_increment(
     value: torch.Tensor,
     best: torch.Tensor,
@@ -215,3 +241,54 @@ def retryable_event_increment(
     contact = event & eligible
     rising = contact & ~in_contact
     return rising.to(dtype=torch.float32), contact
+
+
+def reopen_credit(
+    stall_steps: torch.Tensor,
+    since_stall: torch.Tensor,
+    stalled_enough: torch.Tensor,
+    previous_gripper: torch.Tensor,
+    stalling: torch.Tensor,
+    gripper_pos: torch.Tensor,
+    *,
+    reopen_steps: int,
+    reopen_grace: int,
+    reopen_scale: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return the opening-motion escape credit (>= 0) for a stalled gripper.
+
+    ``stall_steps`` is the *already-incremented* consecutive-stall count for the
+    current step.  ``stalled_enough`` latches true once a stall lasts at least
+    ``reopen_steps`` and stays true only while ``since_stall`` (steps elapsed
+    since the stall last held) is within ``reopen_grace``, so the escape window
+    is bounded and re-arms for the next genuine stall.  Within that window any
+    positive opening motion (per the 0.1-rad gripper action delta) earns a
+    bounded credit scaled by ``reopen_scale``.
+
+    The returned credit is intended for a reward term with a *positive* weight,
+    so re-opening the gripper after a stall is rewarded rather than penalized.
+    Returns ``(credit, next_since_stall, next_stalled_enough)``.
+    """
+    if not (
+        stall_steps.shape
+        == since_stall.shape
+        == stalled_enough.shape
+        == previous_gripper.shape
+        == stalling.shape
+        == gripper_pos.shape
+    ):
+        raise ValueError("reopen credit tensors must have identical shapes")
+    next_stalled_enough = stalled_enough | (stall_steps >= reopen_steps)
+    next_since_stall = torch.where(
+        stalling, torch.zeros_like(since_stall), since_stall + 1
+    )
+    reopen_active = next_stalled_enough & (next_since_stall <= reopen_grace)
+    # Once the grace window expires the latch re-arms for a fresh stall.
+    next_stalled_enough = next_stalled_enough & reopen_active
+    opening = torch.clamp(gripper_pos - previous_gripper, min=0.0)
+    credit = (
+        reopen_active.to(dtype=gripper_pos.dtype)
+        * torch.clamp(opening / 0.1, 0.0, 1.0)
+        * reopen_scale
+    )
+    return credit, next_since_stall, next_stalled_enough

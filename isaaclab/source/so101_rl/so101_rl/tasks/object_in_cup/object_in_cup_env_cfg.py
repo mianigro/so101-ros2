@@ -10,15 +10,11 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils.configclass import configclass
 
 from so101_rl.paths import CUBE_USD_PATH, CUP_USD_PATH, load_asset_manifest
 from so101_rl.tasks.common import (
-    SO101_FIXED_JAW_PAD_PRIM_PATH,
     SO101_GRIPPER_CFG,
-    SO101_MOVING_JAW_PAD_PRIM_PATH,
-    SO101_PAD_THICKNESS_M,
     SO101_ROBOT_JOINT_CFG,
     SO101VisualEnvCfg,
     SO101VisualEventsCfg,
@@ -83,23 +79,6 @@ class ObjectInCupSceneCfg(SO101VisualSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=CUP_START),
     )
 
-    fixed_jaw_contact = ContactSensorCfg(
-        prim_path=SO101_FIXED_JAW_PAD_PRIM_PATH,
-        update_period=0.0,
-        history_length=4,
-        track_pose=True,
-        force_threshold=0.1,
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
-    )
-    moving_jaw_contact = ContactSensorCfg(
-        prim_path=SO101_MOVING_JAW_PAD_PRIM_PATH,
-        update_period=0.0,
-        history_length=4,
-        track_pose=True,
-        force_threshold=0.1,
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
-    )
-
 
 @configclass
 class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
@@ -121,44 +100,32 @@ class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
 
 @configclass
 class ObjectInCupRewardsCfg:
-    approach_progress = RewTerm(
+    """Find the cube, pick it up, move it to the cup, put it in.
+
+    The outcome terms pay for task outcomes (cube height, cube-to-cup position,
+    placement) using object/cup/gripper state only -- no contact sensors and no
+    prescribed grasp geometry, so the policy is free to find any method and no
+    term can be farmed without achieving its outcome.  The ladder opens with a
+    single grasp-agnostic shaping term: episode-best gripper-to-cube proximity,
+    which pays only genuine improvements so it cannot be farmed either and
+    prescribes nothing about how the cube is grabbed.
+    """
+
+    approach = RewTerm(
         func=mdp.approach_progress,
         weight=1.0,
         params={
-            "half_extents": (0.0125, 0.0125, 0.0125),
-            "pad_thickness": SO101_PAD_THICKNESS_M,
-        },
-    )
-    closure_progress = RewTerm(
-        func=mdp.closure_progress,
-        weight=0.1,
-        params={
-            "half_extents": (0.0125, 0.0125, 0.0125),
-            "pad_thickness": SO101_PAD_THICKNESS_M,
-            "fixed_pad_length": 0.025,
-            "minimum_insertion": 0.001,
-            "robot_cfg": SO101_GRIPPER_CFG,
-        },
-    )
-    grasp_acquired = RewTerm(func=mdp.grasp_acquired, weight=1.0)
-    grasp_held = RewTerm(
-        func=mdp.grasp_held,
-        weight=0.2,
-        params={
-            "half_extents": (0.0125, 0.0125, 0.0125),
-            "fixed_pad_length": 0.025,
-            "minimum_insertion": 0.001,
-            "object_rest_height": OBJECT_REST_HEIGHT,
-            "height_scale": 0.05,
-            "robot_cfg": SO101_GRIPPER_CFG,
+            # Usable tanh gradient out to roughly 16 cm from the cube; the
+            # score saturates at 1.0 at the nominal grasp point.
+            "position_scale": 0.08,
         },
     )
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=0.2,
+        weight=1.0,
         params={
-            "lift_clearance": OBJECT_LIFT_CLEARANCE,
             "object_rest_height": OBJECT_REST_HEIGHT,
+            "height_scale": 0.05,
         },
     )
     transport = RewTerm(
@@ -203,7 +170,7 @@ class ObjectInCupRewardsCfg:
             "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
-    action_rate = RewTerm(func=common_mdp.action_rate_l2, weight=-0.02)
+    action_rate = RewTerm(func=common_mdp.action_rate_l2, weight=-0.005)
     joint_velocity = RewTerm(
         func=common_mdp.joint_vel_l2,
         weight=-0.0005,
@@ -316,7 +283,6 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
 
     def __post_init__(self):
         geometry = load_asset_manifest()["geometry"]
-        half_extents = tuple(float(value) * 0.5 for value in geometry["cube_extents_m"])
         placement = {
             "xy_tolerance": geometry["success_xy_tolerance_m"],
             "center_z_min": geometry["success_center_z_min_m"],
@@ -326,9 +292,6 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
             xy_tolerance=placement["xy_tolerance"],
             center_z_max=placement["center_z_max"],
         )
-        self.rewards.approach_progress.params["half_extents"] = half_extents
-        self.rewards.closure_progress.params["half_extents"] = half_extents
-        self.rewards.grasp_held.params["half_extents"] = half_extents
         self.rewards.release.params.update(placement)
         self.rewards.stable.params.update(placement)
         self.terminations.success.params.update(placement)

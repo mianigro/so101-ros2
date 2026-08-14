@@ -1,4 +1,4 @@
-"""Focused tensor tests for pickup reward geometry and state transitions."""
+"""Focused tensor tests for pickup reward primitives and outcome rewards."""
 
 from __future__ import annotations
 
@@ -21,10 +21,7 @@ from so101_rl.tasks.common.mdp.pickup import (
 )
 from so101_rl.tasks.object_in_cup.mdp.rewards import (
     approach_progress as ApproachProgress,
-    closure_progress as ClosureProgress,
-    grasp_acquired as GraspAcquired,
-    grasp_held as GraspHeld,
-    lift_progress as LiftProgress,
+    lift_progress,
     transport_object as TransportObject,
 )
 from so101_rl.tasks.three_boxes_in_cups.mdp import rewards as three_box_rewards
@@ -250,262 +247,8 @@ class RetryableEventTests(unittest.TestCase):
         self.assertFalse(in_contact.item())
 
 
-class ScriptedPickupSequenceTests(unittest.TestCase):
-    def test_pickup_sequence_and_retryable_between_jaws_closure(self):
-        object_position = torch.tensor([[0.30, 0.0, 0.0125]])
-        object_quaternion = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
-        gripper_position = torch.tensor([[1.2]])
-        pad_position = torch.tensor([[[0.18675, 0.0, 0.0125]]])
-        pad_quaternion = torch.tensor([[[0.0, 0.0, 0.0, 1.0]]])
-        moving_pad_position = torch.tensor([[[0.28675, 0.0, 0.0125]]])
-        moving_pad_quaternion = pad_quaternion.clone()
-        fixed_forces = torch.zeros((1, 4, 1, 1, 3))
-        moving_forces = torch.zeros_like(fixed_forces)
-
-        env = SimpleNamespace(
-            num_envs=1,
-            device="cpu",
-            step_dt=1.0 / 30.0,
-            scene={
-                "object": SimpleNamespace(
-                    data=SimpleNamespace(
-                        root_pos_w=_proxy(object_position),
-                        root_quat_w=_proxy(object_quaternion),
-                    )
-                ),
-                "robot": SimpleNamespace(
-                    data=SimpleNamespace(joint_pos=_proxy(gripper_position))
-                ),
-                "fixed_jaw_contact": SimpleNamespace(
-                    data=SimpleNamespace(
-                        pos_w=_proxy(pad_position),
-                        quat_w=_proxy(pad_quaternion),
-                        force_matrix_w_history=_proxy(fixed_forces),
-                    )
-                ),
-                "moving_jaw_contact": SimpleNamespace(
-                    data=SimpleNamespace(
-                        pos_w=_proxy(moving_pad_position),
-                        quat_w=_proxy(moving_pad_quaternion),
-                        force_matrix_w_history=_proxy(moving_forces)
-                    )
-                ),
-            },
-        )
-        robot_cfg = SimpleNamespace(name="robot", joint_ids=torch.tensor([0]))
-        fixed_cfg = SimpleNamespace(name="fixed_jaw_contact")
-        moving_cfg = SimpleNamespace(name="moving_jaw_contact")
-        cfg = SimpleNamespace()
-        approach = ApproachProgress(cfg, env)
-        closure = ClosureProgress(cfg, env)
-        grasp = GraspAcquired(cfg, env)
-        lift = LiftProgress(cfg, env)
-
-        initial_approach = approach(
-            env,
-            (0.0125, 0.0125, 0.0125),
-            0.0005,
-            fixed_sensor_cfg=fixed_cfg,
-        )
-        self.assertGreater(initial_approach.item(), 0.0)
-        self.assertEqual(
-            approach(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                fixed_sensor_cfg=fixed_cfg,
-            ).item(),
-            0.0,
-        )
-        object_position[:, 0] = 0.20
-        self.assertGreater(
-            approach(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                fixed_sensor_cfg=fixed_cfg,
-            ).item(),
-            0.0,
-        )
-
-        self.assertEqual(
-            closure(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                robot_cfg=robot_cfg,
-                fixed_sensor_cfg=fixed_cfg,
-            ).item(),
-            0.0,
-        )
-        gripper_position[:, 0] = 0.0
-        self.assertAlmostEqual(
-            closure(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                robot_cfg=robot_cfg,
-                fixed_sensor_cfg=fixed_cfg,
-            ).item(),
-            30.0,
-            delta=1e-3,
-        )
-
-        gripper_position[:, 0] = 1.2
-        self.assertEqual(
-            closure(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                robot_cfg=robot_cfg,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        object_position[:, 0] = 0.30
-        gripper_position[:, 0] = 0.0
-        self.assertEqual(
-            closure(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                robot_cfg=robot_cfg,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        gripper_position[:, 0] = 1.2
-        closure(
-            env,
-            (0.0125, 0.0125, 0.0125),
-            0.0005,
-            robot_cfg=robot_cfg,
-            fixed_sensor_cfg=fixed_cfg,
-            moving_sensor_cfg=moving_cfg,
-        )
-        object_position[:, 0] = 0.20
-        gripper_position[:, 0] = 0.0
-        self.assertAlmostEqual(
-            closure(
-                env,
-                (0.0125, 0.0125, 0.0125),
-                0.0005,
-                robot_cfg=robot_cfg,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            30.0,
-            delta=1e-3,
-        )
-
-        self.assertEqual(
-            grasp(
-                env,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        fixed_forces[0, 0, 0, 0, 0] = 0.2
-        moving_forces[0, 0, 0, 0, 0] = 0.2
-        self.assertAlmostEqual(
-            grasp(
-                env,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            30.0,
-            delta=1e-3,
-        )
-        self.assertEqual(
-            grasp(
-                env,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        # Retryable grasp: dropping contact re-arms the landmark, so a fresh
-        # pinch after a drop pays again.
-        fixed_forces.zero_()
-        moving_forces.zero_()
-        self.assertEqual(
-            grasp(
-                env,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        fixed_forces[0, 0, 0, 0, 0] = 0.2
-        moving_forces[0, 0, 0, 0, 0] = 0.2
-        self.assertAlmostEqual(
-            grasp(
-                env,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            30.0,
-            delta=1e-3,
-        )
-
-        # Dense lift: pays a constant once the held cube clears the table.
-        self.assertEqual(
-            lift(
-                env,
-                lift_clearance=0.001,
-                object_rest_height=0.0125,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        object_position[:, 2] = 0.0134  # below the 1 mm clearance
-        self.assertEqual(
-            lift(
-                env,
-                lift_clearance=0.001,
-                object_rest_height=0.0125,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
-        object_position[:, 2] = 0.0135  # exactly at the inclusive threshold
-        self.assertEqual(
-            lift(
-                env,
-                lift_clearance=0.001,
-                object_rest_height=0.0125,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            1.0,
-        )
-        object_position[:, 2] = 0.20
-        self.assertEqual(
-            lift(
-                env,
-                lift_clearance=0.001,
-                object_rest_height=0.0125,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            1.0,
-        )
-        moving_forces.zero_()
-        self.assertEqual(
-            lift(
-                env,
-                lift_clearance=0.001,
-                object_rest_height=0.0125,
-                fixed_sensor_cfg=fixed_cfg,
-                moving_sensor_cfg=moving_cfg,
-            ).item(),
-            0.0,
-        )
+class ThreeBoxLiftTests(unittest.TestCase):
+    """The sibling three-box task keeps its contact-gated lift constant."""
 
     def test_three_box_lift_is_constant_and_masks_ineligible_boxes(self):
         positions = torch.tensor(
@@ -534,83 +277,140 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
 
         self.assertEqual(reward.item(), 1.0)
 
-    def test_grasp_held_rewards_clamped_geometry(self):
-        object_position = torch.tensor([[0.025, 0.0, 0.0]])
-        object_quaternion = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
-        gripper_position = torch.tensor([[0.0]])  # closed
-        pad_position = torch.tensor([[[0.0, 0.0, 0.0]]])
-        pad_quaternion = torch.tensor([[[0.0, 0.0, 0.0, 1.0]]])
-        moving_pad_position = torch.tensor([[[0.05, 0.0, 0.0]]])
-        moving_pad_quaternion = pad_quaternion.clone()
 
-        env = SimpleNamespace(
+class ApproachProgressTests(unittest.TestCase):
+    """The reaching shaping term pays only genuine episode-best improvements."""
+
+    STEP_DT = 1.0 / 30.0
+    CUBE_POSITION = (0.20, -0.065, 0.0125)
+
+    def _make_env(self, grasp_position: torch.Tensor):
+        cube = torch.tensor([self.CUBE_POSITION])
+        return SimpleNamespace(
+            num_envs=1,
+            device="cpu",
+            step_dt=self.STEP_DT,
             scene={
                 "object": SimpleNamespace(
-                    data=SimpleNamespace(
-                        root_pos_w=_proxy(object_position),
-                        root_quat_w=_proxy(object_quaternion),
-                    )
+                    data=SimpleNamespace(root_pos_w=_proxy(cube))
                 ),
-                "robot": SimpleNamespace(
-                    data=SimpleNamespace(joint_pos=_proxy(gripper_position))
+                "ee_frame": SimpleNamespace(
+                    data=SimpleNamespace(target_pos_w=_proxy(grasp_position))
                 ),
-                "fixed_jaw_contact": SimpleNamespace(
-                    data=SimpleNamespace(
-                        pos_w=_proxy(pad_position),
-                        quat_w=_proxy(pad_quaternion),
-                    )
-                ),
-                "moving_jaw_contact": SimpleNamespace(
-                    data=SimpleNamespace(
-                        pos_w=_proxy(moving_pad_position),
-                        quat_w=_proxy(moving_pad_quaternion),
-                    )
-                ),
-            }
+            },
         )
-        robot_cfg = SimpleNamespace(name="robot", joint_ids=torch.tensor([0]))
-        fixed_cfg = SimpleNamespace(name="fixed_jaw_contact")
-        moving_cfg = SimpleNamespace(name="moving_jaw_contact")
 
-        common = {
-            "robot_cfg": robot_cfg,
-            "fixed_sensor_cfg": fixed_cfg,
-            "moving_sensor_cfg": moving_cfg,
-            "closed_threshold": 0.15,
-            "object_rest_height": 0.0125,
-            "height_scale": 0.05,
-        }
+    def _term(self, env):
+        return ApproachProgress(SimpleNamespace(), env)
 
-        # Gripper clamped on a cube resting on the table (z=0 < rest 0.0125)
-        # pays the hold_floor fraction (0.3) of the dense signal, not the full
-        # amount, so clamping in place cannot dominate the lift/transport terms.
-        gripper_position[:, 0] = 0.0
+    @staticmethod
+    def _score(distance: float) -> float:
+        return (1.0 - torch.tanh(torch.tensor(distance / 0.08))).item()
+
+    def test_first_step_pays_full_score_over_step_dt(self):
+        # Grasp point 10 cm from the cube centre.
+        env = self._make_env(torch.tensor([[0.30, -0.065, 0.0125]]))
+        reward = self._term(env)(env, position_scale=0.08).item()
         self.assertAlmostEqual(
-            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.3
+            reward, self._score(0.10) / self.STEP_DT, places=6
         )
-        # Lifting the cube by height_scale (5 cm) above the rest height pays the
-        # full dense signal.
-        object_position[:, 2] = 0.0125 + 0.05
+
+    def test_holding_or_backing_off_pays_zero(self):
+        grasp = torch.tensor([[0.30, -0.065, 0.0125]])
+        env = self._make_env(grasp)
+        term = self._term(env)
+
+        def call() -> float:
+            return term(env, position_scale=0.08).item()
+
+        self.assertAlmostEqual(call(), self._score(0.10) / self.STEP_DT, places=6)
+        # Holding the same distance pays nothing.
+        self.assertEqual(call(), 0.0)
+        # Backing away pays nothing.
+        grasp.copy_(torch.tensor([[0.40, -0.065, 0.0125]]))
+        self.assertEqual(call(), 0.0)
+        # A genuine improvement pays only its delta.
+        grasp.copy_(torch.tensor([[0.25, -0.065, 0.0125]]))
         self.assertAlmostEqual(
-            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 1.0
+            call(),
+            (self._score(0.05) - self._score(0.10)) / self.STEP_DT,
+            places=6,
         )
-        object_position[:, 2] = 0.0
-        # A loose hold (gripper at 0.20 rad => ~32 mm gap, wider than the
-        # 25 mm cube) does not count as holding under the tightened threshold.
-        gripper_position[:, 0] = 0.20
-        self.assertEqual(
-            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+
+    def test_cumulative_payoff_telescopes_to_the_best_score(self):
+        grasp = torch.tensor([[0.40, -0.065, 0.0125]])
+        env = self._make_env(grasp)
+        term = self._term(env)
+        cumulative = 0.0
+        # Approach, retreat, and re-approach: only the improvements pay.
+        for distance in (0.20, 0.14, 0.18, 0.10, 0.16, 0.06, 0.12, 0.02):
+            grasp.copy_(torch.tensor([[0.20 + distance, -0.065, 0.0125]]))
+            cumulative += term(env, position_scale=0.08).item()
+        best = self._score(0.02) / self.STEP_DT
+        self.assertAlmostEqual(cumulative, best, places=5)
+        self.assertLessEqual(cumulative, best + 1e-6)
+
+    def test_reset_re_arms_for_a_new_episode(self):
+        grasp = torch.tensor([[0.30, -0.065, 0.0125]])
+        env = self._make_env(grasp)
+        term = self._term(env)
+        first = term(env, position_scale=0.08).item()
+        self.assertEqual(term(env, position_scale=0.08).item(), 0.0)
+        term.reset()
+        self.assertAlmostEqual(
+            term(env, position_scale=0.08).item(), first, places=6
         )
-        # Opening the gripper fully also drops the reward.
-        gripper_position[:, 0] = 1.2
-        self.assertEqual(
-            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+
+    def test_reward_is_direction_agnostic(self):
+        # Equal distances from different approach directions pay identically.
+        rewards = []
+        for grasp_position in (
+            [0.30, -0.065, 0.0125],
+            [0.20, 0.035, 0.0125],
+            [0.20, -0.065, 0.1125],
+        ):
+            env = self._make_env(torch.tensor([grasp_position]))
+            rewards.append(self._term(env)(env, position_scale=0.08).item())
+        self.assertEqual(len(set(rewards)), 1)
+        self.assertAlmostEqual(rewards[0], self._score(0.10) / self.STEP_DT, places=6)
+
+
+class LiftProgressTests(unittest.TestCase):
+    """The pick-up outcome pays a pure cube-height ramp, contact-free."""
+
+    def _make_env(self, object_z: float):
+        object_position = torch.tensor([[0.20, -0.065, object_z]])
+        return SimpleNamespace(
+            scene={
+                "object": SimpleNamespace(
+                    data=SimpleNamespace(root_pos_w=_proxy(object_position))
+                ),
+            },
         )
-        # Cube pushed out of the gap -> 0 even with the gripper clamped.
-        gripper_position[:, 0] = 0.0
-        object_position[:, 0] = 0.20
+
+    def test_height_ramp(self):
+        common = {"object_rest_height": 0.0125, "height_scale": 0.05}
+        # At rest the ramp is exactly 0.
         self.assertEqual(
-            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
+            lift_progress(self._make_env(0.0125), **common).item(), 0.0
+        )
+        # Below rest it clamps to 0.
+        self.assertEqual(
+            lift_progress(self._make_env(0.0), **common).item(), 0.0
+        )
+        # Half-way up the scale pays half credit.
+        self.assertAlmostEqual(
+            lift_progress(self._make_env(0.0125 + 0.025), **common).item(),
+            0.5,
+            places=6,
+        )
+        # One height_scale above rest saturates at 1.0.
+        self.assertEqual(
+            lift_progress(self._make_env(0.0125 + 0.05), **common).item(), 1.0
+        )
+        # Far above, still saturated.
+        self.assertEqual(
+            lift_progress(self._make_env(0.20), **common).item(), 1.0
         )
 
 
