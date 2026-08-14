@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:macro name="so101_ee_follower"
-               params="mesh_dir:='package://so101_description/meshes' add_transmissions:='false'">
+               params="mesh_dir:='package://so101_description/meshes' add_transmissions:='false' simulation_contact_pads:='false'">
 
     <link name="gripper_link">
       <xacro:inertial_block
@@ -24,7 +24,15 @@
         <material name="3d_printed"/>
       </visual>
 
-      <!-- Keep the original wrist-roll collision mesh to avoid a dense camera-mount collider. -->
+      <!-- Fixed-jaw finger: visible AND collision so the cameras render the real
+           gripping surface (at the contact pad) instead of only the camera bracket. -->
+      <visual>
+        <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/wrist_roll_follower_so101_v1.stl"/>
+        </geometry>
+        <material name="3d_printed"/>
+      </visual>
       <collision>
         <origin xyz="8.32667e-17 -0.000218214 0.000949706" rpy="-3.14159 -5.55112e-17 0"/>
         <geometry>
@@ -53,6 +61,55 @@
       <axis xyz="0 0 1"/>
       <limit effort="10" velocity="10" lower="-0.174533" upper="1.74533"/>
     </joint>
+
+    <!--
+      Simulation-only, collision-only contact pads.  Each pad is a distinct fixed
+      rigid body so PhysX contact sensors can distinguish the two jaw faces.
+      The 0.5 mm pad is centred 0.25 mm behind its contact face; the face itself
+      protrudes 0.1 mm beyond the corresponding jaw mesh.
+    -->
+    <xacro:if value="${simulation_contact_pads}">
+      <link name="fixed_jaw_contact_pad_link">
+        <xacro:inertial_block
+          xyz="0 0 0" rpy="0 0 0"
+          mass="0.0001"
+          ixx="7.908333333e-09" ixy="0" ixz="0"
+          iyy="5.210416667e-09" iyz="0" izz="2.702083333e-09"/>
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <box size="0.0005 0.018 0.025"/>
+          </geometry>
+        </collision>
+      </link>
+      <joint name="fixed_jaw_contact_pad_joint" type="fixed">
+        <origin xyz="-0.00805 -0.000218 -0.0925" rpy="0 0 0"/>
+        <parent link="gripper_link"/>
+        <child link="fixed_jaw_contact_pad_link"/>
+      </joint>
+
+      <link name="moving_jaw_contact_pad_link">
+        <xacro:inertial_block
+          xyz="0 0 0" rpy="0 0 0"
+          mass="0.0001"
+          ixx="7.908333333e-09" ixy="0" ixz="0"
+          iyy="2.702083333e-09" iyz="0" izz="5.210416667e-09"/>
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <box size="0.0005 0.025 0.018"/>
+          </geometry>
+        </collision>
+      </link>
+      <joint name="moving_jaw_contact_pad_joint" type="fixed">
+        <!-- Origin X calibrated so the pad face is flush with the moving-jaw
+             finger mesh at the grasp angle (pad protrudes ~0.1 mm, not the
+             ~2.7 mm invisible gap produced by the previous -0.01215 value). -->
+        <origin xyz="-0.00996 -0.0691 0.0190" rpy="0 0 0"/>
+        <parent link="moving_jaw_so101_v1_link"/>
+        <child link="moving_jaw_contact_pad_link"/>
+      </joint>
+    </xacro:if>
 
     <!-- follower-only motor6 transmission (optional) -->
     <xacro:if value="${add_transmissions}">

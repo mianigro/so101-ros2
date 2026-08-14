@@ -121,7 +121,7 @@ public:
     RCLCPP_INFO(get_logger(), "  discard: %s", discard_srv_name.c_str());
     RCLCPP_INFO(get_logger(), "  set_params: %s", set_params_srv_name.c_str());
 
-    // Timer for polling keyboard input (~50 Hz)
+    // Responsive UI polling only; this timer does not publish robot commands.
     key_timer_ = this->create_wall_timer(std::chrono::milliseconds(20),
                                          std::bind(&TeleopEpisodeKeyboard::poll_keyboard, this));
 

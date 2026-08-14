@@ -33,6 +33,7 @@ setup(
         "console_scripts": [
             "lerobot_inference_node = so101_inference.lerobot_inference_node:main",
             "async_inference_node = so101_inference.async_inference_node:main",
+            "rsl_rl_inference_node = so101_inference.rsl_rl_inference_node:main",
         ],
     },
 )

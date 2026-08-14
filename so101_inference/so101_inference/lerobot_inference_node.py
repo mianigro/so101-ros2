@@ -28,6 +28,7 @@ from std_msgs.msg import Float64MultiArray
 
 import torch
 
+from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.camera_config import (
     camera_topics_for_profile,
     streams_fresh,
@@ -51,7 +52,6 @@ class LeRobotInferenceNode(Node):
         self.declare_parameter("camera_profile", "")
         self.declare_parameter("policy_type", "act")
         self.declare_parameter("task", "Put the green cube in the cup.")
-        self.declare_parameter("fps", 50.0)
         self.declare_parameter("max_age_s", 0.2)
 
         self.declare_parameter("fwd_topic", "/follower/forward_controller/commands")
@@ -74,7 +74,7 @@ class LeRobotInferenceNode(Node):
         self.camera_profile = str(self.get_parameter("camera_profile").value).strip()
         self.policy_type = str(self.get_parameter("policy_type").value)
         self.task = str(self.get_parameter("task").value)
-        self.fps = float(self.get_parameter("fps").value)
+        self.fps = CONTROL_FREQUENCY_HZ
         self.max_age_s = float(self.get_parameter("max_age_s").value)
 
         self.fwd_topic = str(self.get_parameter("fwd_topic").value)
@@ -84,10 +84,6 @@ class LeRobotInferenceNode(Node):
         self.camera_topics = camera_topics_for_profile(self.camera_profile)
 
         self.arm_joints = list(self.get_parameter("arm_joints").value)
-
-        if self.fps <= 0:
-            self.get_logger().warn(f"Invalid fps={self.fps}; forcing 30.0")
-            self.fps = 30.0
 
         # --------------------
         # Policy Setup

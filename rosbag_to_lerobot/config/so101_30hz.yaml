@@ -1,10 +1,10 @@
 robot_type: "so101"
 fps: 30
 
-# Camera schemas come exclusively from --camera-profile. Wrist images drive frames.
-reference_topic: "/follower/image_raw/compressed"
+# Camera schemas come exclusively from --camera-profile. Absolute commands drive frames.
+reference_topic: "/follower/forward_controller/commands"
 task: "Pick and Place"
-default_max_age_s: 0.1
+default_max_age_s: 0.05
 
 joint_names: &j
   - shoulder_pan
@@ -26,5 +26,4 @@ features:
     topic: "/follower/forward_controller/commands"
     msg_type: "std_msgs/msg/Float64MultiArray"
     stamp_src: "bag"
-    max_age_s: 0.05
     names: *j

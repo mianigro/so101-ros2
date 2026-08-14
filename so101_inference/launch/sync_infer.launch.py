@@ -27,7 +27,6 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("policy_type", default_value="act"),
         DeclareLaunchArgument("task", default_value="Put the green cube in the cup."),
-        DeclareLaunchArgument("fps", default_value="50.0"),
         DeclareLaunchArgument("max_age_s", default_value="0.2"),
         # Topics
         DeclareLaunchArgument("fwd_topic", default_value="/follower/forward_controller/commands"),
@@ -44,7 +43,6 @@ def generate_launch_description():
                 "camera_profile": LaunchConfiguration("camera_profile"),
                 "policy_type": LaunchConfiguration("policy_type"),
                 "task": LaunchConfiguration("task"),
-                "fps": LaunchConfiguration("fps"),
                 "max_age_s": LaunchConfiguration("max_age_s"),
                 "fwd_topic": LaunchConfiguration("fwd_topic"),
                 "joints_topic": LaunchConfiguration("joints_topic"),

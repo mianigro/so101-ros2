@@ -32,6 +32,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
 
+from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.async_client import AsyncInferenceClient, ClientCfg
 from so101_inference.camera_config import (
     build_lerobot_features,
@@ -61,7 +62,6 @@ class AsyncRos2InferenceClient(Node):
         self.declare_parameter("policy_device", "cuda")
         self.declare_parameter("actions_per_chunk", 100)
         self.declare_parameter("chunk_size_threshold", 0.5)
-        self.declare_parameter("fps", 50.0)
         self.declare_parameter("max_age_s", 0.2)
         self.declare_parameter("task", "put the green cube in the cup")
         self.declare_parameter("aggregate_fn_name", "weighted_average")
@@ -92,7 +92,6 @@ class AsyncRos2InferenceClient(Node):
             policy_device=str(self.get_parameter("policy_device").value),
             actions_per_chunk=int(self.get_parameter("actions_per_chunk").value),
             chunk_size_threshold=float(self.get_parameter("chunk_size_threshold").value),
-            fps=float(self.get_parameter("fps").value),
             max_age_s=float(self.get_parameter("max_age_s").value),
             task=str(self.get_parameter("task").value),
             aggregate_fn_name=str(self.get_parameter("aggregate_fn_name").value),
@@ -108,10 +107,6 @@ class AsyncRos2InferenceClient(Node):
 
         self._use_compressed = bool(self.get_parameter("use_compressed").value)
 
-        if cfg.fps <= 0:
-            self.get_logger().warn(f"Invalid fps={cfg.fps}; forcing 30.0")
-            cfg.fps = 30.0
-
         self.cfg = cfg
         self._log = self.get_logger()
 
@@ -126,7 +121,7 @@ class AsyncRos2InferenceClient(Node):
             zmq_port = int(port_str)
             transport = ZmqTransport(host, port=zmq_port, logger=self.get_logger())
         else:
-            transport = GrpcTransport(cfg.server_address, cfg.fps, logger=self.get_logger())
+            transport = GrpcTransport(cfg.server_address, logger=self.get_logger())
 
         lerobot_features = build_lerobot_features(self.camera_profile)
         self.client = AsyncInferenceClient(
@@ -172,7 +167,7 @@ class AsyncRos2InferenceClient(Node):
 
         self.forward_pub = self.create_publisher(Float64MultiArray, self.fwd_topic, 10)
 
-        period = 1.0 / self.cfg.fps
+        period = 1.0 / CONTROL_FREQUENCY_HZ
         self.create_timer(period, self.control_loop)
 
         # Startup logs

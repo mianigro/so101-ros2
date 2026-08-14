@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from lerobot.async_inference.helpers import RemotePolicyConfig
+from policy_server.grpc_server import PolicyServer
 from policy_server.inference_engine import InferenceEngine, validate_policy_input_features
 
 
@@ -49,6 +50,16 @@ def test_policy_server_accepts_exact_dual_overhead_schema():
         _policy_features("wrist", "overhead_1", "overhead_2"),
         _client_features("wrist", "overhead_1", "overhead_2"),
     )
+
+
+def test_grpc_server_enforces_fixed_30hz_config():
+    config = SimpleNamespace(fps=30, inference_latency=0.033, obs_queue_timeout=2.0)
+    server = PolicyServer(config)
+    assert server.engine.config.fps == 30
+
+    config.fps = 50
+    with pytest.raises(ValueError, match="frequency must be 30 Hz"):
+        PolicyServer(config)
 
 
 def test_policy_server_rejects_noncanonical_or_missing_camera_keys():

@@ -13,7 +13,6 @@ setup(
             "share/" + package_name + "/config",
             [
                 "config/so101_30hz.yaml",
-                "config/so101_50hz.yaml",
             ],
         ),
     ],

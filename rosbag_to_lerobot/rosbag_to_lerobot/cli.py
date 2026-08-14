@@ -27,7 +27,11 @@ from lerobot.configs import VALID_VIDEO_CODECS
 
 from rosbag_to_lerobot.config import load_config
 from rosbag_to_lerobot.camera_profiles import CAMERA_NAMES_BY_PROFILE
-from rosbag_to_lerobot.converter import convert_all_bags
+from rosbag_to_lerobot.converter import (
+    convert_all_bags,
+    DATASET_TAGS_BY_SOURCE,
+    DEFAULT_DATASET_SOURCE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,18 @@ def main() -> None:
         help="Push final dataset to HuggingFace Hub",
     )
     parser.add_argument(
+        "--dataset-source",
+        choices=tuple(DATASET_TAGS_BY_SOURCE),
+        default=DEFAULT_DATASET_SOURCE,
+        help=(
+            "Provenance of the recorded episodes, used to tag the dataset on the "
+            "Hub when --push-hub is set. 'teleop' = human teleoperation "
+            "(imitation-learning, default); 'ppo' = autonomous rollouts of an "
+            "exported PPO policy (reinforcement-learning). Both use the same 30 Hz "
+            "command contract."
+        ),
+    )
+    parser.add_argument(
         "--sync-p95",
         action="store_true",
         default=False,
@@ -128,6 +144,7 @@ def main() -> None:
             use_videos=args.use_videos,
             vcodec=args.vcodec,
             push_to_hub=args.push_hub,
+            dataset_source=args.dataset_source,
             collect_p95=args.sync_p95,
             overwrite=args.overwrite,
         )

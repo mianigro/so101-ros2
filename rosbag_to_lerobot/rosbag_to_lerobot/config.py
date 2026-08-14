@@ -35,6 +35,8 @@ from rosbag_to_lerobot.camera_profiles import (
 )
 
 _ALLOWED_STAMP_SRC = {"header", "bag"}
+CANONICAL_FPS = 30
+COMMAND_TOPIC = "/follower/forward_controller/commands"
 
 
 @dataclass(frozen=True)
@@ -86,8 +88,11 @@ class Config:
         expected_camera_names = camera_names(self.camera_profile)
         if not self.robot_type:
             raise ValueError("robot_type must be set")
-        if self.fps <= 0:
-            raise ValueError(f"fps must be > 0 (got {self.fps})")
+        if self.fps != CANONICAL_FPS:
+            raise ValueError(
+                f"SO-101 datasets must use the canonical {CANONICAL_FPS} Hz rate "
+                f"(got {self.fps})"
+            )
         if self.default_max_age_s <= 0:
             raise ValueError(
                 f"default_max_age_s must be > 0 (got {self.default_max_age_s})"
@@ -107,6 +112,22 @@ class Config:
         if self.reference_topic not in topics:
             raise ValueError(
                 f"reference_topic '{self.reference_topic}' is not listed in features"
+            )
+        if self.reference_topic != COMMAND_TOPIC:
+            raise ValueError(
+                f"reference_topic must be the absolute controller command topic "
+                f"{COMMAND_TOPIC!r}"
+            )
+
+        reference = self.reference_spec()
+        if (
+            reference.key != "action"
+            or reference.msg_type != "std_msgs/msg/Float64MultiArray"
+            or reference.stamp_src != "bag"
+        ):
+            raise ValueError(
+                "the reference feature must be the bag-timestamped absolute action "
+                "Float64MultiArray"
             )
 
         for f in self.features:

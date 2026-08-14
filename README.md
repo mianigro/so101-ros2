@@ -5,6 +5,18 @@ ROS 2 stack for the SO-101 robot arm in a leader/follower configuration: Feetech
 
 **End-to-end workflow:** [teleop](#teleop) → [record episodes](#data-collection) → [convert to LeRobot](#lerobot-dataset-conversion) → [train](#training) → [run policies](#inference)
 
+The repository also contains a separate, external Isaac Lab reinforcement-learning
+project for state and deployable three-camera SO-101 object-in-cup PPO training.
+Its visual actor consumes the same wrist/two-overhead RGB streams and six absolute
+joint positions available on the real robot, while a privileged state is used only
+by the training critic. It uses this repository's generated robot USD and supplied
+STL assets without modifying Isaac Lab or putting ROS 2 in the training loop. See
+[isaaclab/README.md](isaaclab/README.md) for asset preparation, visual PPO,
+multi-GPU/live playback, export, and shadow-mode deployment. The design,
+reward equations, algorithm support, neural-network configuration, and task/model
+extension process are in
+[isaaclab/METHODOLOGY.md](isaaclab/METHODOLOGY.md).
+
 ---
 
 ## Requirements
@@ -66,7 +78,7 @@ Then pick a workflow below.
 
 ### Physical leader and follower
 
-Mirror the physical leader arm to the physical follower through the `forward_controller` position interface at 50 Hz.
+Mirror the physical leader arm to the physical follower through the `forward_controller` position interface at 30 Hz.
 Run this in one terminal, replacing the camera-rig path with the YAML for the connected physical cameras:
 
 ```bash
@@ -81,7 +93,7 @@ ros2 launch so101_bringup teleop.launch.py \
   camera_rig_config_file:=$SO101_CAMERA_RIG
 ```
 
-This launch starts the leader and follower `ros2_control` stacks, the 50 Hz command relay, the selected physical
+This launch starts the leader and follower `ros2_control` stacks, the 30 Hz command relay, the selected physical
 cameras, and RViz. For arm-only teleop without cameras, omit the camera variables and run:
 
 ```bash
@@ -97,7 +109,7 @@ Useful visualization overrides are `use_teleop_rviz:=false`, `use_rerun:=true`, 
 
 ### Isaac Sim follower
 
-Isaac Sim can replace the follower while the physical leader and existing 50 Hz relay remain unchanged. This uses the
+Isaac Sim can replace the follower while the physical leader and existing 30 Hz relay remain unchanged. This uses the
 ROS 2 Bridge Action Graph directly; it does not use `mock_components`, an Isaac Lab task, or a `ros2_control` simulator
 plugin.
 
@@ -114,8 +126,12 @@ source "$SO101_REPO/install/setup.bash"
   --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaac_dual_overhead.yaml"
 ```
 
-The first run expands the follower Xacro with `use_ros2_control:=false`, validates its six joints, and imports a
-fixed-base USD into the ignored `build/isaacsim_so101/` directory. Use `--rebuild-asset` after changing the Xacro or
+The first run expands the follower Xacro with `use_ros2_control:=false` and
+`simulation_contact_pads:=true`, validates its six movable joints and two
+collision-only jaw pads, and imports a fixed-base USD into the ignored
+`build/isaacsim_so101/` directory. Fixed-joint merging is disabled so the pads
+remain independently sensor-addressable rigid bodies; the ordinary ROS
+description defaults the pads off. Use `--rebuild-asset` after changing the Xacro or
 meshes. The importer creates no symlinks. The default `dual_overhead` camera profile also converts the two supplied
 mount STLs into that cache, assembles the left/right supports, and creates all three RTX cameras at 640×480 and 30 Hz.
 
@@ -270,6 +286,37 @@ pixi run replay -- \
 ```
 
 See the [episode_recorder README](episode_recorder/README.md) for details.
+
+### Record PPO demonstrations for VLA training
+
+Use the follower-only recording stack so teleop cannot publish competing commands:
+
+```bash
+ros2 launch so101_bringup follower_recording.launch.py \
+  camera_profile:=dual_overhead \
+  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  experiment_name:=ppo_pick_and_place \
+  task:="Pick up the cube and place it in the container."
+```
+
+In a second terminal, launch the exported PPO actor and validate it in shadow
+mode before arming:
+
+```bash
+ros2 launch so101_inference rsl_rl_infer.launch.py \
+  model_dir:="$ARTIFACT_DIR" camera_profile:=dual_overhead
+
+ros2 service call /so101_rl/set_enabled \
+  std_srvs/srv/SetBool "{data: true}"
+```
+
+Only after PPO is armed, start `teleop_episode_keyboard` and press **r**. The
+recorder stores the 30 Hz absolute controller targets published by PPO; do not
+run the leader/follower teleop relay during these episodes.
+
+When converting these PPO-recorded episodes to a LeRobot dataset, pass
+`--dataset-source ppo` so the Hub dataset is tagged `reinforcement-learning`
+rather than `teleoperation` (see `rosbag_to_lerobot/README.md`).
 
 ---
 
