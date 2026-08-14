@@ -279,14 +279,24 @@ Reward or checkpoint return alone is insufficient: reject a run whose approach
 or closure metric rises while grasp and lift remain zero. The dense
 `grasp_held` term is the intended remedy for that stall — it should rise as the
 gripper clamps the cube (geometry-based, gated on a near-closed gripper) before
-the contact-validated `grasp_acquired` and `lift_progress`. `grasp_acquired` is
-now retryable per grasp attempt, so re-pinch after a drop is rewarded too. If
-`grasp_held` rises but `grasp_acquired`/`lift_progress` stay flat, the gripper
-is closing near the cube without achieving a real pinch — tighten the grasp
-(contact tuning) before resuming. Because the jaw collision geometry and pickup
-semantics changed together, start fixed-task training from scratch; older
-checkpoints remain structurally loadable but are not valid continuation points
-for this experiment.
+the contact-validated `grasp_acquired` and `lift_progress`. `grasp_held` is
+height-scaled: it pays a fraction (0.3) when clamping the cube on the table and
+the full amount at a 5 cm lift, so a policy that sits on the ground will show a
+low, flat `grasp_held` while lift/transport stay flat. `grasp_acquired` is
+retryable per grasp attempt, so re-pinch after a drop is rewarded too.
+
+Reject a run whose `transport` metric plateaus while insertion/release/stable
+stay zero: that indicates the policy is hovering the cube near the cup to farm
+the dense transport term. Transport now decays to 20% over ~2.5 s of sustained
+aloft holding and re-arms on a drop, so a healthy run shows `transport` rising
+and falling as the cube is carried and inserted, not a flat plateau.
+
+If `grasp_held` rises but `grasp_acquired`/`lift_progress` stay flat, the
+gripper is closing near the cube without achieving a real pinch — tighten the
+grasp (contact tuning) before resuming. Because the jaw collision geometry and
+pickup semantics changed together, start fixed-task training from scratch;
+older checkpoints remain structurally loadable but are not valid continuation
+points for this experiment.
 
 ## 4. Resume on the randomized task
 

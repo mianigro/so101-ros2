@@ -234,6 +234,8 @@ def grasp_held(
     closed_threshold: float = 0.15,
     fixed_pad_length: float = 0.025,
     minimum_insertion: float = 0.001,
+    object_rest_height: float = 0.0125,
+    height_scale: float = 0.05,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=["gripper"]),
     fixed_sensor_cfg: SceneEntityCfg = SceneEntityCfg("fixed_jaw_contact"),
@@ -247,6 +249,12 @@ def grasp_held(
     bridges ``closure_progress`` (closing motion) and ``lift_progress``
     (contact-validated lift), which otherwise share no dense signal, and is
     the primary lever for escaping the reach-and-fake-close stall.
+
+    The binary ``between & closed`` mask is scaled by a height-progress term so
+    that clamping the cube on the table pays a fraction (``hold_floor``) of the
+    credit while a genuine lift toward ``object_rest_height + height_scale``
+    earns the full amount.  This keeps the pinch-to-lift gradient but removes
+    the incentive to sit on the table indefinitely.
     """
     object_asset = env.scene[object_cfg.name]
     fixed_pad = env.scene[fixed_sensor_cfg.name].data
@@ -263,7 +271,15 @@ def grasp_held(
     )
     gripper_pos = _gripper_position(env, robot_cfg)
     closed = gripper_pos <= closed_threshold
-    return (between & closed).to(dtype=gripper_pos.dtype)
+    held = (between & closed).to(dtype=gripper_pos.dtype)
+    # 0.3 on the table, ramping to 1.0 over height_scale above the rest height.
+    height_progress = torch.clamp(
+        (object_asset.data.root_pos_w.torch[:, 2] - object_rest_height) / height_scale,
+        0.0,
+        1.0,
+    )
+    hold_floor = 0.3
+    return held * (hold_floor + (1.0 - hold_floor) * height_progress)
 
 
 class lift_progress(ManagerTermBase):
@@ -287,20 +303,59 @@ class lift_progress(ManagerTermBase):
         return (lifted & contact).to(dtype=height.dtype).squeeze(-1)
 
 
-def transport_object(
-    env: ManagerBasedRLEnv,
-    std: float,
-    minimum_height: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
-) -> torch.Tensor:
-    relative = (
-        env.scene[object_cfg.name].data.root_pos_w.torch
-        - env.scene[cup_cfg.name].data.root_pos_w.torch
-    )
-    radial_distance = torch.linalg.vector_norm(relative[:, :2], dim=-1)
-    lifted = relative[:, 2] >= minimum_height
-    return (1.0 - torch.tanh(radial_distance / std)) * lifted.float()
+class transport_object(ManagerTermBase):
+    """Reward moving the lifted cube toward the cup, decaying while held aloft.
+
+    The reward is ``base * (1 - tanh(r_xy/std))`` where ``base`` starts at 1.0
+    and decays the longer the cube has been continuously above ``minimum_height``,
+    so a policy that simply hovers near the cup cannot farm it indefinitely.
+
+    A grace window of ``grace_steps`` pays full credit (genuine transport right
+    after the lift).  Beyond that, ``base`` linearly ramps toward ``decay_floor``
+    over the next ``decay_steps``.  The per-env "consecutive steps aloft" counter
+    resets to zero the moment the cube drops below ``minimum_height``, so a fresh
+    re-transport after a genuine drop re-arms the full reward.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._aloft_steps = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        env_ids = slice(None) if env_ids is None else env_ids
+        self._aloft_steps[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        std: float,
+        minimum_height: float,
+        grace_steps: int = 30,
+        decay_steps: int = 120,
+        decay_floor: float = 0.2,
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        cup_cfg: SceneEntityCfg = SceneEntityCfg("cup"),
+    ) -> torch.Tensor:
+        relative = (
+            env.scene[object_cfg.name].data.root_pos_w.torch
+            - env.scene[cup_cfg.name].data.root_pos_w.torch
+        )
+        radial_distance = torch.linalg.vector_norm(relative[:, :2], dim=-1)
+        lifted = relative[:, 2] >= minimum_height
+
+        # Advance the per-env consecutive-aloft counter and reset it on a drop.
+        self._aloft_steps = torch.where(
+            lifted, self._aloft_steps + 1, torch.zeros_like(self._aloft_steps)
+        )
+
+        # Full credit during the grace window, then a linear ramp to the floor.
+        ramp_start = torch.tensor(float(grace_steps), device=env.device)
+        ramp_end = ramp_start + float(decay_steps)
+        progress = torch.clamp(
+            (self._aloft_steps - ramp_start) / (ramp_end - ramp_start), 0.0, 1.0
+        )
+        base = 1.0 - (1.0 - decay_floor) * progress
+        return (1.0 - torch.tanh(radial_distance / std)) * lifted.float() * base
 
 
 def insert_object(

@@ -143,11 +143,13 @@ class ObjectInCupRewardsCfg:
     grasp_acquired = RewTerm(func=mdp.grasp_acquired, weight=1.0)
     grasp_held = RewTerm(
         func=mdp.grasp_held,
-        weight=0.5,
+        weight=0.2,
         params={
             "half_extents": (0.0125, 0.0125, 0.0125),
             "fixed_pad_length": 0.025,
             "minimum_insertion": 0.001,
+            "object_rest_height": OBJECT_REST_HEIGHT,
+            "height_scale": 0.05,
             "robot_cfg": SO101_GRIPPER_CFG,
         },
     )
@@ -165,6 +167,11 @@ class ObjectInCupRewardsCfg:
         params={
             "std": 0.08,
             "minimum_height": OBJECT_REST_HEIGHT + OBJECT_LIFT_CLEARANCE,
+            # Full credit for ~0.5 s after lift, then decay to 0.2 over ~2 s so
+            # hovering near the cup cannot be farmed indefinitely.
+            "grace_steps": 30,
+            "decay_steps": 120,
+            "decay_floor": 0.2,
         },
     )
     insertion = RewTerm(

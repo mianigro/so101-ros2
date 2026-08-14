@@ -25,6 +25,7 @@ from so101_rl.tasks.object_in_cup.mdp.rewards import (
     grasp_acquired as GraspAcquired,
     grasp_held as GraspHeld,
     lift_progress as LiftProgress,
+    transport_object as TransportObject,
 )
 from so101_rl.tasks.three_boxes_in_cups.mdp import rewards as three_box_rewards
 
@@ -576,13 +577,24 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
             "fixed_sensor_cfg": fixed_cfg,
             "moving_sensor_cfg": moving_cfg,
             "closed_threshold": 0.15,
+            "object_rest_height": 0.0125,
+            "height_scale": 0.05,
         }
 
-        # Gripper clamped on a cube sitting between the pads -> dense 1.0.
+        # Gripper clamped on a cube resting on the table (z=0 < rest 0.0125)
+        # pays the hold_floor fraction (0.3) of the dense signal, not the full
+        # amount, so clamping in place cannot dominate the lift/transport terms.
         gripper_position[:, 0] = 0.0
-        self.assertEqual(
+        self.assertAlmostEqual(
+            GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.3
+        )
+        # Lifting the cube by height_scale (5 cm) above the rest height pays the
+        # full dense signal.
+        object_position[:, 2] = 0.0125 + 0.05
+        self.assertAlmostEqual(
             GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 1.0
         )
+        object_position[:, 2] = 0.0
         # A loose hold (gripper at 0.20 rad => ~32 mm gap, wider than the
         # 25 mm cube) does not count as holding under the tightened threshold.
         gripper_position[:, 0] = 0.20
@@ -600,6 +612,112 @@ class ScriptedPickupSequenceTests(unittest.TestCase):
         self.assertEqual(
             GraspHeld(env, (0.0125, 0.0125, 0.0125), **common).item(), 0.0
         )
+
+
+class TransportDecayTests(unittest.TestCase):
+    """The transport reward must decay while held aloft and re-arm on a drop."""
+
+    def _make_env(self, object_z: float, cup_xy=(0.24, 0.07)):
+        object_position = torch.tensor([[0.20, -0.065, object_z]])
+        cup_position = torch.tensor([[cup_xy[0], cup_xy[1], 0.0]])
+        return SimpleNamespace(
+            num_envs=1,
+            device="cpu",
+            scene={
+                "object": SimpleNamespace(
+                    data=SimpleNamespace(root_pos_w=_proxy(object_position))
+                ),
+                "cup": SimpleNamespace(
+                    data=SimpleNamespace(root_pos_w=_proxy(cup_position))
+                ),
+            },
+        )
+
+    def _reward(self, env):
+        # Recompute the static reward shape with a fresh term so the aloft
+        # counter reflects the scripted height sequence.
+        return TransportObject(SimpleNamespace(), env)(
+            env,
+            std=0.08,
+            minimum_height=0.0135,
+            grace_steps=30,
+            decay_steps=120,
+            decay_floor=0.2,
+        ).item()
+
+    def test_full_credit_during_grace_window(self):
+        env = self._make_env(object_z=0.05)
+        reward = self._reward(env)
+        # First aloft step: full base (1.0) times the radial score.
+        object_position = env.scene["object"].data.root_pos_w.torch
+        cup_position = env.scene["cup"].data.root_pos_w.torch
+        radial = torch.linalg.vector_norm(
+            (object_position - cup_position)[:, :2], dim=-1
+        ).item()
+        expected = (1.0 - torch.tanh(torch.tensor(radial / 0.08))).item()
+        self.assertAlmostEqual(reward, expected)
+
+    def test_decays_after_grace_window_while_held(self):
+        env = self._make_env(object_z=0.05)
+        object_position = env.scene["object"].data.root_pos_w.torch
+        cup_position = env.scene["cup"].data.root_pos_w.torch
+        radial = torch.linalg.vector_norm(
+            (object_position - cup_position)[:, :2], dim=-1
+        ).item()
+        radial_score = (1.0 - torch.tanh(torch.tensor(radial / 0.08))).item()
+
+        term = TransportObject(SimpleNamespace(), env)
+        call = lambda: term(
+            env, std=0.08, minimum_height=0.0135,
+            grace_steps=30, decay_steps=120, decay_floor=0.2,
+        ).item()
+
+        # Step through the grace window (30 steps): base stays at 1.0.
+        last_grace = call()
+        self.assertAlmostEqual(last_grace, radial_score)
+
+        # Step 60 steps further into the decay ramp (halfway to floor).
+        for _ in range(60):
+            mid_decay = call()
+        self.assertAlmostEqual(mid_decay, radial_score * (1.0 - 0.8 * 0.5))
+
+        # Step to the end of the ramp: base reaches the floor (0.2).
+        for _ in range(60):
+            full_decay = call()
+        self.assertAlmostEqual(full_decay, radial_score * 0.2)
+
+    def test_drop_resets_aloft_counter_and_re_arms_full_reward(self):
+        env = self._make_env(object_z=0.05)
+        object_position = env.scene["object"].data.root_pos_w.torch
+        cup_position = env.scene["cup"].data.root_pos_w.torch
+        radial = torch.linalg.vector_norm(
+            (object_position - cup_position)[:, :2], dim=-1
+        ).item()
+        radial_score = (1.0 - torch.tanh(torch.tensor(radial / 0.08))).item()
+
+        term = TransportObject(SimpleNamespace(), env)
+        call = lambda: term(
+            env, std=0.08, minimum_height=0.0135,
+            grace_steps=30, decay_steps=120, decay_floor=0.2,
+        ).item()
+
+        # Decay all the way to the floor.
+        for _ in range(30 + 120):
+            call()
+        self.assertAlmostEqual(call(), radial_score * 0.2)
+
+        # Drop the cube below minimum_height and step: reward is 0 and the
+        # aloft counter resets.
+        object_position[:, 2] = 0.0
+        self.assertEqual(call(), 0.0)
+
+        # Lift again: the very first aloft step pays full base credit.
+        object_position[:, 2] = 0.05
+        self.assertAlmostEqual(call(), radial_score)
+
+    def test_zero_when_not_lifted(self):
+        env = self._make_env(object_z=0.005)  # below minimum_height 0.0135
+        self.assertEqual(self._reward(env), 0.0)
 
 
 if __name__ == "__main__":
