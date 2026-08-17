@@ -12,23 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Canonical camera profiles and sensor-state helpers for inference nodes."""
+"""Canonical camera profiles and sensor-state helpers for inference nodes.
+
+The camera-name -> topic mapping is not defined here: it is derived from the
+so101_bringup camera-profile YAMLs via ``rosbag_to_lerobot.camera_profiles``,
+which is the single source of truth for the whole repository.
+"""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+try:
+    from rosbag_to_lerobot.camera_profiles import (
+        CAMERA_NAMES_BY_PROFILE,
+        RAW_IMAGE_TOPICS,
+    )
+except ImportError:  # source checkout without the workspace built
+    # Append the rosbag_to_lerobot project directory (not the repo root, which
+    # would resolve rosbag_to_lerobot as a namespace package) so the regular
+    # package inside it is importable.
+    sys.path.append(str(Path(__file__).resolve().parents[2] / "rosbag_to_lerobot"))
+    from rosbag_to_lerobot.camera_profiles import (
+        CAMERA_NAMES_BY_PROFILE,
+        RAW_IMAGE_TOPICS,
+    )
 
 
 CAMERA_PROFILES: dict[str, dict[str, str]] = {
-    "single_overhead": {
-        "wrist": "/follower/image_raw",
-        "overhead_1": "/static_camera_1/image_raw",
-    },
-    "dual_overhead": {
-        "wrist": "/follower/image_raw",
-        "overhead_1": "/static_camera_1/image_raw",
-        "overhead_2": "/static_camera_2/image_raw",
-    },
+    profile: {name: RAW_IMAGE_TOPICS[name] for name in names}
+    for profile, names in CAMERA_NAMES_BY_PROFILE.items()
 }
 
 

@@ -1,20 +1,19 @@
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
-    EnvironmentVariable,
     LaunchConfiguration,
     PathJoinSubstitution,
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from so101_bringup.camera_launch import declare_camera_arguments, include_cameras
+from so101_bringup.rerun_launch import declare_rerun_arguments, rerun_bridge_actions
 
 
 def generate_launch_description():
@@ -40,11 +39,6 @@ def generate_launch_description():
     teleop_delay_s = LaunchConfiguration("teleop_delay_s")
 
     use_teleop_rviz = LaunchConfiguration("use_teleop_rviz")
-
-    use_rerun = LaunchConfiguration("use_rerun")
-    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
-    rerun_env_dir = LaunchConfiguration("rerun_env_dir")
-    rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
     # --- Include leader bringup ---
     leader_launch = IncludeLaunchDescription(
@@ -117,49 +111,8 @@ def generate_launch_description():
         output="screen",
     )
 
-    # --- Launch Rerun
-
-    rerun_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi",
-            "run",
-            "bridge",
-            "--",
-            "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
-        cwd=rerun_env_dir,
-        additional_env={"PYTHONUNBUFFERED": "1"},
-        condition=IfCondition(use_rerun),
-        output="screen",
-    )
-
-    rerun_start = TimerAction(
-        period=rerun_delay_s,
-        actions=[rerun_bridge_proc],
-    )
-
-    # --- Launch Rerun 3D (animated URDF + TF + cameras + plots) ---
-
-    rerun_3d_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi",
-            "run",
-            "bridge-3d",
-            "--",
-            "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
-        cwd=rerun_env_dir,
-        additional_env={"PYTHONUNBUFFERED": "1"},
-        condition=IfCondition(use_rerun_3d),
-        output="screen",
-    )
-
-    rerun_3d_start = TimerAction(
-        period=rerun_delay_s,
-        actions=[rerun_3d_bridge_proc],
-    )
+    # --- Launch Rerun (validated 2D/3D bridges) ---
+    rerun_start = rerun_bridge_actions(LaunchConfiguration("camera_profile"))
 
     # --- Defaults for files ---
     default_leader_ctrl_cfg = PathJoinSubstitution(
@@ -204,26 +157,13 @@ def generate_launch_description():
             DeclareLaunchArgument("teleop_delay_s", default_value="2.0"),
             *declare_camera_arguments(),
             DeclareLaunchArgument("use_teleop_rviz", default_value="true"),
-            DeclareLaunchArgument("use_rerun", default_value="false"),
-            DeclareLaunchArgument(
-                "use_rerun_3d",
-                default_value="false",
-                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
-            ),
-            DeclareLaunchArgument(
-                "rerun_env_dir",
-                # Best: set env var once, no need to pass each run:
-                # export SO101_RERUN_ENV_DIR=/abs/path/to/tools/rerun_env
-                default_value=EnvironmentVariable("SO101_RERUN_ENV_DIR", default_value=""),
-            ),
-            DeclareLaunchArgument("rerun_delay_s", default_value=teleop_delay_s),
+            *declare_rerun_arguments(rerun_delay_default=teleop_delay_s),
             leader_launch,
             follower_launch,
             layout_tf_launch,
             cameras_launch,
             rviz_node,
             rerun_start,
-            rerun_3d_start,
             teleop_start,
         ]
     )

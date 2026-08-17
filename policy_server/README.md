@@ -77,6 +77,16 @@ policy-server --transport=zmq --host=0.0.0.0 --port=8090
 python -m policy_server --transport=zmq --host=0.0.0.0 --port=8090
 ```
 
+## Tests
+
+The inference engine has a transport-independent pytest suite (no GPU or ROS
+needed):
+
+```bash
+cd policy_server
+uv run --with pytest pytest tests/
+```
+
 ## Run async inference from ROS 2
 
 Once the server is running and TCP port `8090` is reachable from the robot, start the async ROS 2 client from the `so101_inference` package:
