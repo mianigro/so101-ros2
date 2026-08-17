@@ -21,8 +21,10 @@ namespace episode_recorder {
 
 namespace {
 
-// Only {follower_namespace} may appear in a profile image_topic; the two arm
-// topics below are fixed by the recording contract.
+// Only {follower_namespace} may appear in a profile image_topic; the command
+// topic below is fixed by the recording contract. The follower joint-state
+// topic is configurable so a simulated follower (which publishes on
+// /follower_sim/joint_states) can be recorded with the same strict contract.
 std::string render_topic_template(
   const std::string &template_str,
   const std::string &follower_namespace) {
@@ -58,6 +60,7 @@ std::vector<std::string> topics_for_profile(
   const std::string &camera_profile,
   const std::string &profiles_dir,
   const std::string &follower_namespace,
+  const std::string &joint_states_topic,
   const rclcpp::Logger &logger) {
   std::vector<std::string> topics;
   if (camera_profile.empty() || profiles_dir.empty()) {
@@ -111,7 +114,7 @@ std::vector<std::string> topics_for_profile(
     return {};
   }
 
-  topics.emplace_back("/follower/joint_states");
+  topics.emplace_back(joint_states_topic);
   topics.emplace_back("/follower/forward_controller/commands");
   return topics;
 }
@@ -125,6 +128,8 @@ EpisodeRecorder::EpisodeRecorder(const rclcpp::NodeOptions &options)
   this->declare_parameter<std::string>(
     "camera_profiles_dir", "");
   this->declare_parameter<std::string>("follower_namespace", "follower");
+  this->declare_parameter<std::string>(
+    "joint_states_topic", "/follower/joint_states");
   this->declare_parameter<std::string>("root_dir", "/tmp/episode_recorder");
   this->declare_parameter<std::string>("storage_id", "mcap");
   this->declare_parameter<double>("max_episode_duration", 0.0);
@@ -158,7 +163,8 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   camera_profile_ = this->get_parameter("camera_profile").as_string();
   topics_ = topics_for_profile(
     camera_profile_, this->get_parameter("camera_profiles_dir").as_string(),
-    this->get_parameter("follower_namespace").as_string(), get_logger());
+    this->get_parameter("follower_namespace").as_string(),
+    this->get_parameter("joint_states_topic").as_string(), get_logger());
   root_dir_ = this->get_parameter("root_dir").as_string();
   storage_id_ = this->get_parameter("storage_id").as_string();
   max_episode_duration_ = this->get_parameter("max_episode_duration").as_double();

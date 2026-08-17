@@ -39,7 +39,9 @@ GRIPPER_PRIM_PATH = (
 )
 ACTION_GRAPH_PATH = "/SO101_ROS2_ActionGraph"
 COMMAND_TOPIC = "/follower/forward_controller/commands"
-JOINT_STATE_TOPIC = "/follower/joint_states"
+# Distinct from the physical follower's /follower/joint_states so the sim can
+# run alongside the real follower without interleaving the two streams.
+JOINT_STATE_TOPIC = "/follower_sim/joint_states"
 CAMERA_NAMES_BY_PROFILE = {
     "none": (),
     "single_overhead": ("wrist", "overhead_1"),

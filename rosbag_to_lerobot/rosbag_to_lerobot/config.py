@@ -160,12 +160,17 @@ class Config:
             )
 
 
-def load_config(path: str | Path, camera_profile: str) -> Config:
+def load_config(
+    path: str | Path, camera_profile: str, joint_states_topic: Optional[str] = None
+) -> Config:
     """Load a YAML configuration file and return a validated :class:`Config`.
 
     Args:
         path (str | Path): Filesystem path to the timing/non-camera YAML config.
         camera_profile (str): ``single_overhead`` or ``dual_overhead``.
+        joint_states_topic (Optional[str]): Overrides the ``observation.state``
+            feature's topic. Pass ``/follower_sim/joint_states`` when converting
+            Isaac Sim follower recordings.
 
     Returns:
         Config: Parsed configuration object.
@@ -189,6 +194,11 @@ def load_config(path: str | Path, camera_profile: str) -> Config:
                 "Timing config must not define camera features; select them with "
                 "camera_profile"
             )
+
+    if joint_states_topic is not None:
+        for feat in raw_features:
+            if feat.get("key") == "observation.state":
+                feat["topic"] = joint_states_topic
 
     features = [
         FeatureSpec(

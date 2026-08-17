@@ -68,6 +68,15 @@ def generate_launch_description():
         description="Follower namespace used to render profile topic templates",
     )
 
+    joint_states_topic = DeclareLaunchArgument(
+        "joint_states_topic",
+        default_value="/follower/joint_states",
+        description=(
+            "Follower joint-state topic to record. Use "
+            "/follower_sim/joint_states when Isaac Sim is the follower."
+        ),
+    )
+
     root_dir = DeclareLaunchArgument(
         "root_dir",
         default_value=default_root_dir,
@@ -104,6 +113,7 @@ def generate_launch_description():
                 "camera_profile": LaunchConfiguration("camera_profile"),
                 "camera_profiles_dir": LaunchConfiguration("camera_profiles_dir"),
                 "follower_namespace": LaunchConfiguration("follower_namespace"),
+                "joint_states_topic": LaunchConfiguration("joint_states_topic"),
                 "root_dir": LaunchConfiguration("root_dir"),
                 "experiment_name": LaunchConfiguration("experiment_name"),
                 "task": LaunchConfiguration("task"),
@@ -148,6 +158,7 @@ def generate_launch_description():
             camera_profile,
             camera_profiles_dir,
             follower_namespace,
+            joint_states_topic,
             root_dir,
             experiment_name,
             task,

@@ -13,6 +13,7 @@ from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.substitutions import FindPackageShare
 from so101_bringup.camera_launch import (
@@ -46,6 +47,17 @@ def generate_launch_description():
     task = LaunchConfiguration("task")
 
     use_follower = LaunchConfiguration("use_follower")
+
+    # The recorder needs the joint-state topic of whichever follower is active:
+    # the physical stack publishes /follower/joint_states, the Isaac Sim
+    # follower publishes /follower_sim/joint_states.
+    joint_states_topic = PythonExpression(
+        [
+            "'/follower/joint_states' if '",
+            use_follower,
+            "'.lower() in ('true', '1') else '/follower_sim/joint_states'",
+        ]
+    )
 
     # --- Include leader bringup ---
     leader_launch = IncludeLaunchDescription(
@@ -113,6 +125,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             "camera_profile": LaunchConfiguration("camera_profile"),
+            "joint_states_topic": joint_states_topic,
             "root_dir": root_dir,
             "experiment_name": experiment_name,
             "task": task,
@@ -158,7 +171,11 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_follower",
                 default_value="true",
-                description="Start the physical/mock follower controller manager",
+                description=(
+                    "Start the physical/mock follower controller manager. Set "
+                    "false when Isaac Sim is the follower; the recorder then "
+                    "records /follower_sim/joint_states."
+                ),
             ),
             DeclareLaunchArgument("leader_namespace", default_value="leader"),
             DeclareLaunchArgument("follower_namespace", default_value="follower"),

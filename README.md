@@ -58,9 +58,8 @@ pixi install --all
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
 
-# Point at your camera rig and the repo root (for the Pixi visualization tasks)
-export SO101_CAMERA_PROFILE=dual_overhead
-export SO101_CAMERA_RIG=/absolute/path/to/camera_rig.yaml
+# Init
+export SO101_REPO=/home/anon/Documents/so101-ros2
 export SO101_RERUN_ENV_DIR=~/ros2_ws/src/so101-ros-physical-ai
 ```
 
@@ -71,23 +70,26 @@ export SO101_RERUN_ENV_DIR=~/ros2_ws/src/so101-ros-physical-ai
 ### Physical leader and physical follower
 
 Mirror the physical leader arm to the physical follower through the `forward_controller` position interface at 30 Hz.
-Run this in one terminal, replacing the camera-rig path with the YAML for the connected physical cameras:
 
+**Camera***
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
 
 export SO101_CAMERA_PROFILE=dual_overhead
-export SO101_CAMERA_RIG=/absolute/path/to/camera_rig.yaml
+export SO101_REPO=/home/anon/Documents/so101-ros2
+export SO101_CAMERA_RIG="$SO101_REPO/so101_bringup/config/cameras/camera_rig/dual_overhead.yaml"
 
 ros2 launch so101_bringup teleop.launch.py \
   camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG
+  camera_rig_config_file:=$SO101_CAMERA_RIG 
 ```
 
-This launch starts the leader and follower `ros2_control` stacks, the 30 Hz command relay, the selected physical
-cameras, and RViz. For arm-only teleop without cameras, omit the camera variables and run:
 
+| `use_rerun:=true` / `pixi run bridge` | 2D camera views + joint/command plots |
+| `use_rerun_3d:=true`
+
+**No Camera***
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
@@ -148,7 +150,8 @@ ros2 launch so101_bringup teleop.launch.py \
 ```
 
 Both terminals must use the same `ROS_DOMAIN_ID` and DDS implementation. The Isaac Sim process subscribes to
-`/follower/forward_controller/commands` and publishes `/follower/joint_states` and `/clock` while the timeline plays.
+`/follower/forward_controller/commands` and publishes `/follower_sim/joint_states` and `/clock` while the timeline
+plays.
 
 Before moving the physical leader, run the direct-message smoke test:
 
@@ -156,13 +159,54 @@ Before moving the physical leader, run the direct-message smoke test:
 ros2 topic pub --once /follower/forward_controller/commands \
   std_msgs/msg/Float64MultiArray \
   "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
-ros2 topic echo --once /follower/joint_states
-ros2 topic info --verbose /follower/joint_states
+ros2 topic echo --once /follower_sim/joint_states
+ros2 topic info --verbose /follower_sim/joint_states
 ```
 
 The initial position-drive values are `100 Nm/rad` stiffness and `2 Nm*s/rad` damping. Override them with
 `--joint-stiffness` and `--joint-damping` if the imported arm is underdamped or too slow. The URDF's `10 Nm` effort
 limits supply the drive maximum force.
+
+### Physical leader with both followers
+
+The physical follower and the Isaac Sim follower can mirror the leader at the same time. Both subscribe to the same
+command topic, so this needs no extra wiring — the physical stack runs normally and the Isaac Sim script publishes its
+joint states on the separate `/follower_sim/joint_states` topic. This is useful for calibration: the physical arm's
+`/follower/joint_states` and the sim's `/follower_sim/joint_states` can be compared side by side while both track the
+leader.
+
+Run the sim with `--camera-profile none` in this mode; the simulated cameras publish on the same fixed topics as the
+physical cameras and would collide with them.
+
+**Terminal 1 — physical leader, physical follower, and command relay:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+SO101_REPO=/home/anon/Documents/so101-ros2
+source "$SO101_REPO/install/setup.bash"
+
+ros2 launch so101_bringup teleop.launch.py use_cameras:=false
+```
+
+**Terminal 2 — Isaac Sim follower mirror:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+ISAACSIM_BUILD=/home/anon/Documents/isaacsim/_build/linux-x86_64/release
+SO101_REPO=/home/anon/Documents/so101-ros2
+source "$SO101_REPO/install/setup.bash"
+
+"$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
+  --camera-profile none \
+  --no-publish-clock
+```
+
+`--no-publish-clock` keeps the physical stack on wall-clock time. Move the leader and compare the two streams:
+
+```bash
+ros2 topic echo /follower/joint_states
+ros2 topic echo /follower_sim/joint_states
+```
 
 ---
 
@@ -181,7 +225,8 @@ source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
 
 export SO101_CAMERA_PROFILE=dual_overhead
-export SO101_CAMERA_RIG=/absolute/path/to/camera_rig.yaml
+export SO101_REPO=/home/anon/Documents/so101-ros2
+export SO101_CAMERA_RIG="$SO101_REPO/so101_bringup/config/cameras/camera_rig/dual_overhead.yaml"
 
 ros2 launch so101_bringup recording_session.launch.py \
   camera_profile:=$SO101_CAMERA_PROFILE \
@@ -232,8 +277,8 @@ source "$SO101_REPO/install/setup.bash"
   --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml"
 ```
 
-Wait for `Isaac Sim is ready`, then press **Play**. Isaac Sim now owns the simulated follower joint states and the three
-raw camera streams.
+Wait for `Isaac Sim is ready`, then press **Play**. Isaac Sim now owns the three raw camera streams and publishes the
+simulated follower joint states on `/follower_sim/joint_states`.
 
 **Terminal 2 — physical leader, relay, JPEG republishers, watchdog, and recorder:**
 
@@ -265,8 +310,10 @@ ros2 run episode_recorder teleop_episode_keyboard
 ```
 
 Press **r**, operate the physical leader, and press **s** to save or **d** to discard. The keyboard controls only the
-recorder; the physical leader continues to control the simulated arm. Convert the result with `so101_30hz.yaml` and
-`--camera-profile dual_overhead` as shown in [LeRobot dataset conversion](#lerobot-dataset-conversion).
+recorder; the physical leader continues to control the simulated arm. With `use_follower:=false` the recorder records
+`/follower_sim/joint_states`. Convert the result with `so101_30hz.yaml` and `--camera-profile dual_overhead` as shown
+in [LeRobot dataset conversion](#lerobot-dataset-conversion), adding `--joint-states-topic /follower_sim/joint_states`
+because the simulated follower publishes its state on that topic.
 
 **Review episodes** in the browser (replays MCAP through ROS so images/joints/actions decode with the live stack):
 
@@ -332,7 +379,7 @@ pixi run -e lerobot convert -- \
   --push-hub
 ```
 
-If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
+If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. Episodes recorded from the Isaac Sim follower need `--joint-states-topic /follower_sim/joint_states` (their state lives on the simulated follower's topic); forgetting it fails loudly with "Configured topic not found in bag". See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
 
 ---
 
@@ -399,7 +446,7 @@ The policy's image features must exactly match the selected `camera_profile` (no
 
 ## Visualization
 
-### RViz (native 3D)
+### RViz
 
 Launched by default with `teleop.launch.py` (`use_teleop_rviz:=true`). Shows both arm meshes animating live from `/tf`, plus camera image panels. Best for debugging the robot model and TF tree.
 
@@ -455,7 +502,7 @@ These are the cross-cutting arguments accepted by the top-level launch files (`t
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `hardware_type` | `real` | Selects which `ros2_control` hardware plugin the URDF/xacro compiles in. `real` → the `feetech_ros2_driver` talks to the physical STS3215 servos over USB. `mock` → `mock_components/GenericSystem`, a fake plant that simulates the 6 joints in software with no hardware attached. Use `mock` to test launch files, the recorder, or inference wiring without the arms plugged in. (Source comments mention `mujoco` but no plugin is wired for it — treat it as unimplemented.) |
-| `use_follower` | `true` | Start the follower `ros2_control` stack. Set `false` when Isaac Sim owns the follower command and joint-state topics. |
+| `use_follower` | `true` | Start the follower `ros2_control` stack. Set `false` when Isaac Sim is the follower; leave `true` to run the physical follower and the Isaac Sim script together (both follow the same command topic, joint states stay on `/follower/joint_states` and `/follower_sim/joint_states`). In the recording session `false` also switches the recorder to `/follower_sim/joint_states`. |
 | `leader_usb_port` | `/dev/so101_leader` | USB device path for the **leader** arm. These are udev-symlink stable names (created from the rules in `docs/hardware.md`), not raw `/dev/ttyUSB0` which can reorder on replug. Only used by teleop/recording launches (the leader is absent during inference). |
 | `follower_usb_port` | `/dev/so101_follower` | USB device path for the **follower** arm — the one that actually moves. Used by every launch that brings up `ros2_control`. |
 

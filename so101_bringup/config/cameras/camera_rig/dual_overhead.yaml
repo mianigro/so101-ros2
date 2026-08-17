@@ -1,0 +1,8 @@
+schema_version: 1
+cameras:
+  wrist:
+    device: /dev/cam_wrist
+  overhead_1:
+    device: /dev/cam_overhead_1
+  overhead_2:
+    device: /dev/cam_overhead_2

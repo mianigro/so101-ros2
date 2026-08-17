@@ -58,6 +58,14 @@ def main() -> None:
         help="Required camera profile recorded in every input episode",
     )
     parser.add_argument(
+        "--joint-states-topic",
+        default="/follower/joint_states",
+        help=(
+            "Topic recorded as observation.state. Pass "
+            "/follower_sim/joint_states for Isaac Sim follower recordings."
+        ),
+    )
+    parser.add_argument(
         "--repo-id",
         required=True,
         help="HuggingFace repo ID (e.g., user/dataset_name)",
@@ -133,7 +141,9 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        cfg = load_config(args.config, args.camera_profile)
+        cfg = load_config(
+            args.config, args.camera_profile, joint_states_topic=args.joint_states_topic
+        )
 
         output_dir = args.output_dir.expanduser() if args.output_dir else None
         convert_all_bags(
