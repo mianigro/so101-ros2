@@ -59,10 +59,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--joint-states-topic",
-        default="/follower/joint_states",
+        default="auto",
         help=(
-            "Topic recorded as observation.state. Pass "
-            "/follower_sim/joint_states for Isaac Sim follower recordings."
+            "Topic recorded as observation.state. 'auto' (default) resolves "
+            "per episode: /follower/joint_states for the physical follower, "
+            "/follower_sim/joint_states for Isaac Sim follower recordings, so "
+            "mixed directories convert in one run. Pass an explicit topic to "
+            "pin it for every episode."
         ),
     )
     parser.add_argument(

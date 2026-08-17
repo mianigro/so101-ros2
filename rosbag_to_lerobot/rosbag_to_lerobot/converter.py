@@ -52,7 +52,12 @@ from rosbag_to_lerobot.bag_reader import (
 )
 from rosbag_to_lerobot.buffers import LastBuffer
 from rosbag_to_lerobot.camera_profiles import validate_profile_topics
-from rosbag_to_lerobot.config import CANONICAL_FPS, Config, FeatureSpec
+from rosbag_to_lerobot.config import (
+    CANONICAL_FPS,
+    Config,
+    FeatureSpec,
+    resolve_joint_state_topic,
+)
 from rosbag_to_lerobot.decoders import decode, get_lerobot_dtype
 
 logger = logging.getLogger(__name__)
@@ -424,11 +429,22 @@ def convert_all_bags(
         raise RuntimeError(f"No episode directories found in {input_dir}")
 
     # Validate every episode before deleting/creating any output dataset.
+    # observation.state may resolve to a different topic per episode (physical
+    # vs Isaac Sim follower), so keep the resolved config for each bag.
+    primary_state_topic = cfg.by_key()["observation.state"].topic
+    episode_cfgs: Dict[Path, Config] = {}
     for bag_dir in episodes:
         reader = open_reader(bag_dir)
         topic_types = get_topic_types(reader)
         validate_profile_topics(cfg.camera_profile, topic_types, str(bag_dir))
-        for spec in cfg.features:
+        episode_cfg, state_topic = resolve_joint_state_topic(cfg, topic_types)
+        if state_topic != primary_state_topic:
+            logger.info(
+                "%s: observation.state resolved to %s (Isaac Sim recording)",
+                bag_dir.name,
+                state_topic,
+            )
+        for spec in episode_cfg.features:
             actual_type = topic_types.get(spec.topic)
             if actual_type is None:
                 raise ValueError(
@@ -440,7 +456,8 @@ def convert_all_bags(
                     f"{bag_dir}: type mismatch for {spec.topic}: "
                     f"config={spec.msg_type}, bag={actual_type}"
                 )
-        _validate_bag_reference_cadence(reader, cfg, str(bag_dir))
+        _validate_bag_reference_cadence(reader, episode_cfg, str(bag_dir))
+        episode_cfgs[bag_dir] = episode_cfg
 
     # 2. Build features dict
     features = _build_lerobot_features(cfg, use_videos)
@@ -472,7 +489,7 @@ def convert_all_bags(
         logger.info("Converting episode %d/%d: %s", i, len(episodes), bag_dir.name)
 
         frames, dropped = _convert_one_bag(
-            bag_dir, cfg, dataset, collect_p95=collect_p95
+            bag_dir, episode_cfgs[bag_dir], dataset, collect_p95=collect_p95
         )
 
         dt = time.perf_counter() - t0

@@ -239,7 +239,8 @@ ros2 launch so101_bringup recording_session.launch.py \
   camera_profile:=$SO101_CAMERA_PROFILE \
   camera_rig_config_file:=$SO101_CAMERA_RIG \
   experiment_name:=pick_and_place \
-  task:="Pick up the cube and place it in the container."
+  task:="Pick up the cube and place it in the container." \
+  use_rerun:=true
 ```
 
 Wait until the launch reports that all required topics are ready. Then start the keyboard controller.
@@ -386,7 +387,7 @@ pixi run -e lerobot convert -- \
   --push-hub
 ```
 
-If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. Episodes recorded from the Isaac Sim follower need `--joint-states-topic /follower_sim/joint_states` (their state lives on the simulated follower's topic); forgetting it fails loudly with "Configured topic not found in bag". See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
+If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. The `observation.state` topic resolves per episode: `/follower/joint_states` for physical-follower recordings, `/follower_sim/joint_states` for Isaac Sim follower recordings — so directories mixing both sources convert in a single run (when a bag contains both topics, the physical follower wins). Pass an explicit `--joint-states-topic` to pin one topic for every episode; a bag containing neither fails loudly. See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
 
 ---
 
@@ -532,7 +533,7 @@ Profile and rig file are two halves of one config: the profile is the portable h
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `use_teleop_rviz` | `true` | Launches RViz with the teleop config — both arm meshes animating from `/tf` plus camera image panels. Best for debugging the robot model / TF tree. Disable if RViz crashes (e.g. `inotify` watch limit) or isn't needed. |
+| `use_teleop_rviz` | `true` | `teleop.launch.py` only — launches RViz with the teleop config, both arm meshes animating from `/tf` plus camera image panels. Best for debugging the robot model / TF tree. Disable if RViz crashes (e.g. `inotify` watch limit) or isn't needed. (The recording session never starts RViz.) |
 | `use_rerun` | `false` | Launches the **2D Rerun bridge** (Pixi task `bridge`) — camera feeds + `state/position/<joint>` and `action/position/<joint>` time-series plots in a browser. Lighter than RViz. |
 | `use_rerun_3d` | `false` | Launches the **3D Rerun bridge** (Pixi task `bridge-3d`) — everything in 2D plus an animated SO-101 arm mesh from the URDF + `/tf`. Use as the richer alternative to RViz; typically `use_teleop_rviz:=false use_rerun_3d:=true` to swap them. |
 
@@ -552,11 +553,11 @@ ros2 launch so101_bringup teleop.launch.py \
 ros2 launch so101_bringup teleop.launch.py \
   hardware_type:=mock use_cameras:=false use_teleop_rviz:=false
 
-# Real recording with Rerun 3D instead of RViz
+# Real recording with the 3D Rerun bridge (the recording session never starts RViz)
 ros2 launch so101_bringup recording_session.launch.py \
   camera_profile:=dual_overhead \
   camera_rig_config_file:=$SO101_CAMERA_RIG \
-  use_teleop_rviz:=false use_rerun_3d:=true
+  use_rerun_3d:=true
 ```
 
 ### Config files

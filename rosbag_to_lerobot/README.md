@@ -69,6 +69,7 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 | Flag | Description |
 |------|-------------|
 | `--overwrite` | Delete the complete resolved output directory and rebuild it; never append or resume |
+| `--joint-states-topic` | `auto` (default) resolves `observation.state` per episode — `/follower/joint_states` for the physical follower, `/follower_sim/joint_states` for the Isaac Sim follower — so mixed directories convert in one run. Pass an explicit topic to pin it for every episode |
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
 | `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
@@ -191,6 +192,9 @@ usage: convert --input-dir DIR --config FILE --camera-profile PROFILE --repo-id 
   --config          Path to YAML config file
   --camera-profile  single_overhead or dual_overhead
   --repo-id         HuggingFace repo ID (e.g. user/dataset_name or local/name)
+  --joint-states-topic  auto (default): /follower/joint_states or
+                    /follower_sim/joint_states, resolved per episode; or an
+                    explicit topic pinned for every episode
   --output-dir      Override default output location
   --use-videos      Store as MP4 video (default) / --no-use-videos for images
   --vcodec          LeRobot RGB encoder (libsvtav1 | libaom-av1 | h264 |
