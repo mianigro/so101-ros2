@@ -21,19 +21,100 @@ namespace episode_recorder {
 
 namespace {
 
-std::vector<std::string> topics_for_profile(const std::string &camera_profile) {
-  std::vector<std::string> topics{
-    "/follower/image_raw/compressed",
-    "/static_camera_1/image_raw/compressed",
-  };
+// Only {follower_namespace} may appear in a profile image_topic; the command
+// topic below is fixed by the recording contract. The follower joint-state
+// topic is configurable so a simulated follower (which publishes on
+// /follower_sim/joint_states) can be recorded with the same strict contract.
+std::string render_topic_template(
+  const std::string &template_str,
+  const std::string &follower_namespace) {
+  static const std::string kPlaceholder = "{follower_namespace}";
+  std::string topic;
+  std::size_t cursor = 0;
+  while (cursor < template_str.size()) {
+    const std::size_t start = template_str.find('{', cursor);
+    if (start == std::string::npos) {
+      topic.append(template_str, cursor, std::string::npos);
+      break;
+    }
+    topic.append(template_str, cursor, start - cursor);
+    const std::size_t end = template_str.find('}', start);
+    if (end == std::string::npos) {
+      throw std::runtime_error("unterminated '{' in image_topic: " + template_str);
+    }
+    const std::string placeholder = template_str.substr(start, end - start + 1);
+    if (placeholder != kPlaceholder) {
+      throw std::runtime_error(
+        "unsupported image_topic placeholder " + placeholder + " in " + template_str);
+    }
+    topic += follower_namespace;
+    cursor = end + 1;
+  }
+  return topic;
+}
 
-  if (camera_profile == "dual_overhead") {
-    topics.emplace_back("/static_camera_2/image_raw/compressed");
-  } else if (camera_profile != "single_overhead") {
+// Camera topics come from the so101_bringup camera-profile YAML (the same
+// files the camera launch loads), so the recorder cannot drift from the rest
+// of the stack. Returns an empty vector on any resolution failure.
+std::vector<std::string> topics_for_profile(
+  const std::string &camera_profile,
+  const std::string &profiles_dir,
+  const std::string &follower_namespace,
+  const std::string &joint_states_topic,
+  const rclcpp::Logger &logger) {
+  std::vector<std::string> topics;
+  if (camera_profile.empty() || profiles_dir.empty()) {
+    return topics;
+  }
+
+  const std::filesystem::path profile_path =
+    std::filesystem::path(profiles_dir) / (camera_profile + ".yaml");
+  YAML::Node root;
+  try {
+    root = YAML::LoadFile(profile_path.string());
+  } catch (const YAML::Exception &e) {
+    RCLCPP_ERROR(
+      logger, "Cannot load camera profile '%s': %s", profile_path.string().c_str(), e.what());
+    return topics;
+  }
+
+  try {
+    const auto profile_name = root["profile"].as<std::string>();
+    if (profile_name != camera_profile) {
+      RCLCPP_ERROR(
+        logger, "Camera profile '%s' declares profile '%s'", profile_path.string().c_str(),
+        profile_name.c_str());
+      return {};
+    }
+    const auto cameras = root["cameras"];
+    if (!cameras.IsSequence() || cameras.size() == 0) {
+      RCLCPP_ERROR(
+        logger, "Camera profile '%s' must declare a non-empty cameras list",
+        profile_path.string().c_str());
+      return {};
+    }
+    for (const auto &camera : cameras) {
+      const auto image_topic =
+        render_topic_template(camera["image_topic"].as<std::string>(), follower_namespace);
+      if (image_topic.empty() || image_topic.front() != '/') {
+        RCLCPP_ERROR(
+          logger, "Camera profile '%s': image_topic must be absolute: '%s'",
+          profile_path.string().c_str(), image_topic.c_str());
+        return {};
+      }
+      topics.push_back(image_topic + "/compressed");
+    }
+  } catch (const YAML::Exception &e) {
+    RCLCPP_ERROR(
+      logger, "Invalid camera profile '%s': %s", profile_path.string().c_str(), e.what());
+    return {};
+  } catch (const std::runtime_error &e) {
+    RCLCPP_ERROR(
+      logger, "Invalid camera profile '%s': %s", profile_path.string().c_str(), e.what());
     return {};
   }
 
-  topics.emplace_back("/follower/joint_states");
+  topics.emplace_back(joint_states_topic);
   topics.emplace_back("/follower/forward_controller/commands");
   return topics;
 }
@@ -44,6 +125,11 @@ EpisodeRecorder::EpisodeRecorder(const rclcpp::NodeOptions &options)
     : rclcpp_lifecycle::LifecycleNode("episode_recorder", options) {
   // Declare parameters
   this->declare_parameter<std::string>("camera_profile", "");
+  this->declare_parameter<std::string>(
+    "camera_profiles_dir", "");
+  this->declare_parameter<std::string>("follower_namespace", "follower");
+  this->declare_parameter<std::string>(
+    "joint_states_topic", "/follower/joint_states");
   this->declare_parameter<std::string>("root_dir", "/tmp/episode_recorder");
   this->declare_parameter<std::string>("storage_id", "mcap");
   this->declare_parameter<double>("max_episode_duration", 0.0);
@@ -75,7 +161,10 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
 
   // Read parameter values
   camera_profile_ = this->get_parameter("camera_profile").as_string();
-  topics_ = topics_for_profile(camera_profile_);
+  topics_ = topics_for_profile(
+    camera_profile_, this->get_parameter("camera_profiles_dir").as_string(),
+    this->get_parameter("follower_namespace").as_string(),
+    this->get_parameter("joint_states_topic").as_string(), get_logger());
   root_dir_ = this->get_parameter("root_dir").as_string();
   storage_id_ = this->get_parameter("storage_id").as_string();
   max_episode_duration_ = this->get_parameter("max_episode_duration").as_double();
@@ -100,8 +189,10 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   if (topics_.empty()) {
     RCLCPP_ERROR(
       get_logger(),
-      "Parameter 'camera_profile' must be 'single_overhead' or 'dual_overhead' (got '%s')",
-      camera_profile_.c_str());
+      "Cannot resolve camera profile '%s' from camera_profiles_dir '%s'. Pass "
+      "camera_profiles_dir pointing at so101_bringup/config/cameras/profiles.",
+      camera_profile_.c_str(),
+      this->get_parameter("camera_profiles_dir").as_string().c_str());
     return CallbackReturn::FAILURE;
   }
   if (root_dir_.empty()) {

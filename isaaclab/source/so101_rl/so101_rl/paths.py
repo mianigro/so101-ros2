@@ -23,6 +23,7 @@ CAMERA_PROFILE_PATH = (
     / "so101_bringup"
     / "config"
     / "cameras"
+    / "isaacsim_profiles"
     / "isaac_dual_overhead.yaml"
 )
 CAMERA_SUPPORT_BOTTOM_USD_PATH = (

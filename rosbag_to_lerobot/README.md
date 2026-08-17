@@ -38,7 +38,7 @@ This package runs inside the **`lerobot` Pixi environment** defined by the root 
 
 ```bash
 # Make sure Pixi is installed — https://pixi.sh
-# All commands below are run from the repo root (so101-ros-physical-ai/)
+# All commands below are run from the repo root (so101-ros2/)
 ```
 
 > **Note:** The ROS 2 environment must be sourceable (and your workspace built if you rely on custom message types), because the converter uses ROS 2 Python libraries (`rosbag2_py`, message definitions, `rclpy.serialization`) at runtime.
@@ -52,7 +52,7 @@ No Hugging Face account required. Use `local/` as the repo-id prefix to keep eve
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config     rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile single_overhead \
   --repo-id    local/so101_test
 ```
@@ -69,6 +69,7 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 | Flag | Description |
 |------|-------------|
 | `--overwrite` | Delete the complete resolved output directory and rebuild it; never append or resume |
+| `--joint-states-topic` | `auto` (default) resolves `observation.state` per episode — `/follower/joint_states` for the physical follower, `/follower_sim/joint_states` for the Isaac Sim follower — so mixed directories convert in one run. Pass an explicit topic to pin it for every episode |
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
 | `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
@@ -101,7 +102,7 @@ pixi run -e lerobot -- hf auth whoami
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place_2 \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config     rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile dual_overhead \
   --repo-id    <hf-username>/so101-pick-and-place \
   --push-hub
@@ -191,6 +192,9 @@ usage: convert --input-dir DIR --config FILE --camera-profile PROFILE --repo-id 
   --config          Path to YAML config file
   --camera-profile  single_overhead or dual_overhead
   --repo-id         HuggingFace repo ID (e.g. user/dataset_name or local/name)
+  --joint-states-topic  auto (default): /follower/joint_states or
+                    /follower_sim/joint_states, resolved per episode; or an
+                    explicit topic pinned for every episode
   --output-dir      Override default output location
   --use-videos      Store as MP4 video (default) / --no-use-videos for images
   --vcodec          LeRobot RGB encoder (libsvtav1 | libaom-av1 | h264 |

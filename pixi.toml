@@ -46,8 +46,8 @@ pyzmq = ">=26.2.1,<28"
 [feature.lerobot.tasks]
 lerobot-info = "lerobot-info"
 convert = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m rosbag_to_lerobot.cli \"$@\"' --" }
-infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.lerobot_inference_node \"$@\"' --" }
-async_infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.async_inference_node \"$@\"' --" }
+infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference:${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.lerobot_inference_node \"$@\"' --" }
+async_infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference:${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.async_inference_node \"$@\"' --" }
 
 
 # --- Environments ---

@@ -156,43 +156,24 @@ critic state invalidates checkpoints but does not change deployment.
 
 ## Single-box reward design
 
-The reward is a bounded pickup sequence followed by the existing placement
-sequence and two smoothness penalties. Let:
+The single-box reward is deliberately **grasp-agnostic**: every term is
+computed from object, cup, and gripper state only. There are no contact
+sensors and no prescribed grasp geometry, so the policy is free to find any
+method (pinch, scoop, push-against-wall) and no term can be farmed without
+achieving its outcome. One shaping term (`approach`) opens the ladder;
+everything after it pays for outcomes. Let:
 
-- `p_o`, `p_c`, and `p_t` be object, cup, and dynamic grasp-target positions;
-- `d_ot = ||p_o - p_t||`;
+- `p_o`, `p_c`, and `p_g` be object position, cup position, and the nominal
+  grasp point (the `ee_frame` `grasp_frame` offset
+  `(0.0052, -0.000218, -0.0925)` m in `gripper_link`, i.e. where the centre of
+  a 25 mm cube sits against the fixed pad);
+- `d_og = ||p_o - p_g||`;
 - `r_oc = ||(p_o - p_c)_xy||`;
 - `z_oc = (p_o - p_c)_z`;
 - `q_g` be gripper position, with larger values more open;
 - `z_rest = 0.0125` m, the object-centre height while resting on the table;
 - `v_o` and `w_o` be object linear and angular velocity;
 - `a_t` be the normalized action.
-
-The nominal grasp frame is `(0.0052, -0.000218, -0.0925)` m in
-`gripper_link`, at the centre of an axis-aligned 25 mm cube against the fixed
-pad. It is not on the fixed-jaw collision surface. For randomized cube yaw the
-reward does not use that fixed offset. If `n` is the fixed pad's world-space
-inward normal and `h` is the cube half-extent vector, it computes:
-
-```text
-support(n) = sum(abs(R_object^T n) * h)
-p_t = p_pad_center + n * (pad_thickness / 2 + support(n) + 0.0005)
-```
-
-This moves a 45-degree cube farther into the open gap by its projected support
-distance while keeping the other two coordinates aligned with the pad centre.
-
-The simulation robot has invisible collision-only bodies on the two inner jaw
-faces. Each is a 0.5 mm-thick, 18 x 25 mm pad with 0.1 g mass and a face 0.1 mm
-proud of the original mesh. Fixed-joint merging is disabled during URDF import,
-so the pads remain separate rigid bodies without adding controllable joints.
-The ordinary ROS Xacro leaves them out unless
-`simulation_contact_pads:=true` is explicitly selected.
-
-One PhysX contact sensor addresses each pad. Both retain four 120 Hz force
-samples. A valid grasp requires force greater than 0.1 N from both pads against
-the same cube in the same stored physics substep. Unilateral, asynchronous,
-exterior-jaw, and different-cube contacts are not valid grasps.
 
 The generated asset manifest supplies placement geometry. For the current cube
 and cup it is approximately:
@@ -209,81 +190,46 @@ Rebuilding different assets can change these values.
 
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
-| Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04))` | `+1.0` | Bring the fixed pad to the grasp target (jaw position does not enter) |
-| Closure progress | `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power once the cube edge is 1 mm inside the jaw tips | `+0.1` | Close around the cube on every pickup attempt |
-| Grasp acquired | one impulse per grasp attempt on rising-edge bilateral contact (re-arms when contact drops) | `+1.0` | Confirm a physical same-cube pinch and reward retries |
-| Grasp held | `1[cube between pads and q_g <= 0.15] * (0.3 + 0.7 * clip((p_o.z - z_rest) / 0.05, 0, 1))` each step (dense) | `+0.2` | Continuous hold signal bridging closure and lift, scaled so clamping on the table pays a fraction and a 5 cm lift pays fully |
-| Lift progress | `1[p_o.z >= z_rest + 0.001]` each step while bilateral contact holds (dense) | `+0.2` | Hold the pinched object off the table, independent of height |
+| Approach progress | new episode-best of `(1 - tanh(d_og / 0.08))` | `+1.0` | Bring the gripper's grasp region to the cube; jaw geometry does not enter |
+| Lift progress | `clip((p_o.z - z_rest) / 0.05, 0, 1)` each step (dense) | `+1.0` | The cube is picked up, however achieved |
 | Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= z_rest + 0.001] * decay(n_aloft)` | `+3.0` | Move the object toward the cup; full credit for ~0.5 s after lift then decaying to 0.2 over ~2 s so hovering cannot be farmed |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
 | Stable | `1[released, inside, and slow]` | `+20.0` | Complete a settled placement |
-| Action rate | `||a_t - a_(t-1)||^2` | `-0.02` | Discourage abrupt commands |
+| Action rate | `||a_t - a_(t-1)||^2` | `-0.005` | Discourage abrupt commands |
 | Joint velocity | `||joint_velocity||^2` | `-0.0005` | Discourage unnecessary speed |
 
-### Pickup reward chain (approach → grasp → lift)
+### Outcome ladder (approach → lift → transport)
 
-The five pickup terms form a gated cascade; each stage unlocks the next:
+The pickup half of the ladder is outcome-based rather than contact-based:
 
-1. **Approach** (weight `+1.0`) — episode-best alignment `1 - tanh(d_ot / 0.04)`
-   between the cube and the grasp target derived from the fixed pad. Pays only
-   new improvement, total budget `1`. Jaw position does not enter, so approach
-   never rewards being open and does not compete with closing.
+1. **Approach** (weight `+1.0`) — the only shaping term. It scores
+   `1 - tanh(d_og / 0.08)` between the cube centre and the nominal grasp
+   point and pays only the improvement over the episode's best score
+   (total budget `1`). Hovering at the cube or backing off and re-approaching
+   cannot farm it, and it prescribes nothing about approach direction,
+   orientation, or grasp strategy — it bridges the gap between flailing in
+   the void and the first lucky grasp that lift can reward.
 
-2. **Closure** (weight `+0.1`) — closing motion
-   `max(q_prev - q_g, 0) / 1.2` multiplied by `alignment^4`, gated on the cube
-   lying between the fixed and moving pads with its leading edge at least 1 mm
-   past the fixed-pad tip. Cube orientation is included when locating that
-   edge. Reopening pays zero, while a later aligned close can pay again after a
-   failed grip.
+2. **Lift** (weight `+1.0`, dense) — a smooth ramp on the cube's height above
+   its resting height, saturating 5 cm above rest (`height_scale = 0.05`).
+   Any method that raises the cube earns it: the first upward nudge pays a
+   sliver, a genuine hold pays the full amount. It cannot be farmed because
+   earning it requires the cube to actually be up. It is *not* gated on
+   contact: a scoop or squeeze that lifts the cube earns it identically to a
+   textbook pinch.
 
-3. **Grasp acquired** (weight `+1.0`) — one impulse the first substep both pads
-   exceed `0.1 N` against the same cube (bilateral contact). It is retryable:
-   the impulse re-arms the step bilateral contact is lost, so each fresh
-   pinch after a drop earns it again. Within one continuous contact session it
-   still fires at most once (rising edge), so holding cannot farm it.
-
-4. **Grasp held** (weight `+0.2`, dense) — pays every step the cube is between
-   the pads and the gripper is at or below `q_g = 0.15` rad. It is based on
-   grasp *geometry*, not contact force, so it gives a continuous hold signal
-   while the cube is clamped even when bilateral contact is marginal. The raw
-   binary mask is scaled by a height-progress term: clamping the cube at the
-   rest height pays `0.3` (the floor), ramping linearly to `1.0` over a 5 cm
-   lift (`height_scale = 0.05`), so a table-clamp earns a fraction of the
-   credit and a genuine lift earns the full amount. The `0.15` rad threshold
-   corresponds to a jaw gap only slightly wider than the 25 mm cube (the cube
-   physically stops the gripper near `0.10` rad), so the term means "actually
-   squeezing" rather than merely "closing near the cube." This is the dense
-   bridge between Closure and Lift that prevents the reach-and-fake-close stall
-   where approach/closure rise but grasp and lift stay flat, while the
-   height-progress scaling prevents the opposite failure of farming the term by
-   clamping the cube on the table indefinitely.
-
-5. **Lift** (weight `+0.2`, dense) — pays a constant `1` every step when
-   `p_o.z >= z_rest + 0.001` and bilateral contact holds. The reward is the
-   same whether the cube is 1 mm or 100 mm above its resting height, so it
-   encourages maintaining an off-table grip without driving the arm overhead.
-   Dropping or lowering the cube below the clearance makes the term zero.
-
-Alignment and the between-pads geometry gate Closure; the between-pads geometry
-plus the closed-gripper gate drive Grasp held; bilateral contact gates Lift.
-Approach remains non-farmable through its episode-best score. Closure is
-retryable so a failed grip does not remove its gradient, and its `+0.1` weight
-keeps a complete extra close well below the value of the physical grasp.
-Grasp acquired is retryable per attempt but bounded to one impulse per contact
-session, so sustained holding earns the dense Grasp-held and Lift rewards
-instead of farming the landmark. Lift is deliberately dense but
-height-invariant: it rewards continued off-table holding, while pushing or
-throwing the cube without a maintained bilateral grip earns no Lift reward.
-Transport activates at the same 1 mm clearance and supplies the directional
-signal toward the cup. Its raw term is multiplied by a per-env decay schedule
-`decay(n)` over the number of consecutive steps the cube has been continuously
-above the clearance: `1.0` for the first `grace_steps` (30) steps, then a linear
-ramp to `decay_floor` (0.2) over the next `decay_steps` (120) steps. The counter
-resets to zero the moment the cube drops below clearance, so a fresh transport
-after a genuine drop re-arms the full reward. This prevents the policy from
-settling into a stable hover-and-farm policy where the dense transport term
-dominates the sparse insertion/release/stability rewards.
+3. **Transport** (weight `+3.0`, dense) — activated once the cube centre clears
+   `z_rest + 0.001` m, `(1 - tanh(r_oc / 0.08))` supplies the directional
+   signal toward the cup. Its raw term is multiplied by a per-env decay
+   schedule `decay(n)` over the number of consecutive steps the cube has been
+   continuously above the clearance: `1.0` for the first `grace_steps` (30)
+   steps, then a linear ramp to `decay_floor` (0.2) over the next `decay_steps`
+   (120) steps. The counter resets to zero the moment the cube drops below
+   clearance, so a fresh transport after a genuine drop re-arms the full
+   reward. This prevents the policy from settling into a stable
+   hover-and-farm policy where the dense transport term dominates the sparse
+   insertion/release/stability rewards.
 
 Insertion progress is:
 
@@ -301,36 +247,27 @@ center_z_min <= z_oc <= center_z_max
 q_g >= 1.20 rad
 ```
 
-Isaac Lab treats reward weights as rates. Approach, Closure, and Grasp
-acquired divide their positive progress or impulse by `env.step_dt`, cancelling
-the manager's later time-step multiplication. Approach retains an episode
-budget of `1` and Grasp acquired `1` per grasp attempt (re-arming on loss).
-Each complete eligible close is worth at most `0.1`, and can pay again on a
-later retry. Grasp held and Lift are dense (rate form). Grasp held pays
-`0.2 * held * (0.3 + 0.7 * height_progress)` each step (at most `0.0067` per
-held step at full height), so it reinforces the gradient while the cube is
-clamped and lifted and falls to zero the instant the gripper opens past `0.15`
-rad. Lift pays `0.2 * lifted * contact` each step, so its episode total grows
-only with how long the cube is held off the table, not with its height. A full
-15-second single-box episode of uninterrupted holding contributes at most
-`3.0` from Lift. At 30 Hz:
+Isaac Lab treats reward weights as rates. Approach divides its positive
+progress by `env.step_dt`, cancelling the manager's later time-step
+multiplication; it retains an episode budget of `1`. Lift and Transport are
+dense (rate form). Lift pays at most `1.0 * 1.0 / 30 = 0.0333` per step at
+full height, so a full 15-second episode of uninterrupted full-height holding
+contributes at most `15.0`. At 30 Hz:
 
 ```text
 reward_t = (1/30) * sum(weight_i * raw_term_i)
 ```
 
-Transport, insertion, release, stable placement, action rate, and joint
-velocity are dense or penalty terms outside the pickup chain. Transport is
-stateful: it carries a per-env consecutive-steps-aloft counter so its decay
-schedule can be applied; the counter resets on env reset and whenever the cube
-drops below clearance.
+Transport is stateful: it carries a per-env consecutive-steps-aloft counter so
+its decay schedule can be applied; the counter resets on env reset and
+whenever the cube drops below clearance. Insertion, release, stable placement,
+action rate, and joint velocity are dense or penalty terms outside the pickup
+ladder.
 
 ### Reward limitations
 
-- The pads are a thin simulator-only approximation of the inner jaw surfaces;
-  they validate a bilateral pinch but do not model tactile pressure fields.
-- The pads are a thin simulator-only approximation of the inner jaw surfaces;
-  they validate a bilateral pinch but do not model tactile pressure fields.
+Single box:
+
 - Transport decays to `decay_floor` (0.2) within ~2.5 s of sustained aloft
   holding so it can no longer be farmed by hovering; a policy that genuinely
   needs longer to reposition may see reduced transport credit late in a long
@@ -338,17 +275,25 @@ drops below clearance.
 - The geometry-derived insertion tolerance is narrow; inspect trajectories
   before widening what counts as insertion.
 - Excessive smoothness penalties can suppress motion needed within 15 seconds.
-- Closure can be farmed by repeatedly reopening and reclosing around the cube;
+- Because lift and approach prescribe no grasp method, the shaped ladder alone
+  cannot distinguish a robust pinch from a marginal scoop; inspect held-out
+  trajectories and release behaviour before export.
+
+Three boxes (in addition to the above, where they apply):
+
+- The pads are a thin simulator-only approximation of the inner jaw surfaces;
+  they validate a bilateral pinch but do not model tactile pressure fields.
+- Closure can be farmed by repeatedly reopening and reclosing around a box;
   its `+0.1` weight keeps a full extra close well below a real grasp.
-- Grasp held is the intended remedy for the reach-and-fake-close stall
-  (approach/closure rising while grasp and lift stay flat): it supplies a
-  dense geometry-based hold signal between Closure and Lift. Its height-progress
-  scaling (0.3 on the table, 1.0 at a 5 cm lift) and reduced `+0.2` weight keep
-  it from being farmed by clamping the cube on the ground, while the `0.15` rad
-  closed-gripper gate keeps it focused on an actual squeeze.
-- Dense Lift can reward holding just above the table without transporting, but
-  its `+0.2` weight is intentionally small and Transport begins at the same
-  clearance.
+- Grasp held is geometry-based with no height scaling: clamping an unplaced
+  box between the pads with the gripper closed earns it even on the table. The
+  closed-gripper gate (`q_g <= 0.15` rad, versus the ~`0.10` rad the cube
+  physically permits) keeps it focused on an actual squeeze, and Lift requires
+  bilateral contact plus off-table height, so a table-clamp alone earns no
+  Lift.
+- Dense Lift can reward holding just above the table without transporting,
+  but its `+0.2` weight is intentionally small and Transport supplies the
+  directional signal toward an empty cup.
 
 Inspect `Episode_Reward/<term>` metrics and trajectories. Increasing total
 reward alone does not prove the intended behavior.
@@ -379,14 +324,112 @@ remain per box. Grasp and lift use the sensor filter
 for each box, so contacts on two different boxes cannot combine. The existing
 permutation-invariant placement mask excludes already placed boxes from all
 four pickup terms. Each sequential pickup therefore receives its own bounded
-`1 + 1 + 2 + 6` budget. Transport considers only unplaced boxes and empty cups.
+approach budget (`1`) plus one grasp-acquired impulse per grasp attempt, with
+dense closure, grasp-held, and lift credits in between. Transport considers
+only unplaced boxes and empty cups.
 Insertion, release, and stable-placement progress sum the best assignment and
 divide by three so their maximum raw values remain `1.0`.
 
-A placed box is considered released when the gripper is open or the grasp frame
-has moved at least 50 mm away. The distance alternative is necessary for a
-sequential task: closing the gripper around the next box must not invalidate
-earlier placements. Success requires all three boxes to be slow and inside
+### Contact pads and grasp targets
+
+The simulation robot has invisible collision-only bodies on the two inner jaw
+faces. Each is a 0.5 mm-thick, 18 x 25 mm pad with 0.1 g mass and a face 0.1 mm
+proud of the original mesh. Fixed-joint merging is disabled during URDF import,
+so the pads remain separate rigid bodies without adding controllable joints.
+The ordinary ROS Xacro leaves them out unless
+`simulation_contact_pads:=true` is explicitly selected.
+
+One PhysX contact sensor addresses each pad, filtered to the three boxes. Both
+retain four 120 Hz force samples. A valid grasp requires force greater than
+0.1 N from both pads against the same box in the same stored physics substep.
+Unilateral, asynchronous, exterior-jaw, and different-box contacts are not
+valid grasps.
+
+The pickup terms do not use the fixed single-box grasp-frame offset; the grasp
+target follows box orientation. If `n` is the fixed pad's world-space inward
+normal and `h` is the box half-extent vector, the attainable box centre is:
+
+```text
+support(n) = sum(abs(R_box^T n) * h)
+p_t = p_pad_center + n * (pad_thickness / 2 + support(n) + 0.0005)
+```
+
+This moves a 45-degree box farther into the open gap by its projected support
+distance while keeping the other two coordinates aligned with the pad centre.
+
+### Configured terms (three boxes)
+
+| Term | Raw value | Weight | Purpose |
+|---|---|---:|---|
+| Approach progress | new episode-best of `(1 - tanh(d_ot / 0.04))` per unplaced box | `+1.0` | Bring the fixed pad to the grasp target (jaw position does not enter) |
+| Closure progress | `max(q_prev - q_g, 0) / 1.2` times geometric alignment to the fourth power once the box edge is 1 mm inside the jaw tips | `+0.1` | Close around the box on every pickup attempt |
+| Grasp acquired | one impulse per grasp attempt on rising-edge bilateral contact (re-arms when contact drops) | `+1.0` | Confirm a physical same-box pinch and reward retries |
+| Grasp held | count of unplaced boxes between the pads with `q_g <= 0.15` each step (dense) | `+0.5` | Continuous hold signal bridging closure and lift |
+| Lift progress | count of unplaced boxes with `p_o.z >= z_rest + 0.001` and bilateral contact (dense) | `+0.2` | Hold pinched boxes off the table, independent of height |
+| Transport | best `(1 - tanh(r_oc / 0.08))` over unplaced-box/empty-cup pairs, gated on lift clearance | `+3.0` | Move each box toward some empty cup |
+| Insertion | best-assignment vertical progress times alignment, divided by three | `+5.0` | Lower aligned boxes |
+| Release | best-assignment placed-and-released mask, divided by three | `+8.0` | Open after insertion |
+| Stable | best-assignment released-inside-slow mask, divided by three | `+20.0` | Complete settled placements |
+| Action rate | `||a_t - a_(t-1)||^2` | `-0.02` | Discourage abrupt commands |
+| Joint velocity | `||joint_velocity||^2` | `-0.0005` | Discourage unnecessary speed |
+
+### Pickup reward chain (approach → closure → grasp → lift)
+
+The five pickup terms form a gated cascade; each stage unlocks the next:
+
+1. **Approach** (weight `+1.0`) — episode-best alignment `1 - tanh(d_ot / 0.04)`
+   between each unplaced box and its orientation-aware grasp target. Pays only
+   new improvement, total budget `1` per box. Jaw position does not enter, so
+   approach never rewards being open and does not compete with closing.
+
+2. **Closure** (weight `+0.1`) — closing motion
+   `max(q_prev - q_g, 0) / 1.2` multiplied by `alignment^4` of the
+   best-aligned unplaced box, gated on that box lying between the fixed and
+   moving pads with its leading edge at least 1 mm past the fixed-pad tip.
+   Box orientation is included when locating that edge. Reopening pays zero,
+   while a later aligned close can pay again after a failed grip.
+
+3. **Grasp acquired** (weight `+1.0`) — one impulse per box the first substep
+   both pads exceed `0.1 N` against that same box (bilateral contact). It is
+   retryable: the impulse re-arms the step bilateral contact is lost, so each
+   fresh pinch after a drop earns it again. Within one continuous contact
+   session it still fires at most once (rising edge), so holding cannot farm
+   it.
+
+4. **Grasp held** (weight `+0.5`, dense) — pays every step for each unplaced
+   box between the pads with the gripper at or below `q_g = 0.15` rad. It is
+   based on grasp *geometry*, not contact force, so it gives a continuous hold
+   signal while the box is clamped even when bilateral contact is marginal.
+   The `0.15` rad threshold corresponds to a jaw gap only slightly wider than
+   the 25 mm box (the box physically stops the gripper near `0.10` rad), so
+   the term means "actually squeezing" rather than merely "closing near the
+   box." It has no height scaling — clamping a box on the table earns it the
+   same as holding it aloft; see the limitations above.
+
+5. **Lift** (weight `+0.2`, dense) — pays a constant `1` per box each step
+   when its centre is at least 1 mm above rest **and** bilateral contact
+   holds. The reward is the same whether the box is 1 mm or 100 mm above its
+   resting height, so it encourages maintaining an off-table grip without
+   driving the arm overhead. Dropping or lowering the box below the clearance
+   makes the term zero.
+
+Alignment and the between-pads geometry gate Closure; the between-pads geometry
+plus the closed-gripper gate drive Grasp held; bilateral contact gates Grasp
+acquired and Lift. Approach remains non-farmable through its episode-best
+score. Closure is retryable so a failed grip does not remove its gradient, and
+its `+0.1` weight keeps a complete extra close well below the value of the
+physical grasp. Grasp acquired is retryable per attempt but bounded to one
+impulse per contact session, so sustained holding earns the dense Grasp-held
+and Lift rewards instead of farming the landmark. Unlike the single-box
+transport, the three-box transport has no decay schedule: it selects the best
+unplaced-box/empty-cup pair, and matched pairs drop out of both sides, so
+hovering with the last box can farm at most `(1 - tanh(r/0.08)) * 3 / 30` per
+step until insertion/release/stable pay far more.
+
+A placed box is considered released when the gripper is open (`q_g >= 1.20`)
+or the grasp frame has moved at least 50 mm away. The distance alternative is
+necessary for a sequential task: closing the gripper around the next box must
+not invalidate earlier placements. Success requires all three boxes to be slow and inside
 three distinct cups for fifteen consecutive steps. Any dropped box terminates the
 episode, and the horizon is 45 seconds.
 

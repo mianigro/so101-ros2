@@ -3,7 +3,6 @@
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
@@ -14,6 +13,7 @@ from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.substitutions import FindPackageShare
 from so101_bringup.camera_launch import (
@@ -21,6 +21,7 @@ from so101_bringup.camera_launch import (
     include_cameras,
     spawn_sim_camera_pipeline,
 )
+from so101_bringup.rerun_launch import declare_rerun_arguments, rerun_bridge_actions
 
 
 def generate_launch_description():
@@ -45,11 +46,18 @@ def generate_launch_description():
     experiment_name = LaunchConfiguration("experiment_name")
     task = LaunchConfiguration("task")
 
-    use_rerun = LaunchConfiguration("use_rerun")
-    use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     use_follower = LaunchConfiguration("use_follower")
-    rerun_env_dir = LaunchConfiguration("rerun_env_dir")
-    rerun_delay_s = LaunchConfiguration("rerun_delay_s")
+
+    # The recorder needs the joint-state topic of whichever follower is active:
+    # the physical stack publishes /follower/joint_states, the Isaac Sim
+    # follower publishes /follower_sim/joint_states.
+    joint_states_topic = PythonExpression(
+        [
+            "'/follower/joint_states' if '",
+            use_follower,
+            "'.lower() in ('true', '1') else '/follower_sim/joint_states'",
+        ]
+    )
 
     # --- Include leader bringup ---
     leader_launch = IncludeLaunchDescription(
@@ -117,54 +125,15 @@ def generate_launch_description():
         ),
         launch_arguments={
             "camera_profile": LaunchConfiguration("camera_profile"),
+            "joint_states_topic": joint_states_topic,
             "root_dir": root_dir,
             "experiment_name": experiment_name,
             "task": task,
         }.items(),
     )
 
-    # --- Launch Rerun
-    rerun_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi",
-            "run",
-            "bridge",
-            "--",
-            "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
-        cwd=rerun_env_dir,
-        additional_env={"PYTHONUNBUFFERED": "1"},
-        condition=IfCondition(use_rerun),
-        output="screen",
-    )
-
-    rerun_start = TimerAction(
-        period=rerun_delay_s,
-        actions=[rerun_bridge_proc],
-    )
-
-    # --- Launch Rerun 3D (animated URDF + TF + cameras + plots) ---
-
-    rerun_3d_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi",
-            "run",
-            "bridge-3d",
-            "--",
-            "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
-        cwd=rerun_env_dir,
-        additional_env={"PYTHONUNBUFFERED": "1"},
-        condition=IfCondition(use_rerun_3d),
-        output="screen",
-    )
-
-    rerun_3d_start = TimerAction(
-        period=rerun_delay_s,
-        actions=[rerun_3d_bridge_proc],
-    )
+    # --- Launch Rerun (validated 2D/3D bridges) ---
+    rerun_start = rerun_bridge_actions(LaunchConfiguration("camera_profile"))
 
     # --- Defaults for files ---
     default_leader_ctrl_cfg = PathJoinSubstitution(
@@ -202,7 +171,11 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_follower",
                 default_value="true",
-                description="Start the physical/mock follower controller manager",
+                description=(
+                    "Start the physical/mock follower controller manager. Set "
+                    "false when Isaac Sim is the follower; the recorder then "
+                    "records /follower_sim/joint_states."
+                ),
             ),
             DeclareLaunchArgument("leader_namespace", default_value="leader"),
             DeclareLaunchArgument("follower_namespace", default_value="follower"),
@@ -232,28 +205,13 @@ def generate_launch_description():
             DeclareLaunchArgument("root_dir", default_value=default_root_dir),
             DeclareLaunchArgument("experiment_name", default_value="pick_and_place"),
             DeclareLaunchArgument("task", default_value=""),
-            DeclareLaunchArgument("use_rerun", default_value="false"),
-            DeclareLaunchArgument(
-                "use_rerun_3d",
-                default_value="false",
-                description="Launch the 3D Rerun bridge (animated URDF + TF + cameras + plots)",
-            ),
-            DeclareLaunchArgument(
-                "rerun_env_dir",
-                # Best: set env var once, no need to pass each run:
-                # export SO101_RERUN_ENV_DIR=/abs/path/to/tools/rerun_env
-                default_value=EnvironmentVariable(
-                    "SO101_RERUN_ENV_DIR", default_value=""
-                ),
-            ),
-            DeclareLaunchArgument("rerun_delay_s", default_value=teleop_delay_s),
+            *declare_rerun_arguments(rerun_delay_default=teleop_delay_s),
             OpaqueFunction(function=spawn_sim_camera_pipeline),
             leader_launch,
             follower_launch,
             cameras_launch,
             recorder_launch,
             rerun_start,
-            rerun_3d_start,
             teleop_start,
         ]
     )

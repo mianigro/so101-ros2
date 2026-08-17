@@ -23,7 +23,12 @@ XACRO_PATH = REPO_ROOT / "so101_description" / "urdf" / "so101_arm.urdf.xacro"
 DESCRIPTION_PATH = REPO_ROOT / "so101_description"
 DEFAULT_ASSET_DIR = REPO_ROOT / "build" / "isaacsim_so101"
 DEFAULT_CAMERA_RIG_CONFIG = (
-    REPO_ROOT / "so101_bringup" / "config" / "cameras" / "isaac_dual_overhead.yaml"
+    REPO_ROOT
+    / "so101_bringup"
+    / "config"
+    / "cameras"
+    / "isaacsim_profiles"
+    / "isaac_dual_overhead.yaml"
 )
 
 ROBOT_PRIM_PATH = "/World/SO101"
@@ -34,7 +39,9 @@ GRIPPER_PRIM_PATH = (
 )
 ACTION_GRAPH_PATH = "/SO101_ROS2_ActionGraph"
 COMMAND_TOPIC = "/follower/forward_controller/commands"
-JOINT_STATE_TOPIC = "/follower/joint_states"
+# Distinct from the physical follower's /follower/joint_states so the sim can
+# run alongside the real follower without interleaving the two streams.
+JOINT_STATE_TOPIC = "/follower_sim/joint_states"
 CAMERA_NAMES_BY_PROFILE = {
     "none": (),
     "single_overhead": ("wrist", "overhead_1"),

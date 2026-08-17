@@ -58,6 +58,17 @@ def main() -> None:
         help="Required camera profile recorded in every input episode",
     )
     parser.add_argument(
+        "--joint-states-topic",
+        default="auto",
+        help=(
+            "Topic recorded as observation.state. 'auto' (default) resolves "
+            "per episode: /follower/joint_states for the physical follower, "
+            "/follower_sim/joint_states for Isaac Sim follower recordings, so "
+            "mixed directories convert in one run. Pass an explicit topic to "
+            "pin it for every episode."
+        ),
+    )
+    parser.add_argument(
         "--repo-id",
         required=True,
         help="HuggingFace repo ID (e.g., user/dataset_name)",
@@ -133,7 +144,9 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        cfg = load_config(args.config, args.camera_profile)
+        cfg = load_config(
+            args.config, args.camera_profile, joint_states_topic=args.joint_states_topic
+        )
 
         output_dir = args.output_dir.expanduser() if args.output_dir else None
         convert_all_bags(

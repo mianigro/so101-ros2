@@ -1,7 +1,5 @@
 schema_version: 1
 
-# First-pass calibration derived from the photographed rig, the supplied mount
-# meshes, and the approximately 430 mm vertical wrist-camera reference.
 resolution:
   width: 640
   height: 480

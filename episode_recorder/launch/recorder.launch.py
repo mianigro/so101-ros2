@@ -46,6 +46,37 @@ def generate_launch_description():
         choices=["single_overhead", "dual_overhead"],
     )
 
+    camera_profiles_dir = DeclareLaunchArgument(
+        "camera_profiles_dir",
+        default_value=PathJoinSubstitution(
+            [
+                FindPackageShare("so101_bringup"),
+                "config",
+                "cameras",
+                "profiles",
+            ]
+        ),
+        description=(
+            "Directory of camera-profile YAMLs the recorder derives its topic "
+            "set from (so101_bringup/config/cameras/profiles by default)"
+        ),
+    )
+
+    follower_namespace = DeclareLaunchArgument(
+        "follower_namespace",
+        default_value="follower",
+        description="Follower namespace used to render profile topic templates",
+    )
+
+    joint_states_topic = DeclareLaunchArgument(
+        "joint_states_topic",
+        default_value="/follower/joint_states",
+        description=(
+            "Follower joint-state topic to record. Use "
+            "/follower_sim/joint_states when Isaac Sim is the follower."
+        ),
+    )
+
     root_dir = DeclareLaunchArgument(
         "root_dir",
         default_value=default_root_dir,
@@ -80,6 +111,9 @@ def generate_launch_description():
             LaunchConfiguration("params_file"),
             {
                 "camera_profile": LaunchConfiguration("camera_profile"),
+                "camera_profiles_dir": LaunchConfiguration("camera_profiles_dir"),
+                "follower_namespace": LaunchConfiguration("follower_namespace"),
+                "joint_states_topic": LaunchConfiguration("joint_states_topic"),
                 "root_dir": LaunchConfiguration("root_dir"),
                 "experiment_name": LaunchConfiguration("experiment_name"),
                 "task": LaunchConfiguration("task"),
@@ -122,6 +156,9 @@ def generate_launch_description():
         [
             params_file,
             camera_profile,
+            camera_profiles_dir,
+            follower_namespace,
+            joint_states_topic,
             root_dir,
             experiment_name,
             task,

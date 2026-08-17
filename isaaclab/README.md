@@ -53,9 +53,11 @@ drives rewards, terminations, resets, and physics.
 
 The commands below assume:
 
-- repository: `/home/anon/Documents/so101-ros2`;
-- Isaac Lab: `/home/anon/Documents/IsaacLab`;
-- source-built Isaac Sim: `/home/anon/Documents/isaacsim`;
+- repository: cloned anywhere (examples use `/path/to/so101-ros2`);
+- Isaac Lab: `~/Documents/IsaacLab` — override with `SO101_ISAACLAB_ROOT`;
+- source-built Isaac Sim: `~/Documents/isaacsim` — override with
+  `SO101_ISAACSIM_PYTHON`, pointing at
+  `_build/linux-x86_64/release/python.sh` inside the source build;
 - camera profile: `dual_overhead`;
 - a CUDA GPU for visual training and deployment;
 - `cube.stl` is manipulated and `cup.stl` remains fixed during an episode;
@@ -64,8 +66,8 @@ The commands below assume:
 Start from the repository root:
 
 ```bash
-cd /home/anon/Documents/so101-ros2
-export ISAACLAB_PYTHON=/home/anon/Documents/IsaacLab/.venv/bin/python
+cd /path/to/so101-ros2
+export ISAACLAB_PYTHON=~/Documents/IsaacLab/.venv/bin/python
 ```
 
 The entry points automatically switch to the configured source-built Isaac Sim
@@ -131,10 +133,11 @@ If they are missing, build and source the ROS workspace, then generate them:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source /home/anon/Documents/so101-ros2/install/setup.bash
+SO101_REPO=/path/to/so101-ros2
+source "$SO101_REPO/install/setup.bash"
 
-/home/anon/Documents/isaacsim/_build/linux-x86_64/release/python.sh \
-  /home/anon/Documents/so101-ros2/scripts/isaac_sim_teleop.py \
+/path/to/isaacsim/_build/linux-x86_64/release/python.sh \
+  "$SO101_REPO/scripts/isaac_sim_teleop.py" \
   --camera-profile dual_overhead \
   --headless --max-frames 1 \
   --rebuild-asset
@@ -182,12 +185,15 @@ Isaac Sim visualizer. Before training, verify:
 - wrist camera attachment and both overhead camera poses;
 - camera optical axes, FOV, image content, and support geometry;
 - joint ordering, limits, initial pose, gripper direction, actions, and resets.
-- no pad/cube contact at reset, bilateral pad contact during a centred pinch,
-  and stable contact forces without pad/jaw overlap;
-- pickup metrics firing in order: `approach_progress`, `closure_progress`,
+- For the single-box task: the reward ladder metrics are `approach` (episode-best
+  proximity), `lift_progress`, then `transport`/`insertion`/`release`/`stable`.
+  The task is grasp-agnostic — there are no contact-sensor metrics to inspect.
+- For the three-box task: no pad/box contact at reset, bilateral pad contact
+  during a centred pinch, and stable contact forces without pad/jaw overlap;
+  pickup metrics firing in order `approach_progress`, `closure_progress`,
   `grasp_held`, `grasp_acquired`, then `lift_progress`, with no continuing
   approach reward while camping. `grasp_held` (dense, geometry-based) is the
-  bridge that should rise as the gripper clamps the cube, ahead of the
+  bridge that should rise as the gripper clamps the box, ahead of the
   contact-validated `grasp_acquired` and `lift_progress`.
 
 Exercise actions and resets with:
@@ -275,28 +281,33 @@ Require at least 95% fixed-task success and inspect contacts, release behavior,
 and camera inputs before continuing. This is an acceptance target, not a result
 already achieved by the repository.
 
-Reward or checkpoint return alone is insufficient: reject a run whose approach
-or closure metric rises while grasp and lift remain zero. The dense
-`grasp_held` term is the intended remedy for that stall — it should rise as the
-gripper clamps the cube (geometry-based, gated on a near-closed gripper) before
-the contact-validated `grasp_acquired` and `lift_progress`. `grasp_held` is
-height-scaled: it pays a fraction (0.3) when clamping the cube on the table and
-the full amount at a 5 cm lift, so a policy that sits on the ground will show a
-low, flat `grasp_held` while lift/transport stay flat. `grasp_acquired` is
-retryable per grasp attempt, so re-pinch after a drop is rewarded too.
+Reward or checkpoint return alone is insufficient.
+
+For the single-box task, reject a run whose `approach` metric rises while
+`lift_progress` stays zero: the policy is reaching the cube but not getting it
+off the table. Remember the ladder is grasp-agnostic — any lift counts, so a
+flat `lift_progress` with rising `approach` indicates a visual or control
+failure, not a wrong grasp style.
 
 Reject a run whose `transport` metric plateaus while insertion/release/stable
 stay zero: that indicates the policy is hovering the cube near the cup to farm
-the dense transport term. Transport now decays to 20% over ~2.5 s of sustained
+the dense transport term. Transport decays to 20% over ~2.5 s of sustained
 aloft holding and re-arms on a drop, so a healthy run shows `transport` rising
 and falling as the cube is carried and inserted, not a flat plateau.
 
-If `grasp_held` rises but `grasp_acquired`/`lift_progress` stay flat, the
-gripper is closing near the cube without achieving a real pinch — tighten the
-grasp (contact tuning) before resuming. Because the jaw collision geometry and
-pickup semantics changed together, start fixed-task training from scratch;
-older checkpoints remain structurally loadable but are not valid continuation
-points for this experiment.
+For the three-box task, reject a run whose `approach_progress` or
+`closure_progress` rises while grasp and lift remain zero. The dense
+`grasp_held` term is the intended remedy for that stall — it should rise as
+the gripper clamps the box (geometry-based, gated on a near-closed gripper)
+before the contact-validated `grasp_acquired` and `lift_progress`.
+`grasp_acquired` is retryable per grasp attempt, so re-pinch after a drop is
+rewarded too. If `grasp_held` rises but `grasp_acquired`/`lift_progress` stay
+flat, the gripper is closing near the box without achieving a real pinch —
+tighten the grasp (contact tuning) before resuming.
+
+Because the jaw collision geometry and pickup semantics changed together,
+start fixed-task training from scratch; older checkpoints remain structurally
+loadable but are not valid continuation points for this experiment.
 
 ## 4. Resume on the randomized task
 
@@ -533,7 +544,7 @@ Regenerate after robot, camera mount, cube, or cup geometry changes.
 ### Wrong camera views
 
 Stop training. Compare the fixed task with sim teleop at the same joint pose and
-inspect `so101_bringup/config/cameras/isaac_dual_overhead.yaml`. Nominal
+inspect `so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml`. Nominal
 calibration is not proof of pixel-perfect real calibration.
 
 ### CUDA out of memory

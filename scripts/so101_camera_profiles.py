@@ -1,36 +1,33 @@
-"""Canonical camera-profile definitions for SO-101 visualization tools."""
+"""Canonical camera-profile definitions for SO-101 visualization tools.
+
+Thin facade over ``rosbag_to_lerobot.camera_profiles``, which derives the
+camera contract from the so101_bringup camera-profile YAMLs (the single source
+of truth for the whole repository). Bag-metadata helpers live here because
+only the visualization tools need them.
+"""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-import yaml
+# Append the rosbag_to_lerobot project directory (not the repo root, which
+# would resolve rosbag_to_lerobot as a namespace package) so the regular
+# package inside it is importable.
+sys.path.append(str(Path(__file__).resolve().parent.parent / "rosbag_to_lerobot"))
 
-PROFILE_CAMERA_NAMES: dict[str, tuple[str, ...]] = {
-    "single_overhead": ("wrist", "overhead_1"),
-    "dual_overhead": ("wrist", "overhead_1", "overhead_2"),
-}
+from rosbag_to_lerobot.camera_profiles import (  # noqa: E402
+    CAMERA_NAMES_BY_PROFILE,
+    RAW_IMAGE_TOPICS,
+    camera_names,
+)
+import yaml  # noqa: E402
 
-RAW_IMAGE_TOPICS: dict[str, str] = {
-    "wrist": "/follower/image_raw",
-    "overhead_1": "/static_camera_1/image_raw",
-    "overhead_2": "/static_camera_2/image_raw",
-}
+PROFILE_CAMERA_NAMES: dict[str, tuple[str, ...]] = dict(CAMERA_NAMES_BY_PROFILE)
 
 COMPRESSED_IMAGE_TOPICS: dict[str, str] = {
     name: f"{topic}/compressed" for name, topic in RAW_IMAGE_TOPICS.items()
 }
-
-
-def camera_names(camera_profile: str) -> tuple[str, ...]:
-    """Return ordered canonical camera names for a profile."""
-    try:
-        return PROFILE_CAMERA_NAMES[camera_profile]
-    except KeyError as exc:
-        choices = ", ".join(PROFILE_CAMERA_NAMES)
-        raise ValueError(
-            f"camera_profile must be one of: {choices} (got {camera_profile!r})"
-        ) from exc
 
 
 def image_topics(camera_profile: str, *, compressed: bool) -> dict[str, str]:

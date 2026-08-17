@@ -21,9 +21,9 @@ Decoder-driven design:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -37,6 +37,8 @@ from rosbag_to_lerobot.camera_profiles import (
 _ALLOWED_STAMP_SRC = {"header", "bag"}
 CANONICAL_FPS = 30
 COMMAND_TOPIC = "/follower/forward_controller/commands"
+JOINT_STATE_TOPICS = ("/follower/joint_states", "/follower_sim/joint_states")
+JOINT_STATE_AUTO = "auto"
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,10 @@ class Config:
     task: str
     default_max_age_s: float = 0.2
     features: List[FeatureSpec] = field(default_factory=list)
+    # None = strict mode (the configured observation.state topic must exist in
+    # every bag). Set when --joint-states-topic auto lets each episode pick the
+    # first candidate present in its bag (physical vs Isaac Sim follower).
+    joint_state_topic_candidates: Optional[Tuple[str, ...]] = None
 
     def by_topic(self) -> Dict[str, FeatureSpec]:
         return {f.topic: f for f in self.features}
@@ -160,12 +166,18 @@ class Config:
             )
 
 
-def load_config(path: str | Path, camera_profile: str) -> Config:
+def load_config(
+    path: str | Path, camera_profile: str, joint_states_topic: Optional[str] = None
+) -> Config:
     """Load a YAML configuration file and return a validated :class:`Config`.
 
     Args:
         path (str | Path): Filesystem path to the timing/non-camera YAML config.
         camera_profile (str): ``single_overhead`` or ``dual_overhead``.
+        joint_states_topic (Optional[str]): Overrides the ``observation.state``
+            feature's topic. Pass ``/follower_sim/joint_states`` to pin Isaac Sim
+            follower recordings, or ``auto`` to resolve the topic per episode
+            from :data:`JOINT_STATE_TOPICS`.
 
     Returns:
         Config: Parsed configuration object.
@@ -190,6 +202,21 @@ def load_config(path: str | Path, camera_profile: str) -> Config:
                 "camera_profile"
             )
 
+    joint_state_candidates: Optional[Tuple[str, ...]] = None
+    if joint_states_topic == JOINT_STATE_AUTO:
+        primary = next(
+            feat["topic"]
+            for feat in raw_features
+            if feat.get("key") == "observation.state"
+        )
+        joint_state_candidates = (primary,) + tuple(
+            t for t in JOINT_STATE_TOPICS if t != primary
+        )
+    elif joint_states_topic is not None:
+        for feat in raw_features:
+            if feat.get("key") == "observation.state":
+                feat["topic"] = joint_states_topic
+
     features = [
         FeatureSpec(
             key=f"observation.images.{name}",
@@ -210,6 +237,59 @@ def load_config(path: str | Path, camera_profile: str) -> Config:
         task=raw["task"],
         default_max_age_s=raw.get("default_max_age_s", 0.2),
         features=features,
+        joint_state_topic_candidates=joint_state_candidates,
     )
     cfg.validate()
     return cfg
+
+
+def resolve_joint_state_topic(
+    cfg: Config, topic_types: Dict[str, str]
+) -> Tuple[Config, str]:
+    """Resolve the ``observation.state`` topic for a single bag.
+
+    Args:
+        cfg (Config): Conversion configuration, as returned by
+            :func:`load_config`.
+        topic_types (Dict[str, str]): ``topic -> msg_type`` map of one bag.
+
+    Returns:
+        Tuple[Config, str]: The config to use for this bag (a copy whose
+        ``observation.state`` topic was rewritten when a fallback candidate
+        was chosen) and the resolved topic name.
+
+    Raises:
+        ValueError: In auto mode, when no candidate topic exists in the bag
+            or the chosen one's type does not match the configured msg_type.
+    """
+    state_spec = cfg.by_key()["observation.state"]
+    if cfg.joint_state_topic_candidates is None:
+        return cfg, state_spec.topic
+
+    chosen = next(
+        (
+            t
+            for t in cfg.joint_state_topic_candidates
+            if t in topic_types
+        ),
+        None,
+    )
+    if chosen is None:
+        raise ValueError(
+            "no joint-states topic found in bag: expected one of "
+            f"{list(cfg.joint_state_topic_candidates)} "
+            "(feature=observation.state)"
+        )
+    if topic_types[chosen] != state_spec.msg_type:
+        raise ValueError(
+            f"type mismatch for {chosen}: config={state_spec.msg_type}, "
+            f"bag={topic_types[chosen]}"
+        )
+    if chosen == state_spec.topic:
+        return cfg, chosen
+
+    resolved = replace(state_spec, topic=chosen)
+    features = [
+        resolved if f.key == "observation.state" else f for f in cfg.features
+    ]
+    return replace(cfg, features=features), chosen

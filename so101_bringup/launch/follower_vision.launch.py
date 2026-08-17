@@ -1,4 +1,8 @@
-"""Follower arm + cameras with camera TF frames enabled."""
+"""Follower arm + cameras.
+
+The overhead cameras publish images only and are intentionally not part of the
+TF tree; see docs/hardware.md for the rig layout.
+"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
