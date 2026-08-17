@@ -30,14 +30,14 @@ For reinforcement learning and simulation Isaac Sim and Isaac Lab is used. Curre
 
 ```bash
 # Clone
-mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
-git clone --recurse-submodules https://github.com/legalaspro/so101-ros-physical-ai.git
-cd ~/ros2_ws
+cd ~/Documents
+git clone --recurse-submodules https://github.com/legalaspro/so101-ros-physical-ai.git so101-ros2
+cd ~/Documents/so101-ros2
 
 # Install deps and build
 sudo apt update
 rosdep update
-rosdep install --from-paths src --ignore-src -r -y
+rosdep install --from-paths so101_bringup so101_description so101_teleop episode_recorder rosbag_to_lerobot so101_inference policy_server feetech_ros2_driver --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -56,11 +56,17 @@ pixi install --all
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
 
 # Init
 export SO101_REPO=/home/anon/Documents/so101-ros2
-export SO101_RERUN_ENV_DIR=~/ros2_ws/src/so101-ros-physical-ai
+source $SO101_REPO/install/setup.bash
+
+# Rerun bridges run via Pixi; this must be the repo root that owns pixi.toml
+export SO101_RERUN_ENV_DIR=$SO101_REPO
+
+# Lets the Pixi bridge tasks source this workspace so package:// mesh URIs
+# resolve in the 3D Rerun view
+export ROS_WS=$SO101_REPO
 ```
 
 ---
@@ -82,7 +88,8 @@ export SO101_CAMERA_RIG="$SO101_REPO/so101_bringup/config/cameras/camera_rig/dua
 
 ros2 launch so101_bringup teleop.launch.py \
   camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG 
+  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  use_teleop_rviz:=true
 ```
 
 
@@ -366,14 +373,14 @@ Convert recorded MCAP episodes into LeRobot v3.0 datasets (local or on the Hub) 
 # Local dataset
 pixi run -e lerobot convert -- \
   --input-dir ~/.ros/so101_episodes/pick_and_place \
-  --config ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config $SO101_REPO/rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile $SO101_CAMERA_PROFILE \
   --repo-id local/so101_test
 
 # Convert and push to the Hub
 pixi run -e lerobot convert -- \
   --input-dir ~/.ros/so101_episodes/pick_and_place \
-  --config ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config $SO101_REPO/rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile $SO101_CAMERA_PROFILE \
   --repo-id <hf-username>/so101-pick-and-place \
   --push-hub

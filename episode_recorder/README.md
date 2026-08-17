@@ -24,7 +24,7 @@ instead of being presented as valid data.
 Recommended full-stack launch:
 
 ```bash
-export SO101_RERUN_ENV_DIR=~/ros2_ws/src/so101-ros-physical-ai
+export SO101_RERUN_ENV_DIR=/home/anon/Documents/so101-ros2  # repo root that owns pixi.toml
 ros2 launch so101_bringup recording_session.launch.py \
   camera_profile:=single_overhead \
   camera_rig_config_file:=/absolute/path/to/camera_rig.yaml \

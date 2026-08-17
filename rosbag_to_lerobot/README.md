@@ -38,7 +38,7 @@ This package runs inside the **`lerobot` Pixi environment** defined by the root 
 
 ```bash
 # Make sure Pixi is installed — https://pixi.sh
-# All commands below are run from the repo root (so101-ros-physical-ai/)
+# All commands below are run from the repo root (so101-ros2/)
 ```
 
 > **Note:** The ROS 2 environment must be sourceable (and your workspace built if you rely on custom message types), because the converter uses ROS 2 Python libraries (`rosbag2_py`, message definitions, `rclpy.serialization`) at runtime.
@@ -52,7 +52,7 @@ No Hugging Face account required. Use `local/` as the repo-id prefix to keep eve
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config     rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile single_overhead \
   --repo-id    local/so101_test
 ```
@@ -101,7 +101,7 @@ pixi run -e lerobot -- hf auth whoami
 ```bash
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place_2 \
-  --config     ~/ros2_ws/src/so101-ros-physical-ai/rosbag_to_lerobot/config/so101_30hz.yaml \
+  --config     rosbag_to_lerobot/config/so101_30hz.yaml \
   --camera-profile dual_overhead \
   --repo-id    <hf-username>/so101-pick-and-place \
   --push-hub
