@@ -1,0 +1,12 @@
+services:
+  training-ppo:
+    build: .
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1 
+    volumes:
+      - ./runs:/app/runs:rw,z
+    ports:
+      - "6006:6006" 
+    user: "1000:1000"
+    command: bash -c "tensorboard --logdir=/app/runs --host 0.0.0.0 & python3 /app/train.py"

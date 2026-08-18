@@ -217,10 +217,10 @@ def declare_setup_arguments(*, use_cameras_default: str = "true"):
         DeclareLaunchArgument("use_cameras", default_value=use_cameras_default),
         DeclareLaunchArgument(
             "setup",
-            default_value="",
+            default_value="monomanual",
             description=(
-                "Required when physical or simulated cameras are enabled: "
-                "monomanual, monomanual_dual_overhead, or bimanual"
+                "Canonical rig to launch: monomanual (default), "
+                "monomanual_dual_overhead, or bimanual"
             ),
         ),
         DeclareLaunchArgument(

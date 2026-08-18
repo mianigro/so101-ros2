@@ -1,0 +1,9 @@
+runs
+results
+evaluation_results
+__pycache__
+*.safetensors
+*.pth
+*.mp4
+_vizdoom.ini
+_vizdoom
