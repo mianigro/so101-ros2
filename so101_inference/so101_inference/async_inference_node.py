@@ -34,10 +34,10 @@ from std_msgs.msg import Float64MultiArray
 
 from so101_inference import CONTROL_FREQUENCY_HZ
 from so101_inference.async_client import AsyncInferenceClient, ClientCfg
-from so101_inference.camera_config import (
+from so101_inference.setup_config import (
     build_lerobot_features,
     camera_subscription_topics,
-    camera_topics_for_profile,
+    camera_topics_for_setup,
     streams_fresh,
     streams_ready,
 )
@@ -58,7 +58,7 @@ class AsyncRos2InferenceClient(Node):
         self.declare_parameter("server_address", "127.0.0.1:8090")
         self.declare_parameter("policy_type", "act")
         self.declare_parameter("repo_id", "")
-        self.declare_parameter("camera_profile", "")
+        self.declare_parameter("setup", "")
         self.declare_parameter("policy_device", "cuda")
         self.declare_parameter("actions_per_chunk", 100)
         self.declare_parameter("chunk_size_threshold", 0.5)
@@ -66,8 +66,9 @@ class AsyncRos2InferenceClient(Node):
         self.declare_parameter("task", "put the green cube in the cup")
         self.declare_parameter("aggregate_fn_name", "weighted_average")
 
-        self.declare_parameter("fwd_topic", "/follower/forward_controller/commands")
-        self.declare_parameter("joints_topic", "/follower/joint_states")
+        # Per-follower topics; empty entries are derived from the setup.
+        self.declare_parameter("joints_topics", [""])
+        self.declare_parameter("fwd_topics", [""])
 
         # When True, subscribe to CompressedImage topics and forward
         # raw JPEG bytes to the server (decoded server-side).
@@ -97,13 +98,26 @@ class AsyncRos2InferenceClient(Node):
             aggregate_fn_name=str(self.get_parameter("aggregate_fn_name").value),
         )
 
-        self.fwd_topic = str(self.get_parameter("fwd_topic").value)
-        self.joints_topic = str(self.get_parameter("joints_topic").value)
-        self.camera_profile = str(self.get_parameter("camera_profile").value).strip()
+        self.setup = str(self.get_parameter("setup").value).strip()
         if not cfg.repo_id:
             raise ValueError("repo_id is required and must not be empty")
-        self.camera_topics = camera_topics_for_profile(self.camera_profile)
+        self.camera_topics = camera_topics_for_setup(self.setup)
         self.arm_joints = list(self.get_parameter("arm_joints").value)
+        from rosbag_to_lerobot.setups import (
+            command_topics,
+            joint_state_topics,
+            state_names,
+        )
+
+        self.joints_topics = self._resolve_topic_list(
+            self.get_parameter("joints_topics").value, joint_state_topics(self.setup)
+        )
+        self.fwd_topics = self._resolve_topic_list(
+            self.get_parameter("fwd_topics").value, command_topics(self.setup)
+        )
+        if len(self.joints_topics) != len(self.fwd_topics):
+            raise ValueError("joints_topics and fwd_topics must have equal length")
+        self.state_keys = [f"{label}.pos" for label in state_names(self.setup)]
 
         self._use_compressed = bool(self.get_parameter("use_compressed").value)
 
@@ -123,7 +137,7 @@ class AsyncRos2InferenceClient(Node):
         else:
             transport = GrpcTransport(cfg.server_address, logger=self.get_logger())
 
-        lerobot_features = build_lerobot_features(self.camera_profile)
+        lerobot_features = build_lerobot_features(self.setup)
         self.client = AsyncInferenceClient(
             transport=transport,
             cfg=cfg,
@@ -139,17 +153,19 @@ class AsyncRos2InferenceClient(Node):
             camera_name: None for camera_name in self.camera_topics
         }
         self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
-        self._rx_joints = None
+
+        # Per-follower joint caches; the concatenated vector follows the setup order
+        self._latest_joints_vecs: list[np.ndarray | None] = [None] * len(self.joints_topics)
+        self._rx_joints: list = [None] * len(self.joints_topics)
 
         self._joint_idx: list[int] | None = None
         self._joint_idx_ready = False
-        self._latest_joints_vec: np.ndarray | None = None
 
         # --------------------
         #  ROS2 Subscribers, Publishers, Timers
         # --------------------
         subscription_topics = camera_subscription_topics(
-            self.camera_profile, self._use_compressed
+            self.setup, self._use_compressed
         )
         message_type = CompressedImage if self._use_compressed else Image
         for camera_name, camera_topic in subscription_topics.items():
@@ -163,9 +179,18 @@ class AsyncRos2InferenceClient(Node):
             self._log.info(
                 f"📷 Using COMPRESSED images: {list(subscription_topics.values())}"
             )
-        self.create_subscription(JointState, self.joints_topic, self._on_joints_cb, qos_profile_sensor_data)
+        for index, joints_topic in enumerate(self.joints_topics):
+            self.create_subscription(
+                JointState,
+                joints_topic,
+                partial(self._on_joints_cb, index),
+                qos_profile_sensor_data,
+            )
 
-        self.forward_pub = self.create_publisher(Float64MultiArray, self.fwd_topic, 10)
+        self.forward_pubs = [
+            self.create_publisher(Float64MultiArray, fwd_topic, 10)
+            for fwd_topic in self.fwd_topics
+        ]
 
         period = 1.0 / CONTROL_FREQUENCY_HZ
         self.create_timer(period, self.control_loop)
@@ -177,11 +202,11 @@ class AsyncRos2InferenceClient(Node):
         self._log.info(f"  server:             {self.cfg.server_address}")
         self._log.info(f"  policy:             {self.cfg.policy_type} | {self.cfg.repo_id}")
         self._log.info(f"  policy_device:      {self.cfg.policy_device}")
-        self._log.info(f"  camera_profile:     {self.camera_profile}")
+        self._log.info(f"  camera setup:       {self.setup}")
         for camera_name, camera_topic in self.camera_topics.items():
             self._log.info(f"  camera {camera_name}: {camera_topic}")
-        self._log.info(f"  joints_topic:       {self.joints_topic}")
-        self._log.info(f"  fwd_topic:          {self.fwd_topic}")
+        for joints_topic, fwd_topic in zip(self.joints_topics, self.fwd_topics):
+            self._log.info(f"  arm topics:         {joints_topic} -> {fwd_topic}")
         self._log.info(f"  fps:                {self.cfg.fps:.1f}  (period={period * 1000:.1f}ms)")
         self._log.info(f"  actions/chunk:      {self.cfg.actions_per_chunk}")
         self._log.info(f"  chunk_threshold:    {self.cfg.chunk_size_threshold}")
@@ -193,6 +218,14 @@ class AsyncRos2InferenceClient(Node):
     #   ROS Callbacks
     # ---------------------------------
 
+    @staticmethod
+    def _resolve_topic_list(configured, setup_topics) -> list[str]:
+        """Use setup-derived topics unless every configured entry is set."""
+        values = [str(value).strip() for value in configured]
+        if values and all(values):
+            return values
+        return list(setup_topics)
+
     def _on_camera_image_cb(
         self, camera_name: str, msg: Image | CompressedImage
     ) -> None:
@@ -202,13 +235,15 @@ class AsyncRos2InferenceClient(Node):
             self._latest_camera_data[camera_name] = msg
         self._rx_cameras[camera_name] = self.get_clock().now()
 
-    def _on_joints_cb(self, msg: JointState):
+    def _on_joints_cb(self, arm_index: int, msg: JointState):
         if not self._joint_idx_ready:
             if not self._initialize_joint_indices(msg):
                 return
         pos = msg.position
-        self._latest_joints_vec = np.array([pos[i] for i in self._joint_idx], dtype=np.float32)
-        self._rx_joints = self.get_clock().now()
+        self._latest_joints_vecs[arm_index] = np.array(
+            [pos[i] for i in self._joint_idx], dtype=np.float32
+        )
+        self._rx_joints[arm_index] = self.get_clock().now()
 
     def _initialize_joint_indices(self, msg: JointState) -> bool:
         name_to_idx = {name: i for i, name in enumerate(msg.name)}
@@ -238,14 +273,16 @@ class AsyncRos2InferenceClient(Node):
                 self._latest_camera_data,
                 self._rx_cameras,
             )
-            and self._latest_joints_vec is not None
-            and self._rx_joints is not None
+            and all(vec is not None for vec in self._latest_joints_vecs)
+            and all(rx is not None for rx in self._rx_joints)
         )
 
     def _is_data_fresh(self) -> bool:
         now = self.get_clock().now()
 
-        received_at = {**self._rx_cameras, "joints": self._rx_joints}
+        received_at = {**self._rx_cameras}
+        for index, rx in enumerate(self._rx_joints):
+            received_at[f"joints_{index}"] = rx
         return streams_fresh(received_at, now, self.cfg.max_age_s)
 
     def _get_data_ages(self) -> dict[str, float]:
@@ -255,13 +292,14 @@ class AsyncRos2InferenceClient(Node):
         for camera_name, received_at in self._rx_cameras.items():
             if received_at is not None:
                 ages[camera_name] = (now - received_at).nanoseconds * 1e-6
-        if self._rx_joints is not None:
-            ages["joints"] = (now - self._rx_joints).nanoseconds * 1e-6
+        for index, rx in enumerate(self._rx_joints):
+            if rx is not None:
+                ages[f"joints_{index}"] = (now - rx).nanoseconds * 1e-6
         return ages
 
     def _build_raw_observation(self) -> dict:
-        j = self._latest_joints_vec
-        joints_str = " ".join(f"{v:+.4f}" for v in j)
+        joints = np.concatenate(self._latest_joints_vecs)
+        joints_str = " ".join(f"{v:+.4f}" for v in joints)
 
         camera_data = {}
         camera_summaries = []
@@ -278,12 +316,7 @@ class AsyncRos2InferenceClient(Node):
         )
 
         return {
-            "shoulder_pan.pos": float(j[0]),
-            "shoulder_lift.pos": float(j[1]),
-            "elbow_flex.pos": float(j[2]),
-            "wrist_flex.pos": float(j[3]),
-            "wrist_roll.pos": float(j[4]),
-            "gripper.pos": float(j[5]),
+            **{key: float(value) for key, value in zip(self.state_keys, joints)},
             **camera_data,
             "task": self.cfg.task,
         }
@@ -306,7 +339,7 @@ class AsyncRos2InferenceClient(Node):
                 self._log.warn(
                     f"⏳ Waiting for sensor data... "
                     f"{camera_status} "
-                    f"joints={'✓' if self._latest_joints_vec is not None else '✗'}"
+                    f"joints={'✓' if all(v is not None for v in self._latest_joints_vecs) else '✗'}"
                 )
             return
 
@@ -321,9 +354,14 @@ class AsyncRos2InferenceClient(Node):
         if self.client.actions_available():
             action_np = self.client.pop_action()
             if action_np is not None:
-                msg = Float64MultiArray()
-                msg.data = action_np.tolist()
-                self.forward_pub.publish(msg)
+                # Split the concatenated action per follower and publish each slice
+                joints_per_arm = len(action_np) // len(self.forward_pubs)
+                for index, publisher in enumerate(self.forward_pubs):
+                    msg = Float64MultiArray()
+                    msg.data = action_np[
+                        index * joints_per_arm:(index + 1) * joints_per_arm
+                    ].tolist()
+                    publisher.publish(msg)
         else:
             if self.client._control_loop_count % 30 == 0:
                 self._log.debug("⏸️ No actions in queue to execute")

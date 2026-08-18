@@ -1,9 +1,7 @@
 """Shared launch-description pieces for the strict camera subsystem."""
 
 import json
-import os
 
-from ament_index_python.packages import get_package_share_directory
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
@@ -23,12 +21,11 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
-from so101_bringup.camera_config import (
-    CameraConfigError,
+from so101_bringup.setup_config import (
+    SetupConfigError,
+    default_setups_dir,
     load_camera_setup,
-    load_profile,
-    normalize_frame_prefix,
-    normalize_namespace,
+    load_setup,
 )
 
 
@@ -45,12 +42,7 @@ def _shutdown_when_process_exits(action, label: str) -> RegisterEventHandler:
     )
 
 
-def spawn_cameras(context):
-    """Create validated driver and supervisor actions for one profile."""
-    profile_name = LaunchConfiguration("camera_profile").perform(context).strip()
-    rig_path = LaunchConfiguration("camera_rig_config_file").perform(context).strip()
-    follower_namespace = LaunchConfiguration("follower_namespace").perform(context)
-    frame_prefix = LaunchConfiguration("follower_frame_prefix").perform(context)
+def _camera_timeouts(context):
     startup_timeout = float(
         LaunchConfiguration("camera_startup_timeout_s").perform(context)
     )
@@ -58,20 +50,20 @@ def spawn_cameras(context):
         LaunchConfiguration("camera_stale_timeout_s").perform(context)
     )
     if startup_timeout <= 0 or stale_timeout <= 0:
-        raise CameraConfigError("camera startup/stale timeouts must be positive")
+        raise SetupConfigError("camera startup/stale timeouts must be positive")
+    return startup_timeout, stale_timeout
 
-    profiles_dir = os.path.join(
-        get_package_share_directory("so101_bringup"),
-        "config",
-        "cameras",
-        "profiles",
-    )
+
+def spawn_cameras(context):
+    """Create validated driver and supervisor actions for one setup."""
+    setup_name = LaunchConfiguration("setup").perform(context).strip()
+    setup_config_file = LaunchConfiguration("setup_config_file").perform(context).strip()
+    startup_timeout, stale_timeout = _camera_timeouts(context)
+
     cameras = load_camera_setup(
-        profile_name,
-        profiles_dir,
-        rig_path,
-        follower_namespace,
-        frame_prefix,
+        setup_name,
+        default_setups_dir(),
+        path=setup_config_file or None,
         validate_devices=True,
     )
 
@@ -128,56 +120,37 @@ def spawn_sim_camera_pipeline(context):
     if not use_sim_cameras:
         return []
     if IfCondition(LaunchConfiguration("use_cameras")).evaluate(context):
-        raise CameraConfigError(
+        raise SetupConfigError(
             "use_cameras and use_sim_cameras cannot both be true; "
             "select exactly one camera source"
         )
 
-    profile_name = LaunchConfiguration("camera_profile").perform(context).strip()
-    follower_namespace = normalize_namespace(
-        LaunchConfiguration("follower_namespace").perform(context)
-    )
-    frame_prefix = normalize_frame_prefix(
-        LaunchConfiguration("follower_frame_prefix").perform(context)
-    )
-    if follower_namespace != "follower" or frame_prefix != "follower/":
-        raise CameraConfigError(
-            "simulated cameras use the fixed /follower topic and follower/ frame "
-            "contract; keep the default follower namespace and frame prefix"
-        )
-    startup_timeout = float(
-        LaunchConfiguration("camera_startup_timeout_s").perform(context)
-    )
-    stale_timeout = float(
-        LaunchConfiguration("camera_stale_timeout_s").perform(context)
-    )
-    if startup_timeout <= 0 or stale_timeout <= 0:
-        raise CameraConfigError("camera startup/stale timeouts must be positive")
+    setup_name = LaunchConfiguration("setup").perform(context).strip()
+    setup_config_file = LaunchConfiguration("setup_config_file").perform(context).strip()
+    startup_timeout, stale_timeout = _camera_timeouts(context)
 
-    profiles_dir = os.path.join(
-        get_package_share_directory("so101_bringup"),
-        "config",
-        "cameras",
-        "profiles",
-    )
-    logical_cameras = load_profile(profile_name, profiles_dir)
+    setup = load_setup(setup_name, default_setups_dir(), path=setup_config_file or None)
+    if setup.sim is None:
+        raise SetupConfigError(
+            f"setup '{setup.name}' does not define a sim section; Isaac Sim "
+            f"cameras are only supported for setups with sim geometry"
+        )
+    sim_topics = {
+        camera["image_topic"]
+        for camera in _sim_cameras(setup)
+    }
+    profile_topics = {camera["image_topic"] for camera in setup.cameras}
+    if sim_topics != profile_topics:
+        raise SetupConfigError(
+            f"setup '{setup.name}' sim camera topics must match cameras.profile "
+            f"topics exactly"
+        )
+
+    actions = []
     camera_names: list[str] = []
     raw_topics: list[str] = []
-    actions = []
-    for camera in logical_cameras:
-        try:
-            raw_topic = camera["image_topic"].format(
-                follower_namespace=follower_namespace,
-                frame_prefix=frame_prefix,
-            )
-        except (KeyError, ValueError) as error:
-            raise CameraConfigError(
-                f"invalid image topic template for {camera['id']}: {error}"
-            ) from error
-        if not raw_topic.startswith("/"):
-            raise CameraConfigError(
-                f"camera {camera['id']} profile image topic must be absolute"
-            )
+    for camera in setup.cameras:
+        raw_topic = camera["image_topic"]
 
         republisher = Node(
             package="image_transport",
@@ -232,38 +205,46 @@ def spawn_sim_camera_pipeline(context):
     return actions
 
 
-def declare_camera_arguments(*, use_cameras_default: str = "true"):
+def _sim_cameras(setup):
+    sim_cameras = setup.sim.get("cameras") if setup.sim else None
+    if not isinstance(sim_cameras, dict):
+        raise SetupConfigError("sim section must define a cameras mapping")
+    return list(sim_cameras.values())
+
+
+def declare_setup_arguments(*, use_cameras_default: str = "true"):
     return [
         DeclareLaunchArgument("use_cameras", default_value=use_cameras_default),
         DeclareLaunchArgument(
-            "camera_profile",
+            "setup",
             default_value="",
             description=(
                 "Required when physical or simulated cameras are enabled: "
-                "single_overhead or dual_overhead"
+                "monomanual, monomanual_dual_overhead, or bimanual"
             ),
         ),
         DeclareLaunchArgument(
-            "camera_rig_config_file",
+            "setup_config_file",
             default_value="",
-            description="Required absolute path to the external physical camera rig YAML",
+            description=(
+                "Optional absolute path to an edited external copy of a setup "
+                "YAML (defaults to so101_bringup/config/setups/<setup>.yaml)"
+            ),
         ),
         DeclareLaunchArgument("camera_startup_timeout_s", default_value="10.0"),
         DeclareLaunchArgument("camera_stale_timeout_s", default_value="1.0"),
     ]
 
 
-def include_cameras(follower_namespace, follower_frame_prefix):
+def include_cameras():
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([
             FindPackageShare("so101_bringup"), "launch", "cameras.launch.py"
         ])),
         condition=IfCondition(LaunchConfiguration("use_cameras")),
         launch_arguments={
-            "camera_profile": LaunchConfiguration("camera_profile"),
-            "camera_rig_config_file": LaunchConfiguration("camera_rig_config_file"),
-            "follower_namespace": follower_namespace,
-            "follower_frame_prefix": follower_frame_prefix,
+            "setup": LaunchConfiguration("setup"),
+            "setup_config_file": LaunchConfiguration("setup_config_file"),
             "camera_startup_timeout_s": LaunchConfiguration("camera_startup_timeout_s"),
             "camera_stale_timeout_s": LaunchConfiguration("camera_stale_timeout_s"),
         }.items(),

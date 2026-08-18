@@ -9,7 +9,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     arguments = [
         DeclareLaunchArgument("model_dir"),
-        DeclareLaunchArgument("camera_profile", default_value="dual_overhead"),
+        DeclareLaunchArgument("setup", default_value="monomanual_dual_overhead"),
         DeclareLaunchArgument("device", default_value="cuda:0"),
         DeclareLaunchArgument("max_age_s", default_value="0.2"),
         DeclareLaunchArgument("max_skew_s", default_value="0.05"),
@@ -25,7 +25,7 @@ def generate_launch_description():
         parameters=[
             {
                 "model_dir": LaunchConfiguration("model_dir"),
-                "camera_profile": LaunchConfiguration("camera_profile"),
+                "setup": LaunchConfiguration("setup"),
                 "device": LaunchConfiguration("device"),
                 "max_age_s": LaunchConfiguration("max_age_s"),
                 "max_skew_s": LaunchConfiguration("max_skew_s"),

@@ -53,12 +53,15 @@ No Hugging Face account required. Use `local/` as the repo-id prefix to keep eve
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place \
   --config     rosbag_to_lerobot/config/so101_30hz.yaml \
-  --camera-profile single_overhead \
+  --setup monomanual \
   --repo-id    local/so101_test
 ```
 
-`--camera-profile` is required. `single_overhead` emits `wrist` and
-`overhead_1`; `dual_overhead` additionally emits `overhead_2`. The converter
+`--setup` is required. `monomanual` emits `wrist` and
+`overhead_1`; `monomanual_dual_overhead` additionally emits `overhead_2`;
+`bimanual` emits `wrist_left`, `wrist_right`, and `overhead_1` (convert with
+`config/bimanual_30hz.yaml`, which concatenates both followers into a
+12-dimensional `observation.state` and `action`). The converter
 checks every episode for the exact selected camera set and canonical 30 Hz
 command cadence before it deletes or creates output.
 
@@ -69,7 +72,7 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 | Flag | Description |
 |------|-------------|
 | `--overwrite` | Delete the complete resolved output directory and rebuild it; never append or resume |
-| `--joint-states-topic` | `auto` (default) resolves `observation.state` per episode — `/follower/joint_states` for the physical follower, `/follower_sim/joint_states` for the Isaac Sim follower — so mixed directories convert in one run. Pass an explicit topic to pin it for every episode |
+| `--joint-states-topic` | `auto` (default) resolves the primary `observation.state` topic per episode — `/follower/joint_states` for the physical follower, `/follower_sim/joint_states` for the Isaac Sim follower — so mixed directories convert in one run. Pass an explicit topic to pin it for every episode (single-arm setups only) |
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
 | `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
@@ -103,7 +106,7 @@ pixi run -e lerobot -- hf auth whoami
 pixi run -e lerobot convert -- \
   --input-dir  ~/.ros/so101_episodes/pick_and_place_2 \
   --config     rosbag_to_lerobot/config/so101_30hz.yaml \
-  --camera-profile dual_overhead \
+  --setup monomanual_dual_overhead \
   --repo-id    <hf-username>/so101-pick-and-place \
   --push-hub
 ```
@@ -149,18 +152,19 @@ For a live example, see [legalaspro/so101-ros-physical-ai-test](https://huggingf
 ## Configuration
 
 Conversion uses the canonical
-[`config/so101_30hz.yaml`](config/so101_30hz.yaml), plus the required camera
-profile. The rate and command reference are validated rather than treated as
-alternate conversion modes.
+[`config/so101_30hz.yaml`](config/so101_30hz.yaml) (or
+[`config/bimanual_30hz.yaml`](config/bimanual_30hz.yaml) for bimanual), plus
+the required setup. The rate and command reference are validated rather than
+treated as alternate conversion modes.
 
 | Field | Purpose |
 |-------|---------|
 | `robot_type` | Robot identifier written into the dataset metadata |
 | `fps` | Canonical dataset rate; must be `30` |
-| `reference_topic` | Must be `/follower/forward_controller/commands` |
+| `reference_topic` | Must be the setup's primary command topic (`/follower_left/forward_controller/commands` for bimanual) |
 | `task` | Task label written to every frame |
 | `default_max_age_s` | Default freshness window for feature sampling |
-| `features[]` | Non-camera features; camera entries are rejected because `--camera-profile` owns them |
+| `features[]` | Non-camera features; camera entries are rejected because `--setup` owns them. A feature may list several `topics:` (multi-arm setups) — the decoded vectors are concatenated in listed order into one dataset column |
 
 ### `stamp_src` — Timestamp Source
 
@@ -186,11 +190,11 @@ pixi run -e lerobot convert -- --help
 ```
 
 ```
-usage: convert --input-dir DIR --config FILE --camera-profile PROFILE --repo-id ID [options]
+usage: convert --input-dir DIR --config FILE --setup SETUP --repo-id ID [options]
 
   --input-dir       Directory containing episode bag subdirectories
   --config          Path to YAML config file
-  --camera-profile  single_overhead or dual_overhead
+  --setup           monomanual, monomanual_dual_overhead, or bimanual
   --repo-id         HuggingFace repo ID (e.g. user/dataset_name or local/name)
   --joint-states-topic  auto (default): /follower/joint_states or
                     /follower_sim/joint_states, resolved per episode; or an

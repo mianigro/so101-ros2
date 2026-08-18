@@ -40,40 +40,44 @@ def generate_launch_description():
         description="YAML with episode_recorder storage and timing parameters",
     )
 
-    camera_profile = DeclareLaunchArgument(
-        "camera_profile",
-        description="Required camera profile: single_overhead or dual_overhead",
-        choices=["single_overhead", "dual_overhead"],
+    setup = DeclareLaunchArgument(
+        "setup",
+        description=(
+            "Required setup: monomanual, monomanual_dual_overhead, or bimanual"
+        ),
+        choices=["monomanual", "monomanual_dual_overhead", "bimanual"],
     )
 
-    camera_profiles_dir = DeclareLaunchArgument(
-        "camera_profiles_dir",
+    setups_dir = DeclareLaunchArgument(
+        "setups_dir",
         default_value=PathJoinSubstitution(
             [
                 FindPackageShare("so101_bringup"),
                 "config",
-                "cameras",
-                "profiles",
+                "setups",
             ]
         ),
         description=(
-            "Directory of camera-profile YAMLs the recorder derives its topic "
-            "set from (so101_bringup/config/cameras/profiles by default)"
+            "Directory of setup YAMLs the recorder derives its topic "
+            "set from (so101_bringup/config/setups by default)"
         ),
     )
 
-    follower_namespace = DeclareLaunchArgument(
-        "follower_namespace",
-        default_value="follower",
-        description="Follower namespace used to render profile topic templates",
+    setup_config_file = DeclareLaunchArgument(
+        "setup_config_file",
+        default_value="",
+        description=(
+            "Optional absolute path to an edited external copy of the setup "
+            "YAML; overrides setups_dir/<setup>.yaml"
+        ),
     )
 
     joint_states_topic = DeclareLaunchArgument(
         "joint_states_topic",
-        default_value="/follower/joint_states",
+        default_value="",
         description=(
-            "Follower joint-state topic to record. Use "
-            "/follower_sim/joint_states when Isaac Sim is the follower."
+            "Optional override of the primary follower joint-state topic "
+            "(use /follower_sim/joint_states when Isaac Sim is the follower)."
         ),
     )
 
@@ -110,9 +114,9 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration("params_file"),
             {
-                "camera_profile": LaunchConfiguration("camera_profile"),
-                "camera_profiles_dir": LaunchConfiguration("camera_profiles_dir"),
-                "follower_namespace": LaunchConfiguration("follower_namespace"),
+                "setup": LaunchConfiguration("setup"),
+                "setups_dir": LaunchConfiguration("setups_dir"),
+                "setup_config_file": LaunchConfiguration("setup_config_file"),
                 "joint_states_topic": LaunchConfiguration("joint_states_topic"),
                 "root_dir": LaunchConfiguration("root_dir"),
                 "experiment_name": LaunchConfiguration("experiment_name"),
@@ -155,9 +159,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             params_file,
-            camera_profile,
-            camera_profiles_dir,
-            follower_namespace,
+            setup,
+            setups_dir,
+            setup_config_file,
             joint_states_topic,
             root_dir,
             experiment_name,

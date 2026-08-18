@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .paths import CAMERA_PROFILE_PATH
+from .paths import SETUP_PATH
 
 CAMERA_NAMES = ("wrist", "overhead_1", "overhead_2")
 POLICY_IMAGE_WIDTH = 160
 POLICY_IMAGE_HEIGHT = 120
 POLICY_FREQUENCY_HZ = 30.0
+NOMINAL_SETUP = "monomanual_dual_overhead"
 
 
 def _vector(mapping: dict[str, Any], key: str, length: int) -> tuple[float, ...]:
@@ -27,22 +29,27 @@ def _vector(mapping: dict[str, Any], key: str, length: int) -> tuple[float, ...]
     return result
 
 
-def load_camera_profile(path: Path = CAMERA_PROFILE_PATH) -> dict[str, Any]:
-    """Load the checked-in dual-overhead profile and enforce the deployment schema."""
+def load_camera_profile(path: Path = SETUP_PATH) -> dict[str, Any]:
+    """Load the nominal setup's sim section and enforce the deployment schema."""
     path = path.expanduser().resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"camera profile does not exist: {path}")
+        raise FileNotFoundError(f"setup config does not exist: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema_version") != 1:
-        raise ValueError("camera profile must be a schema_version 1 mapping")
-    cameras = data.get("cameras")
+        raise ValueError("setup config must be a schema_version 1 mapping")
+    if data.get("setup") != NOMINAL_SETUP:
+        raise ValueError(f"visual policies require setup {NOMINAL_SETUP!r}")
+    sim = data.get("sim")
+    if not isinstance(sim, dict):
+        raise ValueError(f"setup {NOMINAL_SETUP!r} must define a sim section")
+    cameras = sim.get("cameras")
     if not isinstance(cameras, dict) or tuple(cameras) != CAMERA_NAMES:
-        raise ValueError(f"camera profile must define cameras in order {CAMERA_NAMES}")
-    resolution = data.get("resolution")
+        raise ValueError(f"sim cameras must be defined in order {CAMERA_NAMES}")
+    resolution = sim.get("resolution")
     if resolution != {"width": 640, "height": 480}:
-        raise ValueError("dual_overhead source resolution must remain 640x480")
-    if not math.isclose(float(data.get("fps", 0.0)), 30.0):
-        raise ValueError("dual_overhead cameras must remain 30 Hz")
+        raise ValueError("monomanual_dual_overhead source resolution must remain 640x480")
+    if not math.isclose(float(sim.get("fps", 0.0)), 30.0):
+        raise ValueError("monomanual_dual_overhead cameras must remain 30 Hz")
 
     wrist = cameras["wrist"]
     _vector(wrist, "translation_m", 3)
@@ -59,13 +66,16 @@ def load_camera_profile(path: Path = CAMERA_PROFILE_PATH) -> dict[str, Any]:
         fov = float(cameras[name].get("horizontal_fov_deg", 0.0))
         if not 0.0 < fov < 179.0:
             raise ValueError(f"{name} horizontal FOV is invalid: {fov}")
-    data["_path"] = path
-    return data
+    sim["_path"] = path
+    return sim
 
 
-def camera_profile_sha256(path: Path = CAMERA_PROFILE_PATH) -> str:
-    """Return the byte-exact nominal camera calibration hash."""
-    return hashlib.sha256(path.expanduser().resolve().read_bytes()).hexdigest()
+def camera_profile_sha256(path: Path = SETUP_PATH) -> str:
+    """Return the canonical hash of the nominal sim camera calibration."""
+    sim = load_camera_profile(path)
+    sim.pop("_path", None)
+    canonical = json.dumps(sim, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def wxyz_to_xyzw(quaternion: tuple[float, ...] | list[float]) -> tuple[float, ...]:

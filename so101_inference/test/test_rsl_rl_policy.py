@@ -14,6 +14,7 @@ import torch
 from so101_inference.rsl_rl_policy import (
     EXPECTED_CAMERAS,
     EXPECTED_JOINTS,
+    REQUIRED_SETUP,
     load_policy_manifest,
     preprocess_rgb,
     safe_absolute_targets,
@@ -29,7 +30,7 @@ def _write_manifest(
     checksum = hashlib.sha256(policy_path.read_bytes()).hexdigest()
     manifest = {
         "schema_version": schema_version,
-        "camera_profile": "dual_overhead",
+        "setup": REQUIRED_SETUP,
         "actor_observations": {
             "camera_order": list(EXPECTED_CAMERAS),
             "cameras": [
@@ -102,18 +103,25 @@ class RslRlPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             _write_manifest(directory)
-            loaded = load_policy_manifest(directory, "dual_overhead")
+            loaded = load_policy_manifest(directory, REQUIRED_SETUP)
             self.assertEqual(loaded["schema_version"], 2)
 
             for frequency_hz in (20.0, 50.0):
                 _write_manifest(directory, frequency_hz=frequency_hz)
                 with self.subTest(frequency_hz=frequency_hz):
                     with self.assertRaisesRegex(ValueError, "frequency must be 30 Hz"):
-                        load_policy_manifest(directory, "dual_overhead")
+                        load_policy_manifest(directory, REQUIRED_SETUP)
 
             _write_manifest(directory, schema_version=1)
             with self.assertRaisesRegex(ValueError, "unsupported policy manifest schema"):
-                load_policy_manifest(directory, "dual_overhead")
+                load_policy_manifest(directory, REQUIRED_SETUP)
+
+    def test_manifest_rejects_other_setups(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            _write_manifest(directory)
+            with self.assertRaisesRegex(ValueError, "requires setup"):
+                load_policy_manifest(directory, "bimanual")
 
     def test_fifty_millisecond_timestamp_gate(self):
         base = 1_000_000_000

@@ -16,12 +16,12 @@ For reinforcement learning and simulation Isaac Sim and Isaac Lab is used. Curre
 ## Requirements
 
 - **Ubuntu 24.04** + **ROS 2 Jazzy**
-- One SO-101 arm for leader and one for for hardware teleop
+- One SO-101 leader/follower pair (`monomanual`, `monomanual_dual_overhead`) or two pairs (`bimanual`)
 - Isaac Sim 6.0.1 for simulated-follower teleop
-- Two or three cameras, matching the `single_overhead` or `dual_overhead` profile
+- Two to four cameras, matching the selected setup's `cameras.profile`
 - `rosdep`, `colcon`, and [Pixi](https://pixi.sh/)
 
-> **Before launching ROS**, complete LeRobot motor setup + calibration for both arms and create the udev rules / camera rig YAML. ROS uses the calibration stored by LeRobot — do not command the arms until this is done.
+> **Before launching ROS**, complete LeRobot motor setup + calibration for every arm and create the udev rules for your setup. ROS uses the calibration stored by LeRobot — do not command the arms until this is done.
 > **[→ Full hardware setup guide (docs/hardware.md)](docs/hardware.md)**
 
 ---
@@ -82,13 +82,11 @@ Mirror the physical leader arm to the physical follower through the `forward_con
 source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
 
-export SO101_CAMERA_PROFILE=dual_overhead
+export SO101_SETUP=monomanual_dual_overhead
 export SO101_REPO=/home/anon/Documents/so101-ros2
-export SO101_CAMERA_RIG="$SO101_REPO/so101_bringup/config/cameras/camera_rig/dual_overhead.yaml"
 
 ros2 launch so101_bringup teleop.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=$SO101_SETUP \
   use_teleop_rviz:=true
 ```
 
@@ -123,8 +121,7 @@ SO101_REPO=/home/anon/Documents/so101-ros2
 source "$SO101_REPO/install/setup.bash"
 
 "$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
-  --camera-profile dual_overhead \
-  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml"
+  --setup monomanual_dual_overhead
 ```
 
 The first run expands the follower Xacro with `use_ros2_control:=false` and
@@ -133,15 +130,15 @@ collision-only jaw pads, and imports a fixed-base USD into the ignored
 `build/isaacsim_so101/` directory. Fixed-joint merging is disabled so the pads
 remain independently sensor-addressable rigid bodies; the ordinary ROS
 description defaults the pads off. Use `--rebuild-asset` after changing the Xacro or
-meshes. The importer creates no symlinks. The default `dual_overhead` camera profile also converts the two supplied
+meshes. The importer creates no symlinks. The default `monomanual_dual_overhead` setup also converts the two supplied
 mount STLs into that cache, assembles the left/right supports, and creates all three RTX cameras at 640×480 and 30 Hz.
 
-The editable first-pass calibration is
-[`so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml`](so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml). It
+The editable first-pass calibration is the `sim:` section of
+[`so101_bringup/config/setups/monomanual_dual_overhead.yaml`](so101_bringup/config/setups/monomanual_dual_overhead.yaml). It
 owns the support placement, wrist transform, camera look-at targets, FOV, topics, and frame ids. The camera
 contract is fixed: wrist publishes on `/follower/image_raw`, left `overhead_1` on
 `/static_camera_1/image_raw`, and right `overhead_2` on `/static_camera_2/image_raw`; each also publishes its matching
-`camera_info`. No physical camera-rig file is used for these simulated streams. Press **Play** after the scene is ready.
+`camera_info`. No physical rig devices are used for these simulated streams. Press **Play** after the scene is ready.
 
 **Terminal 2 — physical leader and command relay:**
 
@@ -182,7 +179,7 @@ joint states on the separate `/follower_sim/joint_states` topic. This is useful 
 `/follower/joint_states` and the sim's `/follower_sim/joint_states` can be compared side by side while both track the
 leader.
 
-Run the sim with `--camera-profile none` in this mode; the simulated cameras publish on the same fixed topics as the
+Run the sim with `--setup none` in this mode; the simulated cameras publish on the same fixed topics as the
 physical cameras and would collide with them.
 
 **Terminal 1 — physical leader, physical follower, and command relay:**
@@ -204,7 +201,7 @@ SO101_REPO=/home/anon/Documents/so101-ros2
 source "$SO101_REPO/install/setup.bash"
 
 "$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
-  --camera-profile none \
+  --setup none \
   --no-publish-clock
 ```
 
@@ -231,13 +228,11 @@ This workflow uses the physical leader, physical follower, and physical cameras.
 source /opt/ros/jazzy/setup.bash
 source /home/anon/Documents/so101-ros2/install/setup.bash
 
-export SO101_CAMERA_PROFILE=dual_overhead
+export SO101_SETUP=monomanual_dual_overhead
 export SO101_REPO=/home/anon/Documents/so101-ros2
-export SO101_CAMERA_RIG="$SO101_REPO/so101_bringup/config/cameras/camera_rig/dual_overhead.yaml"
 
 ros2 launch so101_bringup recording_session.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=$SO101_SETUP \
   experiment_name:=pick_and_place \
   task:="Pick up the cube and place it in the container." \
   use_rerun:=true
@@ -281,8 +276,7 @@ SO101_REPO=/home/anon/Documents/so101-ros2
 source "$SO101_REPO/install/setup.bash"
 
 "$ISAACSIM_BUILD/python.sh" "$SO101_REPO/scripts/isaac_sim_teleop.py" \
-  --camera-profile dual_overhead \
-  --camera-rig-config "$SO101_REPO/so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml"
+  --setup monomanual_dual_overhead
 ```
 
 Wait for `Isaac Sim is ready`, then press **Play**. Isaac Sim now owns the three raw camera streams and publishes the
@@ -296,7 +290,7 @@ SO101_REPO=/home/anon/Documents/so101-ros2
 source "$SO101_REPO/install/setup.bash"
 
 ros2 launch so101_bringup recording_session.launch.py \
-  camera_profile:=dual_overhead \
+  setup:=monomanual_dual_overhead \
   use_follower:=false \
   use_cameras:=false \
   use_sim_cameras:=true \
@@ -319,7 +313,7 @@ ros2 run episode_recorder teleop_episode_keyboard
 
 Press **r**, operate the physical leader, and press **s** to save or **d** to discard. The keyboard controls only the
 recorder; the physical leader continues to control the simulated arm. With `use_follower:=false` the recorder records
-`/follower_sim/joint_states`. Convert the result with `so101_30hz.yaml` and `--camera-profile dual_overhead` as shown
+`/follower_sim/joint_states`. Convert the result with `so101_30hz.yaml` and `--setup monomanual_dual_overhead` as shown
 in [LeRobot dataset conversion](#lerobot-dataset-conversion), adding `--joint-states-topic /follower_sim/joint_states`
 because the simulated follower publishes its state on that topic.
 
@@ -328,7 +322,7 @@ because the simulated follower publishes its state on that topic.
 ```bash
 pixi run replay -- \
   --episodes_root ~/.ros/so101_episodes/pick_and_place \
-  --camera-profile $SO101_CAMERA_PROFILE
+  --setup $SO101_SETUP
 ```
 
 See the [episode_recorder README](episode_recorder/README.md) for details.
@@ -339,8 +333,7 @@ Use the follower-only recording stack so teleop cannot publish competing command
 
 ```bash
 ros2 launch so101_bringup follower_recording.launch.py \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=monomanual_dual_overhead \
   experiment_name:=ppo_pick_and_place \
   task:="Pick up the cube and place it in the container."
 ```
@@ -350,7 +343,7 @@ mode before arming:
 
 ```bash
 ros2 launch so101_inference rsl_rl_infer.launch.py \
-  model_dir:="$ARTIFACT_DIR" camera_profile:=dual_overhead
+  model_dir:="$ARTIFACT_DIR" setup:=monomanual_dual_overhead
 
 ros2 service call /so101_rl/set_enabled \
   std_srvs/srv/SetBool "{data: true}"
@@ -375,19 +368,19 @@ Convert recorded MCAP episodes into LeRobot v3.0 datasets (local or on the Hub) 
 pixi run -e lerobot convert -- \
   --input-dir ~/.ros/so101_episodes/pick_and_place \
   --config $SO101_REPO/rosbag_to_lerobot/config/so101_30hz.yaml \
-  --camera-profile $SO101_CAMERA_PROFILE \
+  --setup $SO101_SETUP \
   --repo-id local/so101_test
 
 # Convert and push to the Hub
 pixi run -e lerobot convert -- \
   --input-dir ~/.ros/so101_episodes/pick_and_place \
   --config $SO101_REPO/rosbag_to_lerobot/config/so101_30hz.yaml \
-  --camera-profile $SO101_CAMERA_PROFILE \
+  --setup $SO101_SETUP \
   --repo-id <hf-username>/so101-pick-and-place \
   --push-hub
 ```
 
-If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. The `observation.state` topic resolves per episode: `/follower/joint_states` for physical-follower recordings, `/follower_sim/joint_states` for Isaac Sim follower recordings — so directories mixing both sources convert in a single run (when a bag contains both topics, the physical follower wins). Pass an explicit `--joint-states-topic` to pin one topic for every episode; a bag containing neither fails loudly. See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
+If the output already exists, conversion stops. Pass `--overwrite` to rebuild from scratch. The `observation.state` topic resolves per episode: `/follower/joint_states` for physical-follower recordings, `/follower_sim/joint_states` for Isaac Sim follower recordings — so directories mixing both sources convert in a single run (when a bag contains both topics, the physical follower wins). Pass an explicit `--joint-states-topic` to pin one topic for every episode (single-arm setups only); a bag containing neither fails loudly. Bimanual recordings convert with `--config .../bimanual_30hz.yaml --setup bimanual`. See the [rosbag_to_lerobot README](rosbag_to_lerobot/README.md).
 
 ---
 
@@ -416,8 +409,7 @@ Deploy trained LeRobot policies on the follower arm. All modes publish to the sa
 
 ```bash
 ros2 launch so101_bringup inference.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=$SO101_SETUP \
   use_inference:=true \
   repo_id:=your-org/your-dual-overhead-act-policy
 ```
@@ -427,13 +419,12 @@ ros2 launch so101_bringup inference.launch.py \
 ```bash
 # Arm control over ROS
 ros2 launch so101_bringup follower_vision.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG
+  setup:=$SO101_SETUP
 
 # Inference server for ACT / SmolVLA
 pixi run -e lerobot async_infer -- --ros-args \
     -p repo_id:="your-org/your-dual-overhead-smolvla-policy" \
-    -p camera_profile:=$SO101_CAMERA_PROFILE \
+    -p setup:=$SO101_SETUP \
     -p policy_type:=smolvla \
     -p task:="Pick up the cube and place it in the container." \
     -p server_address:=192.168.1.100:8090
@@ -441,14 +432,14 @@ pixi run -e lerobot async_infer -- --ros-args \
 # Inference server for  Pi0.5 / x-VLA — set actions_per_chunk to ~half the policy's chunk size
 pixi run -e lerobot async_infer -- --ros-args \
     -p repo_id:="your-org/your-dual-overhead-xvla-policy" \
-    -p camera_profile:=$SO101_CAMERA_PROFILE \
+    -p setup:=$SO101_SETUP \
     -p policy_type:=pi05 \
     -p task:="Pick up the cube and place it in the container." \
     -p server_address:=192.168.1.100:8090 \
     -p actions_per_chunk:=16
 ```
 
-The policy's image features must exactly match the selected `camera_profile` (no feature-rename). See the [so101_inference README](so101_inference/README.md) and [policy_server README](policy_server/README.md) for all parameters.
+The policy's image features and state dimension must exactly match the selected `setup` (no feature-rename). See the [so101_inference README](so101_inference/README.md) and [policy_server README](policy_server/README.md) for all parameters.
 
 ---
 
@@ -471,12 +462,11 @@ Runs in the browser via Pixi. Two variants — both show camera feeds plus `stat
 ```bash
 # During teleop / recording / inference, swap RViz for the 3D bridge:
 ros2 launch so101_bringup teleop.launch.py \
-  camera_profile:=$SO101_CAMERA_PROFILE \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=$SO101_SETUP \
   use_rerun_3d:=true use_teleop_rviz:=false
 
 # Or standalone
-pixi run bridge-3d -- --camera-profile $SO101_CAMERA_PROFILE
+pixi run bridge-3d -- --setup $SO101_SETUP
 ```
 
 Rerun launches its own web viewer by default. Pass `--viewer native` to open the native Rerun app instead.
@@ -510,24 +500,22 @@ These are the cross-cutting arguments accepted by the top-level launch files (`t
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `hardware_type` | `real` | Selects which `ros2_control` hardware plugin the URDF/xacro compiles in. `real` → the `feetech_ros2_driver` talks to the physical STS3215 servos over USB. `mock` → `mock_components/GenericSystem`, a fake plant that simulates the 6 joints in software with no hardware attached. Use `mock` to test launch files, the recorder, or inference wiring without the arms plugged in. (Source comments mention `mujoco` but no plugin is wired for it — treat it as unimplemented.) |
-| `use_follower` | `true` | Start the follower `ros2_control` stack. Set `false` when Isaac Sim is the follower; leave `true` to run the physical follower and the Isaac Sim script together (both follow the same command topic, joint states stay on `/follower/joint_states` and `/follower_sim/joint_states`). In the recording session `false` also switches the recorder to `/follower_sim/joint_states`. |
-| `leader_usb_port` | `/dev/so101_leader` | USB device path for the **leader** arm. These are udev-symlink stable names (created from the rules in `docs/hardware.md`), not raw `/dev/ttyUSB0` which can reorder on replug. Only used by teleop/recording launches (the leader is absent during inference). |
-| `follower_usb_port` | `/dev/so101_follower` | USB device path for the **follower** arm — the one that actually moves. Used by every launch that brings up `ros2_control`. |
+| `use_follower` | `true` | Start the follower `ros2_control` stacks (one per follower in the setup). Set `false` when Isaac Sim is the follower (single-pair setups only); leave `true` to run the physical follower and the Isaac Sim script together (both follow the same command topic, joint states stay on `/follower/joint_states` and `/follower_sim/joint_states`). In the recording session `false` also switches the recorder to `/follower_sim/joint_states`. |
 
-**Cameras**
+Namespaces, USB ports, and world placement of every arm come from the setup YAML — there are no per-arm launch arguments.
+
+**Cameras and setups**
 
 A `camera_supervisor` node enforces both timeouts and **shuts down the whole launch** if any camera misses them.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `use_cameras` | `true` | Master gate. When `true`, spawns every camera driver in the selected profile plus the supervisor. When `false`, no camera nodes start — useful for motor-only flows or when cameras are temporarily down. |
+| `use_cameras` | `true` | Master gate. When `true`, spawns every camera driver in the selected setup plus the supervisor. When `false`, no camera nodes start — useful for motor-only flows or when cameras are temporarily down. |
 | `use_sim_cameras` | `false` | Recording-session gate for Isaac streams. When `true`, starts raw-to-JPEG republishers plus the same fail-fast watchdog. It is mutually exclusive with `use_cameras`; use `use_cameras:=false use_sim_cameras:=true` for simulation. |
-| `camera_profile` | required | The **logical** camera set. `single_overhead` = wrist + 1 overhead; `dual_overhead` = wrist + 2 overheads. This single value is enforced identically across recording, Rerun, conversion, and inference — it determines which image topics get recorded, which become LeRobot features, and which the policy expects at inference. Use the same profile end-to-end. |
-| `camera_rig_config_file` | required | Absolute path to the **external physical-rig YAML** (schema in `docs/hardware.md` §6.1). Not in the repo because it's machine-specific: it maps each profile camera id (`wrist`, `overhead_1`, `overhead_2`) to a real `/dev/...` device symlink via udev. At launch, each device is validated to exist and be a RW character device before any driver starts — a bad path fails immediately. |
-| `camera_startup_timeout_s` | `10.0` | **Cold-start deadline.** The supervisor waits this long for every camera in the profile to publish its first frame. If any stream doesn't appear in time, the supervisor exits → the whole launch shuts down. Raise this on a slow USB bus or cold boot. The recorder also independently refuses to start an episode until every topic is fresh (`start_gate_max_age_s`). |
+| `setup` | required | The canonical rig: `monomanual` = 1 arm pair + wrist + 1 overhead; `monomanual_dual_overhead` = 1 arm pair + wrist + 2 overheads; `bimanual` = 2 arm pairs + 2 wrists + 1 shared overhead. One YAML in `so101_bringup/config/setups/` fully defines the setup (arms, logical camera contract, physical rig, sim geometry). This single value is enforced identically across bringup, recording, Rerun, conversion, and inference — it determines which arms spawn, which image topics get recorded, which become LeRobot features, and which the policy expects at inference. Use the same setup end-to-end. |
+| `setup_config_file` | *(setup YAML in the repo)* | Optional absolute path to an edited copy of a setup YAML — e.g. your machine's device paths. At launch, each camera device is validated to exist and be a RW character device before any driver starts — a bad path fails immediately. |
+| `camera_startup_timeout_s` | `10.0` | **Cold-start deadline.** The supervisor waits this long for every camera in the setup to publish its first frame. If any stream doesn't appear in time, the supervisor exits → the whole launch shuts down. Raise this on a slow USB bus or cold boot. The recorder also independently refuses to start an episode until every topic is fresh (`start_gate_max_age_s`). |
 | `camera_stale_timeout_s` | `1.0` | **Runtime freshness limit.** Once cameras are up, the supervisor flags a stream as dead if no frame arrives for this long → launch shuts down. 1.0 s is conservative for 30 fps cameras; tighten to catch USB drops faster, loosen for flaky hardware. (The recorder and inference node have *separate* freshness gates — `start_gate_max_age_s` and `max_age_s` respectively — so this is the system-wide watchdog, not the only check.) |
-
-Profile and rig file are two halves of one config: the profile is the portable half shipped in the repo, and the rig file is the machine-specific half that maps it onto real `/dev/` nodes, so it is never committed. Neither works without the other.
 
 **Visualization Options**
 
@@ -542,8 +530,10 @@ Profile and rig file are two halves of one config: the profile is the portable h
 ```bash
 # Minimal real-hardware teleop (cameras + RViz, all defaults)
 ros2 launch so101_bringup teleop.launch.py \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=$SO101_CAMERA_RIG
+  setup:=monomanual_dual_overhead
+
+# Bimanual rig
+ros2 launch so101_bringup teleop.launch.py setup:=bimanual
 
 # No-camera motor test on real arms
 ros2 launch so101_bringup teleop.launch.py \
@@ -555,18 +545,16 @@ ros2 launch so101_bringup teleop.launch.py \
 
 # Real recording with the 3D Rerun bridge (the recording session never starts RViz)
 ros2 launch so101_bringup recording_session.launch.py \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=$SO101_CAMERA_RIG \
+  setup:=monomanual_dual_overhead \
   use_rerun_3d:=true
 ```
 
 ### Config files
 
-- `so101_bringup/config/ros2_control/` — `forward_controller` + `joint_state_broadcaster` parameters
-- `so101_bringup/config/cameras/profiles/` — the two canonical camera profiles; physical device paths and driver overrides live in the external rig YAML
-- `so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml` — editable simulated mount/camera calibration used by the Isaac script
+- `so101_bringup/config/setups/` — one YAML per canonical setup (`monomanual`, `monomanual_dual_overhead`, `bimanual`): arms (namespaces, USB ports, TF placement), logical camera contract, physical rig devices, and Isaac Sim geometry (`sim:` section). Controller parameters are generated from the setup at launch.
 - `so101_teleop/config/teleop.yaml` — relay rate, stale timeout, joint order
 - `episode_recorder/config/recorder.yaml` — MCAP storage and timing
+- `rosbag_to_lerobot/config/so101_30hz.yaml` / `bimanual_30hz.yaml` — per-setup LeRobot conversion schemas
 
 ---
 

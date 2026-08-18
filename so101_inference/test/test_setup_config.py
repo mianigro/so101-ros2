@@ -12,16 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for canonical inference camera profiles."""
+"""Tests for canonical inference setups."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from so101_inference.camera_config import (
+from so101_inference.setup_config import (
     build_lerobot_features,
     camera_subscription_topics,
-    camera_topics_for_profile,
+    camera_topics_for_setup,
+    state_dimension,
     streams_fresh,
     streams_ready,
     validate_policy_input_features,
@@ -39,37 +40,45 @@ class _Stamp:
 
 
 @pytest.mark.parametrize(
-    ("profile", "expected"),
+    ("setup", "expected"),
     [
         (
-            "single_overhead",
+            "monomanual",
             {
                 "wrist": "/follower/image_raw",
                 "overhead_1": "/static_camera_1/image_raw",
             },
         ),
         (
-            "dual_overhead",
+            "monomanual_dual_overhead",
             {
                 "wrist": "/follower/image_raw",
                 "overhead_1": "/static_camera_1/image_raw",
                 "overhead_2": "/static_camera_2/image_raw",
             },
         ),
+        (
+            "bimanual",
+            {
+                "wrist_left": "/follower_left/image_raw",
+                "wrist_right": "/follower_right/image_raw",
+                "overhead_1": "/static_camera_1/image_raw",
+            },
+        ),
     ],
 )
-def test_camera_profile_has_canonical_names_and_topics(profile, expected):
-    assert camera_topics_for_profile(profile) == expected
+def test_setup_has_canonical_names_and_topics(setup, expected):
+    assert camera_topics_for_setup(setup) == expected
 
 
-@pytest.mark.parametrize("profile", ["", "dual", "unknown", "three_camera"])
-def test_unknown_camera_profiles_are_rejected(profile):
-    with pytest.raises(ValueError, match="camera_profile must be one of"):
-        camera_topics_for_profile(profile)
+@pytest.mark.parametrize("setup", ["", "dual", "unknown", "three_camera"])
+def test_unknown_setups_are_rejected(setup):
+    with pytest.raises(ValueError, match="setup must be one of"):
+        camera_topics_for_setup(setup)
 
 
-def test_dual_profile_builds_matching_lerobot_features():
-    features = build_lerobot_features("dual_overhead")
+def test_dual_setup_builds_matching_lerobot_features():
+    features = build_lerobot_features("monomanual_dual_overhead")
 
     assert list(features) == [
         "observation.state",
@@ -84,22 +93,32 @@ def test_dual_profile_builds_matching_lerobot_features():
     }
 
 
-def test_compressed_setting_applies_to_every_profile_topic():
-    assert camera_subscription_topics("dual_overhead", use_compressed=True) == {
+def test_bimanual_features_use_concatenated_twelve_dimensional_state():
+    features = build_lerobot_features("bimanual")
+
+    assert features["observation.state"]["shape"] == (12,)
+    assert features["observation.state"]["names"][0] == "left.shoulder_pan.pos"
+    assert features["observation.state"]["names"][6] == "right.shoulder_pan.pos"
+    assert state_dimension("monomanual") == 6
+    assert state_dimension("bimanual") == 12
+
+
+def test_compressed_setting_applies_to_every_setup_topic():
+    assert camera_subscription_topics("monomanual_dual_overhead", use_compressed=True) == {
         "wrist": "/follower/image_raw/compressed",
         "overhead_1": "/static_camera_1/image_raw/compressed",
         "overhead_2": "/static_camera_2/image_raw/compressed",
     }
 
 
-def test_policy_schema_must_exactly_match_selected_camera_profile():
+def test_policy_schema_must_exactly_match_selected_setup():
     valid = {
         "observation.state": SimpleNamespace(shape=(6,)),
         "observation.images.wrist": SimpleNamespace(shape=(3, 480, 640)),
         "observation.images.overhead_1": SimpleNamespace(shape=(3, 480, 640)),
         "observation.images.overhead_2": SimpleNamespace(shape=(3, 480, 640)),
     }
-    validate_policy_input_features(valid, "dual_overhead")
+    validate_policy_input_features(valid, "monomanual_dual_overhead")
 
     noncanonical_camera_names = {
         **valid,
@@ -107,20 +126,31 @@ def test_policy_schema_must_exactly_match_selected_camera_profile():
     }
     noncanonical_camera_names.pop("observation.images.overhead_1")
     with pytest.raises(ValueError, match="missing=.*overhead_1.*unexpected=.*unexpected"):
-        validate_policy_input_features(noncanonical_camera_names, "dual_overhead")
+        validate_policy_input_features(noncanonical_camera_names, "monomanual_dual_overhead")
 
     with pytest.raises(ValueError, match="unexpected=.*overhead_2"):
-        validate_policy_input_features(valid, "single_overhead")
+        validate_policy_input_features(valid, "monomanual")
 
 
-def test_policy_schema_requires_six_joint_state_values():
+def test_policy_schema_requires_matching_state_dimension():
     features = {
         "observation.state": {"shape": (7,)},
         "observation.images.wrist": SimpleNamespace(shape=(3, 480, 640)),
         "observation.images.overhead_1": SimpleNamespace(shape=(3, 480, 640)),
     }
     with pytest.raises(ValueError, match=r"expected \(6,\), got \(7,\)"):
-        validate_policy_input_features(features, "single_overhead")
+        validate_policy_input_features(features, "monomanual")
+
+    bimanual_images = {
+        key: {"shape": (480, 640, 3)}
+        for key in build_lerobot_features("bimanual")
+        if key.startswith("observation.images.")
+    }
+    with pytest.raises(ValueError, match=r"expected \(12,\), got \(6,\)"):
+        validate_policy_input_features(
+            {"observation.state": {"shape": (6,)}, **bimanual_images},
+            "bimanual",
+        )
 
 
 def test_stream_readiness_requires_every_camera_and_joint_state():

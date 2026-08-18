@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Canonical camera profiles and sensor-state helpers for inference nodes.
+"""Canonical setups and sensor-state helpers for inference nodes.
 
-The camera-name -> topic mapping is not defined here: it is derived from the
-so101_bringup camera-profile YAMLs via ``rosbag_to_lerobot.camera_profiles``,
-which is the single source of truth for the whole repository.
+The camera-name -> topic mapping, arm topic contracts, and dataset label
+convention are not defined here: they are derived from the so101_bringup
+setup YAMLs via ``rosbag_to_lerobot.setups``, which is the single source of
+truth for the whole repository.
 """
 
 from __future__ import annotations
@@ -26,56 +27,60 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 try:
-    from rosbag_to_lerobot.camera_profiles import (
-        CAMERA_NAMES_BY_PROFILE,
+    from rosbag_to_lerobot.setups import (
+        CAMERA_NAMES_BY_SETUP,
         RAW_IMAGE_TOPICS,
+        command_topics,
+        joint_state_topics,
+        state_names,
     )
 except ImportError:  # source checkout without the workspace built
     # Append the rosbag_to_lerobot project directory (not the repo root, which
     # would resolve rosbag_to_lerobot as a namespace package) so the regular
     # package inside it is importable.
     sys.path.append(str(Path(__file__).resolve().parents[2] / "rosbag_to_lerobot"))
-    from rosbag_to_lerobot.camera_profiles import (
-        CAMERA_NAMES_BY_PROFILE,
+    from rosbag_to_lerobot.setups import (
+        CAMERA_NAMES_BY_SETUP,
         RAW_IMAGE_TOPICS,
+        command_topics,
+        joint_state_topics,
+        state_names,
     )
 
 
-CAMERA_PROFILES: dict[str, dict[str, str]] = {
-    profile: {name: RAW_IMAGE_TOPICS[name] for name in names}
-    for profile, names in CAMERA_NAMES_BY_PROFILE.items()
+CAMERA_TOPICS_BY_SETUP: dict[str, dict[str, str]] = {
+    setup: {name: RAW_IMAGE_TOPICS[name] for name in names}
+    for setup, names in CAMERA_NAMES_BY_SETUP.items()
 }
 
 
-def camera_topics_for_profile(camera_profile: str) -> dict[str, str]:
-    """Return canonical observation names and ROS topics for a required profile."""
+def camera_topics_for_setup(setup: str) -> dict[str, str]:
+    """Return canonical observation names and ROS topics for a required setup."""
     try:
-        topics = CAMERA_PROFILES[camera_profile]
+        topics = CAMERA_TOPICS_BY_SETUP[setup]
     except KeyError as exc:
-        supported = ", ".join(CAMERA_PROFILES)
+        supported = ", ".join(CAMERA_TOPICS_BY_SETUP)
         raise ValueError(
-            f"camera_profile must be one of [{supported}], got {camera_profile!r}"
+            f"setup must be one of [{supported}], got {setup!r}"
         ) from exc
     return dict(topics)
 
 
-def build_lerobot_features(camera_profile: str) -> dict[str, dict[str, Any]]:
-    """Build the LeRobot dataset feature specification for a camera profile."""
+def state_dimension(setup: str) -> int:
+    """Return the concatenated observation.state dimension for a setup."""
+    return len(state_names(setup))
+
+
+def build_lerobot_features(setup: str) -> dict[str, dict[str, Any]]:
+    """Build the LeRobot dataset feature specification for a setup."""
     features: dict[str, dict[str, Any]] = {
-        'observation.state': {
-            'dtype': 'float32',
-            'shape': (6,),
-            'names': [
-                'shoulder_pan.pos',
-                'shoulder_lift.pos',
-                'elbow_flex.pos',
-                'wrist_flex.pos',
-                'wrist_roll.pos',
-                'gripper.pos',
-            ],
+        "observation.state": {
+            "dtype": "float32",
+            "shape": (state_dimension(setup),),
+            "names": [f"{label}.pos" for label in state_names(setup)],
         }
     }
-    for camera_name in camera_topics_for_profile(camera_profile):
+    for camera_name in camera_topics_for_setup(setup):
         features[f"observation.images.{camera_name}"] = {
             "dtype": "image",
             "shape": (480, 640, 3),
@@ -84,19 +89,18 @@ def build_lerobot_features(camera_profile: str) -> dict[str, dict[str, Any]]:
     return features
 
 
-def camera_subscription_topics(camera_profile: str, use_compressed: bool) -> dict[str, str]:
+def camera_subscription_topics(setup: str, use_compressed: bool) -> dict[str, str]:
     """Return the ROS subscription topic for every configured camera."""
     suffix = "/compressed" if use_compressed else ""
     return {
         name: f"{topic}{suffix}"
-        for name, topic in camera_topics_for_profile(camera_profile).items()
+        for name, topic in camera_topics_for_setup(setup).items()
     }
 
 
 def validate_policy_input_features(
     input_features: Mapping[str, Any] | None,
-    camera_profile: str,
-    state_dimension: int = 6,
+    setup: str,
 ) -> None:
     """Require a loaded policy's input schema to exactly match the selected rig."""
     if not input_features:
@@ -104,7 +108,7 @@ def validate_policy_input_features(
 
     expected_images = {
         f"observation.images.{name}"
-        for name in camera_topics_for_profile(camera_profile)
+        for name in camera_topics_for_setup(setup)
     }
     actual_images = {
         name for name in input_features if name.startswith("observation.images.")
@@ -113,8 +117,8 @@ def validate_policy_input_features(
         missing = sorted(expected_images - actual_images)
         unexpected = sorted(actual_images - expected_images)
         raise ValueError(
-            "Policy camera schema does not match "
-            f"camera_profile={camera_profile!r}; missing={missing}, unexpected={unexpected}"
+            f"Policy camera schema does not match setup={setup!r}; "
+            f"missing={missing}, unexpected={unexpected}"
         )
 
     state_feature = input_features.get("observation.state")
@@ -125,10 +129,11 @@ def validate_policy_input_features(
         if isinstance(state_feature, Mapping)
         else getattr(state_feature, "shape", None)
     )
-    if tuple(state_shape or ()) != (state_dimension,):
+    expected_shape = (state_dimension(setup),)
+    if tuple(state_shape or ()) != expected_shape:
         raise ValueError(
-            "Policy observation.state shape does not match the SO-101 arm; "
-            f"expected ({state_dimension},), got {state_shape}"
+            f"Policy observation.state shape does not match setup {setup!r}; "
+            f"expected {expected_shape}, got {state_shape}"
         )
 
 

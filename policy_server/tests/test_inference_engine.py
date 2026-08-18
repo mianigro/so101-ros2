@@ -45,7 +45,7 @@ def _client_features(*camera_names: str):
     return features
 
 
-def test_policy_server_accepts_exact_dual_overhead_schema():
+def test_policy_server_accepts_exact_monomanual_dual_overhead_schema():
     validate_policy_input_features(
         _policy_features("wrist", "overhead_1", "overhead_2"),
         _client_features("wrist", "overhead_1", "overhead_2"),

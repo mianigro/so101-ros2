@@ -18,7 +18,13 @@ from rclpy.time import Time
 from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Float64MultiArray
 
-from so101_camera_profiles import PROFILE_CAMERA_NAMES, image_topics
+from so101_setups import (
+    SETUP_CAMERA_NAMES,
+    command_topics,
+    image_topics,
+    joint_state_topics,
+    follower_label,
+)
 
 # LeRobot-style constants
 OBS_STR = "observation"
@@ -51,11 +57,10 @@ def log_scalar(path: str, value: float) -> None:
 
 @dataclass
 class Topics:
-    wrist: str
-    overhead_1: str
-    overhead_2: Optional[str]
-    joint_states: str
-    forward_commands: Optional[str] = None
+    cameras: dict[str, str]
+    # (topic, dataset label prefix) per follower arm, in setup order
+    joint_states: list[tuple[str, str]]
+    forward_commands: list[tuple[str, str]]
 
 
 class So101Ros2ToRerun(Node):
@@ -76,84 +81,63 @@ class So101Ros2ToRerun(Node):
         self._clear_state_gap = np.timedelta64(max(0, int(clear_state_gap_s * 1e9)), "ns")
 
         # Separate callback groups so heavy-ish callbacks don't block each other.
-        self._cg_img_wrist = ReentrantCallbackGroup()
-        self._cg_img_overhead_1 = ReentrantCallbackGroup()
-        self._cg_img_overhead_2 = ReentrantCallbackGroup()
+        self._cg_images = ReentrantCallbackGroup()
         self._cg_joints = ReentrantCallbackGroup()
         self._cg_cmd = ReentrantCallbackGroup()
 
-        if self._is_compressed(topics.wrist):
+        for camera_name, camera_topic in topics.cameras.items():
+            self._subscribe_camera(camera_name, camera_topic)
+
+        for topic, label in topics.joint_states:
             self.create_subscription(
-                CompressedImage,
-                topics.wrist,
-                self._on_wrist_img,
+                JointState,
+                topic,
+                self._make_joint_states_cb(label),
                 qos_profile_sensor_data,
-                callback_group=self._cg_img_wrist,
-            )
-        else:
-            self.create_subscription(
-                Image,
-                topics.wrist,
-                self._on_wrist_img_raw,
-                qos_profile_sensor_data,
-                callback_group=self._cg_img_wrist,
+                callback_group=self._cg_joints,
             )
 
-        if self._is_compressed(topics.overhead_1):
-            self.create_subscription(
-                CompressedImage,
-                topics.overhead_1,
-                self._on_overhead_1_img,
-                qos_profile_sensor_data,
-                callback_group=self._cg_img_overhead_1,
-            )
-        else:
-            self.create_subscription(
-                Image,
-                topics.overhead_1,
-                self._on_overhead_1_img_raw,
-                qos_profile_sensor_data,
-                callback_group=self._cg_img_overhead_1,
-            )
-
-        if topics.overhead_2:
-            if self._is_compressed(topics.overhead_2):
-                self.create_subscription(
-                    CompressedImage,
-                    topics.overhead_2,
-                    self._on_overhead_2_img,
-                    qos_profile_sensor_data,
-                    callback_group=self._cg_img_overhead_2,
-                )
-            else:
-                self.create_subscription(
-                    Image,
-                    topics.overhead_2,
-                    self._on_overhead_2_img_raw,
-                    qos_profile_sensor_data,
-                    callback_group=self._cg_img_overhead_2,
-                )
-
-        self.create_subscription(
-            JointState,
-            topics.joint_states,
-            self._on_joint_states,
-            qos_profile_sensor_data,
-            callback_group=self._cg_joints,
-        )
-
-        if topics.forward_commands:
+        for topic, label in topics.forward_commands:
             qos_cmd = QoSProfile(depth=10)
             self.create_subscription(
                 Float64MultiArray,
-                topics.forward_commands,
-                self._on_forward_commands,
+                topic,
+                self._make_forward_commands_cb(label),
                 qos_cmd,
                 callback_group=self._cg_cmd,
             )
 
         self.get_logger().info("Rerun bridge started.")
         self.get_logger().info(f"State clear gap threshold: {clear_state_gap_s:.3f}s")
+
+    def _subscribe_camera(self, camera_name: str, camera_topic: str) -> None:
+        path = f"cameras/{camera_name}"
+
+        def on_compressed(msg: CompressedImage) -> None:
+            rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
+            mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
+            rr.log(path, rr.EncodedImage(contents=bytes(msg.data), media_type=mt))
+
+        def on_raw(img: Image) -> None:
+            rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
+            rr.log(path, rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+
+        if camera_topic.endswith("/compressed"):
+            self.create_subscription(
+                CompressedImage,
+                camera_topic,
+                on_compressed,
+                qos_profile_sensor_data,
+                callback_group=self._cg_images,
+            )
+        else:
+            self.create_subscription(
+                Image,
+                camera_topic,
+                on_raw,
+                qos_profile_sensor_data,
+                callback_group=self._cg_images,
+            )
 
     def _next_action_time(self) -> tuple[np.datetime64, np.datetime64] | None:
         with self._time_lock:
@@ -166,99 +150,81 @@ class So101Ros2ToRerun(Node):
             self._last_action_time = ts
             return ts, prev_action_ts
 
-    def _on_wrist_img(self, msg: CompressedImage) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
-        rr.log(
-            "cameras/wrist",
-            rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
-        )
+    def _make_joint_states_cb(self, label: str):
+        def on_joint_states(msg: JointState) -> None:
+            ts = stamp_to_datetime64(msg.header.stamp)
+            with self._time_lock:
+                self._last_ros_time = ts
+            rr.set_time("ros_time", timestamp=ts)
+            for i, name in enumerate(msg.name):
+                if i < len(msg.position):
+                    log_scalar(f"state/position/{label}{name}", float(msg.position[i]))
 
-    def _on_wrist_img_raw(self, img: Image) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
-        rr.log("cameras/wrist", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+        return on_joint_states
 
-    def _on_overhead_1_img(self, msg: CompressedImage) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
-        rr.log(
-            "cameras/overhead_1",
-            rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
-        )
+    def _make_forward_commands_cb(self, label: str):
+        def on_forward_commands(msg: Float64MultiArray) -> None:
+            # Float64MultiArray has no header stamp. Derive time from the latest
+            # stamped ROS message so action/state plots stay aligned.
+            action_time = self._next_action_time()
+            if action_time is None:
+                return
+            ts, prev_action_ts = action_time
+            rr.set_time("ros_time", timestamp=ts)
 
-    def _on_overhead_1_img_raw(self, img: Image) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
-        rr.log("cameras/overhead_1", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+            if (
+                self._clear_state_gap > np.timedelta64(0, "ns")
+                and ts - prev_action_ts > self._clear_state_gap
+            ):
+                self.get_logger().info(
+                    "Clearing state/position after command gap of %.3fs"
+                    % float((ts - prev_action_ts) / np.timedelta64(1, "ms")) / 1000.0
+                )
+                rr.log("action/position", rr.Clear(recursive=True))
+                rr.log("state/position", rr.Clear(recursive=True))
 
-    def _on_overhead_2_img(self, msg: CompressedImage) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
-        mt = media_type_from_compressed_format(msg.format) or "image/jpeg"
-        rr.log(
-            "cameras/overhead_2",
-            rr.EncodedImage(contents=bytes(msg.data), media_type=mt),
-        )
+            data = list(msg.data)
+            if not self._cmd_joint_order:
+                # If you didn't pass joint names, log by index.
+                for i, v in enumerate(data):
+                    log_scalar(f"action/forward_commands/{label}idx_{i}", float(v))
+                return
 
-    def _on_overhead_2_img_raw(self, img: Image) -> None:
-        rr.set_time("ros_time", timestamp=stamp_to_datetime64(img.header.stamp))
-        rr.log("cameras/overhead_2", rr.Image(rgb8_to_numpy(img), color_model="RGB"))
+            # Controller expects commands in the same order as its configured "joints" list.
+            n = min(len(self._cmd_joint_order), len(data))
+            for i in range(n):
+                jn = self._cmd_joint_order[i]
+                log_scalar(f"action/position/{label}{jn}", float(data[i]))
 
-    def _on_joint_states(self, msg: JointState) -> None:
-        ts = stamp_to_datetime64(msg.header.stamp)
-        with self._time_lock:
-            self._last_ros_time = ts
-        rr.set_time("ros_time", timestamp=ts)
-        for i, name in enumerate(msg.name):
-            if i < len(msg.position):
-                log_scalar(f"state/position/{name}", float(msg.position[i]))
+        return on_forward_commands
 
-    def _on_forward_commands(self, msg: Float64MultiArray) -> None:
-        # Float64MultiArray has no header stamp. Derive time from the latest
-        # stamped ROS message so action/state plots stay aligned.
-        action_time = self._next_action_time()
-        if action_time is None:
-            return
-        ts, prev_action_ts = action_time
-        rr.set_time("ros_time", timestamp=ts)
 
-        gap_s: float | None = None
-        if (
-            self._clear_state_gap > np.timedelta64(0, "ns")
-            and ts - prev_action_ts > self._clear_state_gap
-        ):
-            gap_s = float((ts - prev_action_ts) / np.timedelta64(1, "ms")) / 1000.0
-            self.get_logger().info(
-                f"Clearing state/position after command gap of {gap_s:.3f}s"
-            )
-            rr.log("action/position", rr.Clear(recursive=True))
-            rr.log("state/position", rr.Clear(recursive=True))
-
-        data = list(msg.data)
-        if not self._cmd_joint_order:
-            # If you didn't pass joint names, log by index.
-            for i, v in enumerate(data):
-                log_scalar(f"action/forward_commands/idx_{i}", float(v))
-            return
-
-        # Controller expects commands in the same order as its configured "joints" list.
-        n = min(len(self._cmd_joint_order), len(data))
-        for i in range(n):
-            jn = self._cmd_joint_order[i]
-            log_scalar(f"action/position/{jn}", float(data[i]))
-
-    def _is_compressed(self, topic: str) -> bool:
-        return topic.endswith("/compressed")
+def _arm_label(topic: str) -> str:
+    """Dataset-label prefix for one arm topic ('left.' for /follower_left/...)."""
+    namespace = topic.strip("/").split("/")[0]
+    return follower_label(namespace)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 ROS2 to Rerun bridge")
     p.add_argument(
-        "--camera-profile",
+        "--setup",
         required=True,
-        choices=tuple(PROFILE_CAMERA_NAMES),
-        help="Required canonical camera profile",
+        choices=tuple(SETUP_CAMERA_NAMES),
+        help="Required canonical setup",
     )
-    p.add_argument("--joint-states", default="/follower/joint_states")
-    p.add_argument("--forward-commands", default="/follower/forward_controller/commands")
+    p.add_argument(
+        "--joint-states",
+        nargs="+",
+        default=None,
+        help="Follower joint-state topics (default: derived from the setup)",
+    )
+    p.add_argument(
+        "--forward-commands",
+        nargs="+",
+        default=None,
+        help="Follower command topics (default: derived from the setup)",
+    )
     p.add_argument(
         "--cmd-joints",
         nargs="*",
@@ -303,13 +269,12 @@ def main() -> None:
 
     # ──  # Blueprint: cameras left, plots right (state + action)
     camera_views = [
-        rrb.Spatial2DView(name="Wrist Camera", origin="cameras/wrist"),
-        rrb.Spatial2DView(name="Overhead Camera 1", origin="cameras/overhead_1"),
-    ]
-    if args.camera_profile == "dual_overhead":
-        camera_views.append(
-            rrb.Spatial2DView(name="Overhead Camera 2", origin="cameras/overhead_2")
+        rrb.Spatial2DView(
+            name=" ".join(part.capitalize() for part in camera_id.split("_")) + " Camera",
+            origin=f"cameras/{camera_id}",
         )
+        for camera_id in image_topics(args.setup, compressed=True)
+    ]
 
     blueprint = rrb.Blueprint(
         rrb.Horizontal(
@@ -332,13 +297,12 @@ def main() -> None:
     rr.send_blueprint(blueprint)
 
     rclpy.init(args=unknownargs)
-    camera_topics = image_topics(args.camera_profile, compressed=True)
+    joints = args.joint_states or list(joint_state_topics(args.setup))
+    commands = args.forward_commands or list(command_topics(args.setup))
     topics = Topics(
-        wrist=camera_topics["wrist"],
-        overhead_1=camera_topics["overhead_1"],
-        overhead_2=camera_topics.get("overhead_2"),
-        joint_states=args.joint_states,
-        forward_commands=args.forward_commands or None,
+        cameras=image_topics(args.setup, compressed=True),
+        joint_states=[(topic, _arm_label(topic)) for topic in joints],
+        forward_commands=[(topic, _arm_label(topic)) for topic in commands],
     )
 
     node = So101Ros2ToRerun(

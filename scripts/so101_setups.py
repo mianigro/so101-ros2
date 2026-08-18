@@ -1,9 +1,9 @@
-"""Canonical camera-profile definitions for SO-101 visualization tools.
+"""Canonical setup definitions for SO-101 visualization tools.
 
-Thin facade over ``rosbag_to_lerobot.camera_profiles``, which derives the
-camera contract from the so101_bringup camera-profile YAMLs (the single source
-of truth for the whole repository). Bag-metadata helpers live here because
-only the visualization tools need them.
+Thin facade over ``rosbag_to_lerobot.setups``, which derives the camera
+contract from the so101_bringup setup YAMLs (the single source of truth for
+the whole repository). Bag-metadata helpers live here because only the
+visualization tools need them.
 """
 
 from __future__ import annotations
@@ -16,24 +16,27 @@ from pathlib import Path
 # package inside it is importable.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "rosbag_to_lerobot"))
 
-from rosbag_to_lerobot.camera_profiles import (  # noqa: E402
-    CAMERA_NAMES_BY_PROFILE,
+from rosbag_to_lerobot.setups import (  # noqa: E402
+    CAMERA_NAMES_BY_SETUP,
     RAW_IMAGE_TOPICS,
     camera_names,
+    command_topics,
+    follower_label,
+    joint_state_topics,
 )
 import yaml  # noqa: E402
 
-PROFILE_CAMERA_NAMES: dict[str, tuple[str, ...]] = dict(CAMERA_NAMES_BY_PROFILE)
+SETUP_CAMERA_NAMES: dict[str, tuple[str, ...]] = dict(CAMERA_NAMES_BY_SETUP)
 
 COMPRESSED_IMAGE_TOPICS: dict[str, str] = {
     name: f"{topic}/compressed" for name, topic in RAW_IMAGE_TOPICS.items()
 }
 
 
-def image_topics(camera_profile: str, *, compressed: bool) -> dict[str, str]:
-    """Return canonical camera-name to ROS-topic mappings for a profile."""
+def image_topics(setup: str, *, compressed: bool) -> dict[str, str]:
+    """Return canonical camera-name to ROS-topic mappings for a setup."""
     available = COMPRESSED_IMAGE_TOPICS if compressed else RAW_IMAGE_TOPICS
-    return {name: available[name] for name in camera_names(camera_profile)}
+    return {name: available[name] for name in camera_names(setup)}
 
 
 def recorded_topics(bag_dir: Path) -> set[str]:
@@ -53,20 +56,20 @@ def recorded_topics(bag_dir: Path) -> set[str]:
     return {topic for topic in topics if isinstance(topic, str) and topic}
 
 
-def detect_recorded_profile(bag_dir: Path) -> str:
-    """Detect a complete canonical profile and reject partial/extra camera sets."""
+def detect_recorded_setup(bag_dir: Path) -> str:
+    """Detect a complete canonical setup and reject partial/extra camera sets."""
     topics = recorded_topics(bag_dir)
     present = topics.intersection(COMPRESSED_IMAGE_TOPICS.values())
 
     matches = [
-        profile
-        for profile in PROFILE_CAMERA_NAMES
-        if present == set(image_topics(profile, compressed=True).values())
+        setup
+        for setup in SETUP_CAMERA_NAMES
+        if present == set(image_topics(setup, compressed=True).values())
     ]
     if len(matches) == 1:
         return matches[0]
 
     raise ValueError(
-        f"{bag_dir}: camera topics do not form a complete canonical profile; "
+        f"{bag_dir}: camera topics do not form a complete canonical setup; "
         f"found={sorted(present)}"
     )

@@ -1,4 +1,6 @@
-leader:
+# Wildcard sections apply to the leader controller_manager in any namespace
+# (leader, leader_left, leader_right, ...); the setup YAML owns the namespace.
+/**:
   controller_manager:
     ros__parameters:
       update_rate: 100  # Hz

@@ -1,4 +1,4 @@
-"""Follower arm + cameras + headless episode recorder + optional rerun.
+"""Setup-driven follower arms + cameras + headless episode recorder + optional rerun.
 
 Generic data-collection / perception / recorder stack.
 Task-specific launch files (training, teleop, etc.) should include this.
@@ -19,42 +19,35 @@ from launch.substitutions import (
     PathJoinSubstitution,
 )
 from launch_ros.substitutions import FindPackageShare
-from so101_bringup.camera_launch import declare_camera_arguments
+from so101_bringup.camera_launch import declare_setup_arguments
 
 
 def generate_launch_description():
 
     # ── Launch arguments ─────────────────────────────────────────
     hardware_type = LaunchConfiguration("hardware_type")
-    follower_ns = LaunchConfiguration("follower_namespace")
-    follower_frame_prefix = LaunchConfiguration("follower_frame_prefix")
-    follower_usb = LaunchConfiguration("follower_usb_port")
-    follower_ctrl_cfg = LaunchConfiguration("follower_controller_config_file")
     root_dir = LaunchConfiguration("root_dir")
     experiment_name = LaunchConfiguration("experiment_name")
     task = LaunchConfiguration("task")
+    setup = LaunchConfiguration("setup")
 
     use_rerun = LaunchConfiguration("use_rerun")
     use_rerun_3d = LaunchConfiguration("use_rerun_3d")
     rerun_env_dir = LaunchConfiguration("rerun_env_dir")
     rerun_delay_s = LaunchConfiguration("rerun_delay_s")
 
-    # ── Follower arm + cameras ───────────────────────────────────
+    # ── Follower arms + cameras ──────────────────────────────────
     follower_vision_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("so101_bringup"), "launch", "follower_vision.launch.py"]
-            )
+            PathJoinSubstitution([
+                FindPackageShare("so101_bringup"), "launch", "follower_vision.launch.py"
+            ])
         ),
         launch_arguments={
             "hardware_type": hardware_type,
-            "follower_namespace": follower_ns,
-            "follower_frame_prefix": follower_frame_prefix,
-            "follower_usb_port": follower_usb,
-            "follower_controller_config_file": follower_ctrl_cfg,
             "use_cameras": LaunchConfiguration("use_cameras"),
-            "camera_profile": LaunchConfiguration("camera_profile"),
-            "camera_rig_config_file": LaunchConfiguration("camera_rig_config_file"),
+            "setup": setup,
+            "setup_config_file": LaunchConfiguration("setup_config_file"),
             "camera_startup_timeout_s": LaunchConfiguration("camera_startup_timeout_s"),
             "camera_stale_timeout_s": LaunchConfiguration("camera_stale_timeout_s"),
             "use_rviz": "false",
@@ -69,7 +62,8 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "camera_profile": LaunchConfiguration("camera_profile"),
+            "setup": setup,
+            "setup_config_file": LaunchConfiguration("setup_config_file"),
             "root_dir": root_dir,
             "experiment_name": experiment_name,
             "task": task,
@@ -78,10 +72,7 @@ def generate_launch_description():
 
     # ── Optional rerun bridge ────────────────────────────────────
     rerun_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi", "run", "bridge", "--", "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
+        cmd=["pixi", "run", "bridge", "--", "--setup", setup],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
         condition=IfCondition(use_rerun),
@@ -95,10 +86,7 @@ def generate_launch_description():
 
     # ── Optional 3D rerun bridge (animated URDF + TF + cameras + plots) ──
     rerun_3d_bridge_proc = ExecuteProcess(
-        cmd=[
-            "pixi", "run", "bridge-3d", "--", "--camera-profile",
-            LaunchConfiguration("camera_profile"),
-        ],
+        cmd=["pixi", "run", "bridge-3d", "--", "--setup", setup],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
         condition=IfCondition(use_rerun_3d),
@@ -111,14 +99,6 @@ def generate_launch_description():
     )
 
     # ── Defaults ─────────────────────────────────────────────────
-    default_follower_ctrl_cfg = PathJoinSubstitution(
-        [
-            FindPackageShare("so101_bringup"),
-            "config",
-            "ros2_control",
-            "follower_controllers.yaml",
-        ]
-    )
     default_root_dir = PathJoinSubstitution(
         [
             EnvironmentVariable(
@@ -131,13 +111,9 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            # Arm + cameras
+            # Arms + cameras
             DeclareLaunchArgument("hardware_type", default_value="real"),
-            DeclareLaunchArgument("follower_namespace", default_value="follower"),
-            DeclareLaunchArgument("follower_frame_prefix", default_value="follower/"),
-            DeclareLaunchArgument("follower_usb_port", default_value="/dev/so101_follower"),
-            DeclareLaunchArgument("follower_controller_config_file", default_value=default_follower_ctrl_cfg),
-            *declare_camera_arguments(),
+            *declare_setup_arguments(),
             # Recorder
             DeclareLaunchArgument("root_dir", default_value=default_root_dir),
             DeclareLaunchArgument("experiment_name", default_value="pick_and_place"),

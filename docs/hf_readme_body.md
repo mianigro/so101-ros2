@@ -10,7 +10,7 @@ https://github.com/legalaspro/so101-ros-physical-ai
 ### Data includes
 - Wrist camera video: `observation.images.wrist`
 - Overhead camera 1 video: `observation.images.overhead_1`
-- Overhead camera 2 video: `observation.images.overhead_2` in `dual_overhead` datasets
+- Overhead camera 2 video: `observation.images.overhead_2` in `monomanual_dual_overhead` datasets
 - Joint positions: `observation.state` (6-DoF, `.pos`)
 - Position commands: `action` (6-DoF position commands)
 

@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 from lerobot.configs import RGBEncoderConfig
 from lerobot.datasets import CODEBASE_VERSION, LeRobotDataset
 from rclpy.serialization import deserialize_message
@@ -51,7 +52,7 @@ from rosbag_to_lerobot.bag_reader import (
     get_custom_data,
 )
 from rosbag_to_lerobot.buffers import LastBuffer
-from rosbag_to_lerobot.camera_profiles import validate_profile_topics
+from rosbag_to_lerobot.setups import validate_setup_topics
 from rosbag_to_lerobot.config import (
     CANONICAL_FPS,
     Config,
@@ -233,7 +234,7 @@ def _prepare_topic_maps(
     cfg: Config, topic_types: Dict[str, str]
 ) -> Tuple[Dict[str, FeatureSpec], Dict[str, type]]:
     """Build topic->spec and topic->msg_class maps, validating bag types."""
-    topic_to_spec: Dict[str, FeatureSpec] = {s.topic: s for s in cfg.features}
+    topic_to_spec: Dict[str, FeatureSpec] = cfg.by_topic()
     topic_to_msg_class: Dict[str, type] = {}
 
     # Validate that configured topics exist and types match
@@ -282,20 +283,19 @@ def _convert_one_bag(
             f"reference_topic {cfg.reference_topic!r} not listed in config features"
         )
 
-    ref_spec = spec_by_topic[cfg.reference_topic]
-
     # Buffers for non-reference topics, keyed by topic (fast lookup)
     buffers: Dict[str, LastBuffer] = {}
     for spec in cfg.features:
-        if spec.topic == cfg.reference_topic:
-            continue
-        max_age = (
-            spec.max_age_s if spec.max_age_s is not None else cfg.default_max_age_s
-        )
-        buffers[spec.topic] = LastBuffer(
-            max_age_ns=int(max_age * 1e9),
-            collect_p95=collect_p95,
-        )
+        for topic in spec.topics:
+            if topic == cfg.reference_topic:
+                continue
+            max_age = (
+                spec.max_age_s if spec.max_age_s is not None else cfg.default_max_age_s
+            )
+            buffers[topic] = LastBuffer(
+                max_age_ns=int(max_age * 1e9),
+                collect_p95=collect_p95,
+            )
 
     frame_count = 0
     dropped_count = 0
@@ -315,27 +315,31 @@ def _convert_one_bag(
             # --- Reference tick: emit one frame ---
             frame: Dict[str, Any] = {}
 
-            frame[ref_spec.key] = decode(msg, ref_spec)
             frame["task"] = task
             # logger.info(
             #     "image delay (bag - header) = %.3f s", (bag_ts_ns - ts_ns) / 1e9
             # )
 
             drop = False
-            # Sample all other features
+            # Assemble every feature; multi-topic features concatenate the
+            # decoded value of each topic in listed order.
             for other_spec in cfg.features:
-                if other_spec.topic == cfg.reference_topic:
-                    continue
-
-                buf = buffers[other_spec.topic]
-                value = buf.asof(ts_ns)
-
-                # If missing values better drop state!
-                if value is None:
-                    drop = True
+                parts = []
+                for index, part_topic in enumerate(other_spec.topics):
+                    if part_topic == cfg.reference_topic:
+                        parts.append(decode(msg, other_spec.part_spec(index)))
+                        continue
+                    value = buffers[part_topic].asof(ts_ns)
+                    # If missing values better drop state!
+                    if value is None:
+                        drop = True
+                        break
+                    parts.append(value)
+                if drop:
                     break
-
-                frame[other_spec.key] = value
+                frame[other_spec.key] = (
+                    parts[0] if len(parts) == 1 else np.concatenate(parts)
+                )
 
             if drop:
                 dropped_count += 1
@@ -436,7 +440,7 @@ def convert_all_bags(
     for bag_dir in episodes:
         reader = open_reader(bag_dir)
         topic_types = get_topic_types(reader)
-        validate_profile_topics(cfg.camera_profile, topic_types, str(bag_dir))
+        validate_setup_topics(cfg.setup, topic_types, str(bag_dir))
         episode_cfg, state_topic = resolve_joint_state_topic(cfg, topic_types)
         if state_topic != primary_state_topic:
             logger.info(

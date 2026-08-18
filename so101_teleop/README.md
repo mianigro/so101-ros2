@@ -17,11 +17,10 @@ Recommended full-stack launch:
 ```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch so101_bringup teleop.launch.py \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+  setup:=monomanual_dual_overhead
 ```
 
-This uses the `forward_controller` (`ForwardCommandController`), matching the command contract used by recording and inference.
+This uses the `forward_controller` (`ForwardCommandController`), matching the command contract used by recording and inference. Bimanual setups spawn one relay per leader/follower pair, namespaced under each follower (`/follower_left/...`, `/follower_right/...`).
 
 ## Package-only launch
 
