@@ -3,10 +3,8 @@
 from isaaclab.utils.configclass import configclass
 from isaaclab_tasks.utils import PresetCfg
 
-from models.transformers_ppo.ppo_cfg import (
-    RslRlMambaActorCfg,
-    RslRlTransformerActorCfg,
-)
+from models.mamba_ppo.ppo_cfg import RslRlMambaActorCfg
+from models.transformer_ppo.ppo_cfg import RslRlTransformerActorCfg
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.visual_contract import SO101_TEMPORAL_LOOKBACK_FRAMES
 
@@ -41,11 +39,13 @@ class SO101ObjectInCupVisionTransformerPPOCfg(SO101ObjectInCupVisionPPOCfg):
             init_std=0.7
         ),
         lookback_frames=SO101_TEMPORAL_LOOKBACK_FRAMES,
-        d_model=256,
+        d_model=64,
         num_heads=4,
         num_layers=2,
-        d_ff=512,
-        dropout=0.1,
+        d_ff=256,
+        dropout=0.0,
+        frame_diff=True,
+        causal_mask=True,
     )
 
 
@@ -63,9 +63,10 @@ class SO101ObjectInCupVisionTransformerFixedPPORunnerCfg(PresetCfg):
 
 @configclass
 class SO101ObjectInCupVisionMambaPPOCfg(SO101ObjectInCupVisionPPOCfg):
-    """Temporal mamba actor over the SO-101 camera history window.
+    """Recurrent state-space actor over the SO-101 camera frame streams.
 
-    Instantiating the actor requires the optional ``mamba_ssm`` package.
+    Consumes single frames; temporal memory lives in the actor's recurrent
+    state, so the environment needs no camera history.
     """
 
     experiment_name = "so101_object_in_cup_vision_mamba"
@@ -74,8 +75,7 @@ class SO101ObjectInCupVisionMambaPPOCfg(SO101ObjectInCupVisionPPOCfg):
         activation="elu",
         obs_normalization=True,
         distribution_cfg=RslRlMambaActorCfg.GaussianDistributionCfg(init_std=0.7),
-        lookback_frames=SO101_TEMPORAL_LOOKBACK_FRAMES,
-        d_model=256,
+        d_model=64,
         num_layers=2,
     )
 

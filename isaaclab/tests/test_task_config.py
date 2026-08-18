@@ -16,6 +16,7 @@ from so101_rl.export_manifest import validate_deployable_contract
 from so101_rl.tasks.common import SO101VisualObservationsCfg
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.tasks.object_in_cup.agents.rsl_rl_vision_ppo_cfg import (
+    SO101ObjectInCupVisionMambaPPOCfg,
     SO101ObjectInCupVisionPPOCfg,
     SO101ObjectInCupVisionTransformerPPOCfg,
 )
@@ -116,8 +117,44 @@ class TaskConfigTests(unittest.TestCase):
         self.assertEqual(agent.actor.lookback_frames, SO101_TEMPORAL_LOOKBACK_FRAMES)
         self.assertEqual(
             agent.actor.class_name,
-            "models.transformers_ppo.models:TransformerActorCritic",
+            "models.transformer_ppo.models:TransformerActorCritic",
         )
+        self.assertEqual(agent.actor.dropout, 0.0)
+        self.assertTrue(agent.actor.frame_diff)
+        self.assertTrue(agent.actor.causal_mask)
+
+    def test_mamba_task_uses_single_frame_environment(self):
+        agent = SO101ObjectInCupVisionMambaPPOCfg()
+        self.assertEqual(
+            agent.actor.class_name, "models.mamba_ppo.models:MambaActorCritic"
+        )
+        self.assertFalse(hasattr(agent.actor, "lookback_frames"))
+        self.assertEqual(agent.actor.d_model, 64)
+        self.assertEqual(agent.actor.num_layers, 2)
+        self.assertEqual(agent.actor.d_state, 16)
+        self.assertEqual(agent.actor.d_conv, 4)
+        self.assertEqual(agent.actor.expand, 2)
+
+        expected = {
+            "SO101-Object-In-Cup-Vision-Mamba-v0": (
+                "SO101ObjectInCupVisionEnvCfg",
+                "SO101ObjectInCupVisionMambaPPORunnerCfg",
+            ),
+            "SO101-Object-In-Cup-Vision-Mamba-Fixed-v0": (
+                "SO101ObjectInCupVisionFixedEnvCfg",
+                "SO101ObjectInCupVisionMambaFixedPPORunnerCfg",
+            ),
+        }
+        for task_id, (env_class, runner_class) in expected.items():
+            kwargs = gym.spec(task_id).kwargs
+            self.assertTrue(kwargs["env_cfg_entry_point"].endswith(env_class))
+            self.assertTrue(kwargs["rsl_rl_cfg_entry_point"].endswith(runner_class))
+
+        # The mamba environments serve single frames: no camera history.
+        cfg = self._config()
+        for group_name in ("wrist", "overhead_1", "overhead_2"):
+            term = getattr(cfg.observations, group_name).rgb
+            self.assertEqual(term.history_length, 0)
 
     def test_control_rate_action_contract_and_geometry_binding(self):
         cfg = self._config()

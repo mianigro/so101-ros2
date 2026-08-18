@@ -1,4 +1,4 @@
-"""Focused temporal actor and export contract tests."""
+"""Focused temporal transformer actor and export contract tests."""
 
 from __future__ import annotations
 
@@ -8,15 +8,8 @@ import torch
 from rsl_rl.models.mlp_model import MLPModel
 from tensordict import TensorDict
 
-from models.transformers_ppo.models import TransformerActorCritic
+from models.transformer_ppo.models import TransformerActorCritic, _TransformerTemporalCore, _frame_diff_features
 from so101_rl.visual_contract import SO101_TEMPORAL_LOOKBACK_FRAMES
-
-try:
-    import mamba_ssm  # noqa: F401
-
-    HAS_MAMBA = True
-except ImportError:
-    HAS_MAMBA = False
 
 
 def _history_observations(batch: int = 2) -> TensorDict:
@@ -40,7 +33,7 @@ def _observation_groups() -> dict[str, list[str]]:
     }
 
 
-class TemporalActorContractTests(unittest.TestCase):
+class TransformerActorContractTests(unittest.TestCase):
     def test_three_camera_history_actor_and_torchscript_contract(self):
         observations = _history_observations()
         model = TransformerActorCritic(
@@ -149,28 +142,66 @@ class TemporalActorContractTests(unittest.TestCase):
         self.assertEqual(tuple(values.shape), (2, 1))
         self.assertIsNone(critic.distribution)
 
-
-@unittest.skipUnless(HAS_MAMBA, "mamba_ssm is not installed")
-class MambaActorContractTests(unittest.TestCase):
-    def test_mamba_actor_forward(self):
-        from models.transformers_ppo.models import MambaActorCritic
-
-        observations = _history_observations()
-        model = MambaActorCritic(
-            observations,
+    def test_actor_parameter_budget(self):
+        # The spatial-softmax reduction replaced a flattened Linear(38400, 64)
+        # projection (~2.46M parameters per camera, ~9.9M actor). The reduced
+        # actor must stay well inside a 3M budget.
+        model = TransformerActorCritic(
+            _history_observations(),
             _observation_groups(),
             "actor",
             output_dim=6,
-            hidden_dims=[256, 128],
+            hidden_dims=[512, 256, 128],
             activation="elu",
-            obs_normalization=False,
+            obs_normalization=True,
             distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.7},
             lookback_frames=SO101_TEMPORAL_LOOKBACK_FRAMES,
             d_model=64,
-            num_layers=1,
+            num_heads=4,
+            num_layers=2,
+            d_ff=256,
         )
-        actions = model(observations)
-        self.assertEqual(tuple(actions.shape), (2, 6))
+        parameter_count = sum(parameter.numel() for parameter in model.parameters())
+        self.assertGreater(parameter_count, 2_000_000)
+        self.assertLess(parameter_count, 3_000_000)
+
+    def test_frame_diff_features_are_zero_for_static_windows(self):
+        constant = torch.ones(2, SO101_TEMPORAL_LOOKBACK_FRAMES, 64)
+        diff = _frame_diff_features(constant)
+        self.assertTrue(torch.all(diff == 0.0))
+        moving = torch.arange(5.0).repeat(2, 1).unsqueeze(-1) * torch.ones(2, 1, 64)
+        diff = _frame_diff_features(moving)
+        # Zero for the oldest frame, unit deltas afterwards.
+        self.assertTrue(torch.all(diff[:, 0] == 0.0))
+        self.assertTrue(torch.all(diff[:, 1:] == 1.0))
+
+    def test_causal_mask_restricts_attention_to_the_past(self):
+        torch.manual_seed(5)
+        lookback = SO101_TEMPORAL_LOOKBACK_FRAMES
+        # Directional perturbation of the newest frame (a constant offset
+        # would be stripped by the pre-LayerNorm). Several inputs so the
+        # bidirectional control cannot pass by chance.
+        x = torch.randn(16, lookback, 64)
+        perturbed = x.clone()
+        perturbed[:, -1] += 5.0 * torch.randn_like(perturbed[:, -1])
+
+        causal = _TransformerTemporalCore(
+            lookback, 64, 4, 1, 128, 0.0, causal_mask=True
+        ).eval()
+        self.assertTrue(
+            torch.allclose(causal(x)[:, :-1], causal(perturbed)[:, :-1], atol=1.0e-6)
+        )
+
+        bidirectional = _TransformerTemporalCore(
+            lookback, 64, 4, 1, 128, 0.0, causal_mask=False
+        ).eval()
+        bidirectional_change = (
+            (bidirectional(x)[:, :-1] - bidirectional(perturbed)[:, :-1])
+            .abs()
+            .max()
+            .item()
+        )
+        self.assertGreater(bidirectional_change, 1.0e-4)
 
 
 if __name__ == "__main__":

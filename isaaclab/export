@@ -102,10 +102,14 @@ def _export(env_cfg, agent_cfg) -> None:
         import onnx
         from onnx.reference import ReferenceEvaluator
 
+        exported_actor = runner.alg.get_policy().as_onnx(verbose=False)
+        recurrent = bool(getattr(exported_actor, "is_recurrent", False))
         onnx_model = onnx.load(output_dir / "policy.onnx")
         onnx_names = [tensor.name for tensor in onnx_model.graph.input]
-        expected_onnx_names = [
-            "observation.state",
+        expected_onnx_names = ["observation.state"]
+        if recurrent:
+            expected_onnx_names.append("recurrent_state_in")
+        expected_onnx_names += [
             "observation.images.wrist",
             "observation.images.overhead_1",
             "observation.images.overhead_2",
@@ -115,8 +119,12 @@ def _export(env_cfg, agent_cfg) -> None:
                 "ONNX input contract changed: "
                 f"expected {expected_onnx_names}, got {onnx_names}"
             )
-        onnx_tensors = [
-            observations["joint_state"],
+        onnx_tensors = [observations["joint_state"]]
+        if recurrent:
+            onnx_tensors.append(
+                torch.zeros(1, 1, exported_actor.state_dim)  # type: ignore[attr-defined]
+            )
+        onnx_tensors += [
             observations["wrist"],
             observations["overhead_1"],
             observations["overhead_2"],

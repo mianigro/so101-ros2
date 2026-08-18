@@ -70,8 +70,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": (
-            f"{__name__}.object_in_cup_env_cfg:"
-            "SO101ObjectInCupVisionTemporalEnvCfg"
+            f"{__name__}.object_in_cup_env_cfg:SO101ObjectInCupVisionEnvCfg"
         ),
         "rsl_rl_cfg_entry_point": (
             f"{__name__}.agents.rsl_rl_vision_ppo_cfg:"
@@ -86,8 +85,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": (
-            f"{__name__}.object_in_cup_env_cfg:"
-            "SO101ObjectInCupVisionTemporalFixedEnvCfg"
+            f"{__name__}.object_in_cup_env_cfg:SO101ObjectInCupVisionFixedEnvCfg"
         ),
         "rsl_rl_cfg_entry_point": (
             f"{__name__}.agents.rsl_rl_vision_ppo_cfg:"

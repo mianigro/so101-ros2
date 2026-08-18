@@ -328,10 +328,11 @@ class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
 def _enable_camera_history(env_cfg) -> None:
     """Serve every actor camera group as a frame-history window.
 
-    Temporal actors (transformer/mamba families) consume camera observations
-    of shape (num_envs, lookback, channels, height, width) ordered oldest to
-    newest; Isaac Lab history buffers provide exactly that when the history
-    dimension is not flattened.
+    The transformer actor consumes camera observations of shape
+    (num_envs, lookback, channels, height, width) ordered oldest to newest;
+    Isaac Lab history buffers provide exactly that when the history dimension
+    is not flattened. The recurrent mamba actor is not windowed and uses the
+    plain single-frame environment configs.
     """
     for group_name in ("wrist", "overhead_1", "overhead_2"):
         term = getattr(env_cfg.observations, group_name).rgb

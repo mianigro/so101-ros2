@@ -92,19 +92,27 @@ input widths.
 ### Model families
 
 The actor model is chosen through the task ID. The single-box scenario is
-additionally registered for the temporal model families in
-[`models/`](models/README.md), which consume a four-frame camera history
-window instead of the latest frame:
+additionally registered for the temporal model families
+[`transformer_ppo`](models/transformer_ppo/README.md) and
+[`mamba_ppo`](models/mamba_ppo/README.md):
 
 | Actor family | Fixed task | Randomized task |
 |---|---|---|
 | Spatial-softmax CNN (default) | `SO101-Object-In-Cup-Vision-Fixed-v0` | `SO101-Object-In-Cup-Vision-v0` |
-| Temporal transformer | `SO101-Object-In-Cup-Vision-Transformer-Fixed-v0` | `SO101-Object-In-Cup-Vision-Transformer-v0` |
-| Temporal mamba (needs `mamba_ssm`) | `SO101-Object-In-Cup-Vision-Mamba-Fixed-v0` | `SO101-Object-In-Cup-Vision-Mamba-v0` |
+| Temporal transformer (four-frame window) | `SO101-Object-In-Cup-Vision-Transformer-Fixed-v0` | `SO101-Object-In-Cup-Vision-Transformer-v0` |
+| Recurrent state-space mamba (single frames) | `SO101-Object-In-Cup-Vision-Mamba-Fixed-v0` | `SO101-Object-In-Cup-Vision-Mamba-v0` |
+
+The transformer consumes a four-frame camera history window; the mamba is a
+streaming policy that consumes single frames and keeps its own recurrent
+state (reset on terminations, carried across rollout boundaries by RSL-RL's
+recurrent storage). Both temporal families share the spatial-softmax frame
+encoder; the mamba's selective state-space core is pure PyTorch, so no
+optional packages are needed and TorchScript/ONNX export works for all
+families.
 
 Do not resume a checkpoint across actor families: the deployable actor
-interfaces differ (single frame vs. history window) and so do the stored
-network weights.
+interfaces differ (single frame vs. history window vs. recurrent state) and
+so do the stored network weights.
 
 Pass the selected ID with `--task` to `live`, `train`, `train_multigpu`, `play`,
 or `export`. For example:
@@ -261,6 +269,17 @@ Headless two-GPU run:
   --task SO101-Object-In-Cup-Vision-Fixed-v0 \
   --rl_library rsl_rl \
   --num_envs 64 --headless \
+  physics=isaacsim_physx
+```
+
+Viewable two-GPU run:
+
+```bash
+"$ISAACLAB_PYTHON" isaaclab/train_multigpu \
+  --num_gpus 2 \
+  --task SO101-Object-In-Cup-Vision-Fixed-v0 \
+  --rl_library rsl_rl \
+  --num_envs 8 --visualizer kit \
   physics=isaacsim_physx
 ```
 

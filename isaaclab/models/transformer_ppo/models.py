@@ -1,9 +1,11 @@
-"""Temporal transformer and mamba actor-critics for RSL-RL visual PPO.
+"""Temporal transformer actor-critic for RSL-RL visual PPO.
 
-Ported from the Atari/gymnasium proof of concept. The temporal cores
-(positional encoding, pre-LN encoder layers, mamba layers with a global
-skip) and the ResNet-style frame encoder keep the original architecture and
-initialization. The RSL-RL ``MLPModel`` base replaces the proof of concept's
+Ported from the Atari/gymnasium proof of concept. The temporal core keeps the
+original pre-LN encoder layers and sinusoidal positional encoding; the frame
+encoder reduces its feature map with a spatial softmax instead of a flattened
+linear projection, and the per-camera pipeline can fuse explicit
+frame-difference features so velocity does not have to be relearned by the
+temporal core. The RSL-RL ``MLPModel`` base replaces the proof of concept's
 policy/value heads: the privileged value head moves to the separate critic
 network and action distributions come from ``distribution_cfg``.
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import copy
 import math
+from typing import Optional
 
 import numpy as np
 import torch
@@ -25,6 +28,40 @@ import torch.nn.functional as F
 from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.modules import HiddenState
 from tensordict import TensorDict
+
+
+class SpatialSoftmax(nn.Module):
+    """Reduce every feature channel to its expected normalized XY location."""
+
+    def __init__(self, channels: int, height: int, width: int, temperature: float = 1.0):
+        super().__init__()
+        self.channels = channels
+        y, x = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, height),
+            torch.linspace(-1.0, 1.0, width),
+            indexing="ij",
+        )
+        self.register_buffer("x", x.reshape(1, -1))
+        self.register_buffer("y", y.reshape(1, -1))
+        self.log_temperature = nn.Parameter(
+            torch.full((channels,), float(torch.log(torch.tensor(temperature))))
+        )
+
+    @property
+    def output_dim(self) -> int:
+        return self.channels * 2
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        batch = features.shape[0]
+        temperature = self.log_temperature.exp().clamp(min=1e-3).view(
+            1, self.channels, 1
+        )
+        weights = torch.softmax(
+            features.reshape(batch, self.channels, -1) / temperature, dim=-1
+        )
+        expected_x = (weights * self.x).sum(dim=-1)
+        expected_y = (weights * self.y).sum(dim=-1)
+        return torch.cat((expected_x, expected_y), dim=-1)
 
 
 class ResBlock(nn.Module):
@@ -66,7 +103,13 @@ class ResBlock(nn.Module):
 
 
 class CNNEncoder(nn.Module):
-    """ResNet-style per-frame encoder projecting one image to ``output_dim``."""
+    """ResNet-style per-frame encoder projecting one image to ``output_dim``.
+
+    The final feature map is reduced with a spatial softmax (expected XY per
+    channel) before a linear projection, keeping the output a smooth function
+    of feature positions instead of binding spatial coordinates to weights
+    through a flattened linear layer.
+    """
 
     def __init__(self, input_shape, output_dim, in_channels=1):
         super().__init__()
@@ -83,9 +126,10 @@ class CNNEncoder(nn.Module):
         h, w = input_shape
         h = math.ceil(h / 8)
         w = math.ceil(w / 8)
+        channels = 128
 
-        self.flat_dim = 128 * h * w
-        self.fc = nn.Linear(self.flat_dim, output_dim)
+        self.reducer = SpatialSoftmax(channels, int(h), int(w))
+        self.proj = nn.Linear(channels * 2, output_dim)
 
         # Initialise weights
         for m in self.modules():
@@ -107,8 +151,8 @@ class CNNEncoder(nn.Module):
         x = F.relu(self.norm1(self.conv1(x)))
         x = self.layer1(x)
         x = self.layer2(x)
-        x = x.reshape(x.shape[0], -1)
-        return self.fc(x)
+        x = self.reducer(x)
+        return self.proj(x)
 
 
 class TemporalPositionalEncoding(nn.Module):
@@ -146,7 +190,7 @@ class MultiHeadAttention(nn.Module):
         # Store attention weights for analysis
         self.last_attention_weights: torch.Tensor | None = None
 
-    def forward(self, q, k, v):
+    def forward(self, q, k, v, mask: Optional[torch.Tensor] = None):
         batch_size = q.size(0)
 
         q = self.w_q(q).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
@@ -154,6 +198,8 @@ class MultiHeadAttention(nn.Module):
         v = self.w_v(v).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        if mask is not None:
+            scores = scores.masked_fill(mask, float("-inf"))
 
         attention = F.softmax(scores, dim=-1)
 
@@ -182,10 +228,10 @@ class EncoderLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, mask: Optional[torch.Tensor] = None):
         # Pre-LN: Apply normalization before attention
         normed = self.norm1(x)
-        attn_output = self.self_attn(normed, normed, normed)
+        attn_output = self.self_attn(normed, normed, normed, mask)
         x = x + self.dropout(attn_output)
 
         # Pre-LN: Apply normalization before feedforward
@@ -219,17 +265,29 @@ class _AttentionPooling(nn.Module):
         return pooled
 
 
+def _frame_diff_features(x: torch.Tensor) -> torch.Tensor:
+    """Embedding deltas with a zero for the oldest frame (no predecessor)."""
+    first = torch.zeros_like(x[:, :1])
+    return torch.cat((first, x[:, 1:] - x[:, :-1]), dim=1)
+
+
 class _CameraPipeline(nn.Module):
-    """Per-camera frame-history encoding: CNN, temporal core, pooling.
+    """Per-camera frame-history encoding: CNN, frame differences, temporal core.
 
     Shared by training and by the TorchScript/ONNX export wrappers so the
     deployed policy runs the exact same operations as the trained actor.
     """
 
-    def __init__(self, encoder, sequence_model, d_model, final_layer_pooling, final_pool_skip):
+    def __init__(self, encoder, sequence_model, d_model, final_layer_pooling, final_pool_skip, frame_diff):
         super().__init__()
         self.encoder = encoder
         self.sequence_model = sequence_model
+        self.frame_diff = frame_diff
+        # Created unconditionally so TorchScript sees a stable module set; only
+        # used when frame_diff is enabled.
+        self.diff_fusion = nn.Linear(2 * d_model, d_model)
+        nn.init.orthogonal_(self.diff_fusion.weight, gain=np.sqrt(2))
+        nn.init.zeros_(self.diff_fusion.bias)
         if final_layer_pooling:
             self.pooling = _AttentionPooling(d_model, final_pool_skip)
         else:
@@ -245,17 +303,61 @@ class _CameraPipeline(nn.Module):
         )
         features = self.encoder(frames)
         x = features.reshape(batch, lookback, features.shape[-1])
+        if self.frame_diff:
+            # Zero for the oldest frame (no predecessor), embedding delta
+            # afterwards; the fusion linear lets the model weigh position and
+            # velocity per feature.
+            x = self.diff_fusion(torch.cat((x, _frame_diff_features(x)), dim=-1))
         x = self.sequence_model(x)
         return self.pooling(x)
 
 
-class TemporalActorCritic(MLPModel):
-    """Base for actors that mix per-camera frame-history encodings.
+class _TransformerTemporalCore(nn.Module):
+    def __init__(self, lookback_frames, d_model, num_heads, num_layers, d_ff, dropout, causal_mask):
+        super().__init__()
+        self.pos_encoding = TemporalPositionalEncoding(d_model, lookback_frames)
+        self.encoder_layers = nn.ModuleList(
+            [EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)]
+        )
+        self.final_norm = nn.LayerNorm(d_model)
+        # Registered unconditionally so TorchScript sees a stable buffer; only
+        # applied when causal_mask is enabled.
+        self.causal_mask = causal_mask
+        self.register_buffer(
+            "mask",
+            torch.triu(
+                torch.ones(lookback_frames, lookback_frames, dtype=torch.bool),
+                diagonal=1,
+            ),
+        )
 
-    Subclasses provide the temporal core through ``_build_sequence_models``.
-    Every 2D observation group is processed independently and the pooled
-    per-camera embeddings are concatenated with the (normalized) 1D groups
-    before the shared MLP head.
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.pos_encoding(x)
+        mask = self.mask if self.causal_mask else None
+        for layer in self.encoder_layers:
+            x = layer(x, mask)
+        return self.final_norm(x)
+
+
+class TransformerActorCritic(MLPModel):
+    """Transformer over per-camera frame-history embeddings.
+
+    Every 2D observation group is processed independently (ResNet per-frame
+    encoder with spatial-softmax reduction, optional frame-difference fusion,
+    temporal transformer core, pooling) and the pooled per-camera embeddings
+    are concatenated with the (normalized) 1D groups before the shared MLP
+    head. Attention is causal by default so each frame's representation
+    depends only on the past, matching the policy's information structure;
+    dropout defaults to zero because train/rollout distribution mismatch
+    breaks PPO's on-policy assumption.
     """
 
     is_recurrent = False
@@ -271,19 +373,37 @@ class TemporalActorCritic(MLPModel):
         obs_normalization: bool = True,
         distribution_cfg: dict | None = None,
         lookback_frames: int = 4,
-        d_model: int = 256,
+        d_model: int = 64,
+        num_heads: int = 4,
         num_layers: int = 2,
+        d_ff: int = 256,
+        dropout: float = 0.0,
         final_layer_pooling: bool = False,
         final_pool_skip: bool = False,
+        frame_diff: bool = True,
+        causal_mask: bool = True,
     ) -> None:
+        if d_model % num_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by num_heads ({num_heads})."
+            )
+        if d_model % 2 != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be even for the temporal positional "
+                f"encoding."
+            )
         self.lookback_frames = lookback_frames
         self.d_model = d_model
+        self.num_heads = num_heads
         self.num_layers = num_layers
+        self.d_ff = d_ff
+        self.dropout = dropout
         self.final_layer_pooling = final_layer_pooling
         self.final_pool_skip = final_pool_skip
+        self.frame_diff = frame_diff
+        self.causal_mask = causal_mask
         self._get_obs_dim(obs, obs_groups, obs_set)
         self._temporal_latent_dim = d_model * len(self.obs_groups_2d)
-        sequence_models = self._build_sequence_models()
         pipelines = {
             group: _CameraPipeline(
                 CNNEncoder(
@@ -291,10 +411,19 @@ class TemporalActorCritic(MLPModel):
                     d_model,
                     in_channels=int(self.obs_channels_2d[index]),
                 ),
-                sequence_models[group],
+                _TransformerTemporalCore(
+                    lookback_frames,
+                    d_model,
+                    num_heads,
+                    num_layers,
+                    d_ff,
+                    dropout,
+                    causal_mask,
+                ),
                 d_model,
                 final_layer_pooling,
                 final_pool_skip,
+                frame_diff,
             )
             for index, group in enumerate(self.obs_groups_2d)
         }
@@ -309,9 +438,6 @@ class TemporalActorCritic(MLPModel):
             distribution_cfg,
         )
         self.pipelines = nn.ModuleDict(pipelines)
-
-    def _build_sequence_models(self) -> nn.ModuleDict:
-        raise NotImplementedError
 
     def _get_obs_dim(
         self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str
@@ -390,177 +516,10 @@ class TemporalActorCritic(MLPModel):
         return _OnnxTemporalActor(self, verbose)
 
 
-class _TransformerTemporalCore(nn.Module):
-    def __init__(self, lookback_frames, d_model, num_heads, num_layers, d_ff, dropout):
-        super().__init__()
-        self.pos_encoding = TemporalPositionalEncoding(d_model, lookback_frames)
-        self.encoder_layers = nn.ModuleList(
-            [EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)]
-        )
-        self.final_norm = nn.LayerNorm(d_model)
-
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x = self.pos_encoding(x)
-        for layer in self.encoder_layers:
-            x = layer(x)
-        return self.final_norm(x)
-
-
-class TransformerActorCritic(TemporalActorCritic):
-    """Bidirectional transformer over per-camera frame-history embeddings."""
-
-    def __init__(
-        self,
-        obs: TensorDict,
-        obs_groups: dict[str, list[str]],
-        obs_set: str,
-        output_dim: int,
-        hidden_dims=(512, 256, 128),
-        activation: str = "elu",
-        obs_normalization: bool = True,
-        distribution_cfg: dict | None = None,
-        lookback_frames: int = 4,
-        d_model: int = 256,
-        num_heads: int = 4,
-        num_layers: int = 2,
-        d_ff: int = 512,
-        dropout: float = 0.1,
-        final_layer_pooling: bool = False,
-        final_pool_skip: bool = False,
-    ) -> None:
-        if d_model % num_heads != 0:
-            raise ValueError(
-                f"d_model ({d_model}) must be divisible by num_heads ({num_heads})."
-            )
-        if d_model % 2 != 0:
-            raise ValueError(
-                f"d_model ({d_model}) must be even for the temporal positional "
-                f"encoding."
-            )
-        self.num_heads = num_heads
-        self.d_ff = d_ff
-        self.dropout = dropout
-        super().__init__(
-            obs,
-            obs_groups,
-            obs_set,
-            output_dim,
-            hidden_dims,
-            activation,
-            obs_normalization,
-            distribution_cfg,
-            lookback_frames,
-            d_model,
-            num_layers,
-            final_layer_pooling,
-            final_pool_skip,
-        )
-
-    def _build_sequence_models(self) -> nn.ModuleDict:
-        return nn.ModuleDict(
-            {
-                group: _TransformerTemporalCore(
-                    self.lookback_frames,
-                    self.d_model,
-                    self.num_heads,
-                    self.num_layers,
-                    self.d_ff,
-                    self.dropout,
-                )
-                for group in self.obs_groups_2d
-            }
-        )
-
-
-class _MambaTemporalCore(nn.Module):
-    def __init__(self, d_model, num_layers):
-        super().__init__()
-        from mamba_ssm import Mamba
-
-        self.layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    Mamba(d_model=d_model, d_state=16, d_conv=4, expand=2),
-                    nn.LayerNorm(d_model),
-                )
-                for _ in range(num_layers)
-            ]
-        )
-
-    def forward(self, x):
-        skip_features = x
-        for mamba_layer in self.layers:
-            x = mamba_layer(x)
-        return x + skip_features
-
-
-class MambaActorCritic(TemporalActorCritic):
-    """State-space sequence model over per-camera frame-history embeddings.
-
-    Requires the optional ``mamba_ssm`` package (separate CUDA build). The
-    transformer family works without it.
-    """
-
-    def __init__(
-        self,
-        obs: TensorDict,
-        obs_groups: dict[str, list[str]],
-        obs_set: str,
-        output_dim: int,
-        hidden_dims=(512, 256, 128),
-        activation: str = "elu",
-        obs_normalization: bool = True,
-        distribution_cfg: dict | None = None,
-        lookback_frames: int = 4,
-        d_model: int = 256,
-        num_layers: int = 2,
-        final_layer_pooling: bool = False,
-        final_pool_skip: bool = False,
-    ) -> None:
-        super().__init__(
-            obs,
-            obs_groups,
-            obs_set,
-            output_dim,
-            hidden_dims,
-            activation,
-            obs_normalization,
-            distribution_cfg,
-            lookback_frames,
-            d_model,
-            num_layers,
-            final_layer_pooling,
-            final_pool_skip,
-        )
-
-    def _build_sequence_models(self) -> nn.ModuleDict:
-        try:
-            import mamba_ssm  # noqa: F401
-        except ImportError as error:
-            raise ImportError(
-                "MambaActorCritic requires the 'mamba_ssm' package, which needs a "
-                "separate CUDA build. Install it or use TransformerActorCritic."
-            ) from error
-        return nn.ModuleDict(
-            {
-                group: _MambaTemporalCore(self.d_model, self.num_layers)
-                for group in self.obs_groups_2d
-            }
-        )
-
-
 class _TorchTemporalActor(nn.Module):
     """TorchScript actor signature: joints plus ordered frame-history images."""
 
-    def __init__(self, model: TemporalActorCritic) -> None:
+    def __init__(self, model: TransformerActorCritic) -> None:
         super().__init__()
         self.joint_normalizer = copy.deepcopy(model.obs_normalizer)
         self.pipelines = nn.ModuleList(
@@ -587,7 +546,7 @@ class _TorchTemporalActor(nn.Module):
 
 
 class _OnnxTemporalActor(_TorchTemporalActor):
-    def __init__(self, model: TemporalActorCritic, verbose: bool) -> None:
+    def __init__(self, model: TransformerActorCritic, verbose: bool) -> None:
         super().__init__(model)
         self.verbose = verbose
         self.image_groups = model.obs_groups_2d

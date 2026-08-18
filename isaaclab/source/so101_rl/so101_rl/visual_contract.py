@@ -18,10 +18,12 @@ SO101_ACTOR_OBSERVATION_GROUPS = (
 )
 
 SO101_TEMPORAL_LOOKBACK_FRAMES = 4
-"""Camera frames supplied to temporal actors, ordered oldest to newest.
+"""Camera frames supplied to the transformer actor, ordered oldest to newest.
 
 Environment camera observation terms use this as ``history_length`` and the
-temporal model families use it as ``lookback_frames``; the two must match.
+transformer family uses it as ``lookback_frames``; the two must match. The
+recurrent mamba actor is not windowed: it consumes single frames and keeps
+its own state.
 """
 
 SO101_ARM_ACTION_PATTERN = "shoulder_.*|elbow_flex|wrist_.*"
