@@ -4,7 +4,7 @@
   <name>episode_recorder</name>
   <version>0.1.0</version>
   <description>Minimalistic ROS2 episode recorder for imitation learning.
-    Records strict single- or dual-overhead camera profiles to rosbag2 episodes.</description>
+    Records strict canonical setups to rosbag2 episodes.</description>
   <maintainer email="dmitri@manajev.com">Dmitri Manajev</maintainer>
   <license>Apache-2.0</license>
 
@@ -23,12 +23,12 @@
   <depend>rosbag2_storage</depend>
   <exec_depend>rosbag2_storage_mcap</exec_depend>
 
-  <!-- Camera topics are resolved at runtime from the camera-profile YAMLs in
+  <!-- Camera and arm topics are resolved at runtime from the setup YAMLs in
        so101_bringup's share directory. That dependency is NOT declared here
        because so101_bringup already exec_depends on episode_recorder (it
        launches the recorder), which would create a cycle. In practice the
        recorder only runs inside so101_bringup sessions; standalone use must
-       pass camera_profiles_dir explicitly. -->
+       pass setups_dir explicitly. -->
 
   <!-- Testing -->
   <test_depend>ament_lint_auto</test_depend>

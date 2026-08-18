@@ -37,16 +37,20 @@ ls -l /dev/video* 2>/dev/null || true
 
 This stack assumes stable device symlinks created by udev:
 
-| Device                     | Default path             | Membership |
-| -------------------------- | ------------------------ | ---------- |
-| Leader arm                 | `/dev/so101_leader`      | Required |
-| Follower arm               | `/dev/so101_follower`    | Required |
-| Wrist camera               | `/dev/cam_wrist`         | Both camera profiles |
-| Overhead camera 1          | `/dev/cam_overhead_1`    | Both camera profiles |
-| Overhead camera 2          | `/dev/cam_overhead_2`    | `dual_overhead` |
+| Device                     | Default path             | Required by |
+| -------------------------- | ------------------------ | ----------- |
+| Leader arm                 | `/dev/so101_leader`      | monomanual setups |
+| Follower arm               | `/dev/so101_follower`    | monomanual setups |
+| Wrist camera               | `/dev/cam_wrist`         | monomanual setups |
+| Overhead camera 1          | `/dev/cam_overhead_1`    | every setup |
+| Overhead camera 2          | `/dev/cam_overhead_2`    | `monomanual_dual_overhead` |
+| Left leader / follower     | `/dev/so101_leader_left`, `/dev/so101_follower_left` | `bimanual` |
+| Right leader / follower    | `/dev/so101_leader_right`, `/dev/so101_follower_right` | `bimanual` |
+| Left / right wrist cameras | `/dev/cam_wrist_left`, `/dev/cam_wrist_right` | `bimanual` |
 
-Camera membership is never inferred. Select exactly `single_overhead` or
-`dual_overhead`; every camera in the selected profile is required.
+Camera membership is never inferred. Select exactly one setup
+(`monomanual`, `monomanual_dual_overhead`, or `bimanual`); every camera and
+arm device in the selected setup is required.
 
 ### 3.1 Query Device Properties
 
@@ -111,9 +115,12 @@ Verify:
 
 ```bash
 ls -l /dev/so101_leader /dev/so101_follower
-ls -l /dev/cam_wrist
-ls -l /dev/cam_overhead_1
+ls -l /dev/cam_wrist /dev/cam_overhead_1
 ls -l /dev/cam_overhead_2
+# bimanual:
+ls -l /dev/so101_leader_left /dev/so101_leader_right \
+      /dev/so101_follower_left /dev/so101_follower_right \
+      /dev/cam_wrist_left /dev/cam_wrist_right
 ```
 
 ---
@@ -150,16 +157,21 @@ For the follower gripper, this project sets these protection values by default i
 
 ---
 
-## 6. Camera Configuration
+## 6. Setups
 
-The repository owns exactly two immutable logical profiles:
+The repository owns exactly three canonical setups. Each one is fully
+described by a single YAML in `so101_bringup/config/setups/` — the arm
+topology (namespaces, USB ports, world placement), the logical camera
+contract (nodes, topics, frames), the physical rig (device paths), and the
+Isaac Sim camera geometry (`sim:` section; bimanual has none):
 
-| Profile | Required cameras | LeRobot image features |
-| ------- | ---------------- | ---------------------- |
-| `single_overhead` | wrist, overhead 1 | `observation.images.wrist`, `observation.images.overhead_1` |
-| `dual_overhead` | wrist, overhead 1, overhead 2 | the single profile plus `observation.images.overhead_2` |
+| Setup | Arms | Cameras | LeRobot image features |
+| ----- | ---- | ------- | ---------------------- |
+| `monomanual` | 1 leader + 1 follower | wrist, overhead 1 | `observation.images.wrist`, `observation.images.overhead_1` |
+| `monomanual_dual_overhead` | 1 leader + 1 follower | wrist, overhead 1, overhead 2 | the monomanual set plus `observation.images.overhead_2` |
+| `bimanual` | 2 leaders + 2 followers (`_left`/`_right`) | left wrist, right wrist, overhead 1 | `observation.images.wrist_left`, `observation.images.wrist_right`, `observation.images.overhead_1` |
 
-Their image contract is fixed:
+The monomanual image and topic contract is fixed:
 
 | Camera | Node | Raw image |
 | ------ | ---- | --------- |
@@ -167,51 +179,86 @@ Their image contract is fixed:
 | Overhead 1 | `/static_camera_1/cam_overhead_1` | `/static_camera_1/image_raw` |
 | Overhead 2 | `/static_camera_2/cam_overhead_2` | `/static_camera_2/image_raw` |
 
-### 6.1 External physical rig file
+The bimanual wrists publish `/follower_left/image_raw` and
+`/follower_right/image_raw`; the shared overhead keeps
+`/static_camera_1/image_raw`. Bimanual datasets concatenate both followers:
+`observation.state` and `action` are 12-dimensional (`left.*` / `right.*`
+labels; use `rosbag_to_lerobot/config/bimanual_30hz.yaml` when converting).
 
-The profiles do not contain machine-specific device paths. Create one external
-YAML file for the physical rig and pass its absolute path at every
-camera-enabled launch.
+### 6.1 Setup file schema
+
+The setup file owns every name; topics and frames are concrete strings, so
+nothing anywhere else renders templates. To run on your machine, either edit
+the device paths in the canonical file or copy it and pass the copy via
+`setup_config_file:=/absolute/path/to/copy.yaml`.
 
 ```yaml
+setup: monomanual            # must match the file name
 schema_version: 1
+arms:
+  leaders:
+    - namespace: leader
+      usb_port: /dev/so101_leader
+      tf_xyz: [-0.5, -0.5, 0.0]
+      tf_yaw_deg: 90.0
+  followers:
+    - namespace: follower
+      usb_port: /dev/so101_follower
+      tf_xyz: [0.0, 0.0, 0.0]
+      tf_yaw_deg: 0.0
 cameras:
-  wrist:
-    device: /dev/cam_wrist
-  overhead_1:
-    device: /dev/cam_overhead_1
-  overhead_2:
-    device: /dev/cam_overhead_2
+  profile:
+    - id: wrist
+      node_name: cam_wrist
+      namespace: follower
+      image_topic: /follower/image_raw
+      frame_id: follower/wrist_camera_optical_frame
+      feature: wrist
+      default_backend: gscam
+    - id: overhead_1
+      node_name: cam_overhead_1
+      namespace: static_camera_1
+      image_topic: /static_camera_1/image_raw
+      frame_id: follower/static_camera_1_optical_frame
+      feature: overhead_1
+      default_backend: gscam
+  rig:
+    wrist:
+      device: /dev/cam_wrist
+    overhead_1:
+      device: /dev/cam_overhead_1
+sim:                        # Isaac Sim geometry (monomanual setups only)
+  ...
 ```
 
-Camera calibration is not part of this stack. The rig schema does not accept
+Camera calibration is not part of this stack. The rig section does not accept
 intrinsics, CameraInfo URLs, or camera transforms. Overhead cameras publish
 images but are not placed in the robot TF tree.
 
-### 6.2 Launching a profile
+### 6.2 Launching a setup
 
-Both arguments are required whenever `use_cameras:=true`:
+`setup` is required whenever `use_cameras:=true` (the optional
+`setup_config_file` selects an edited external copy):
 
 ```bash
-ros2 launch so101_bringup teleop.launch.py \
-  camera_profile:=dual_overhead \
-  camera_rig_config_file:=/absolute/path/to/camera_rig.yaml
+ros2 launch so101_bringup teleop.launch.py setup:=monomanual_dual_overhead
 ```
 
-Before any driver starts, launch validates the profile, rig schema, and selected
+Before any driver starts, launch validates the setup schema and selected
 device nodes. It then requires every selected image stream within 10 seconds and
 keeps checking them with a one-second stale limit. A driver or supervisor exit
 shuts down the whole launch. There is no camera discovery, fallback topic, or
-partial-profile operation.
+partial-setup operation.
 
 The standard backend is `gscam`; its pipeline is constructed from each
 camera's `device`. A machine that needs a different backend must declare that
 driver's package, executable, parameters, parameter-name mapping, and remaps in
-the external rig entry. There are no built-in alternate-driver presets.
+the camera's rig entry. There are no built-in alternate-driver presets.
 
-The same `camera_profile` selects recorder topics, Rerun subscriptions,
-conversion features, and inference inputs. Commands and datasets use the fixed
-30 Hz contract in `so101_30hz.yaml`.
+The same `setup` selects the spawned arms, recorder topics, Rerun
+subscriptions, conversion features, and inference inputs. Commands and
+datasets use the fixed 30 Hz contract in `so101_30hz.yaml`
+(`bimanual_30hz.yaml` for bimanual).
 
 ---
 
@@ -219,17 +266,18 @@ conversion features, and inference inputs. Commands and datasets use the fixed
 
 Before launching teleop:
 
-- [ ] LeRobot motor setup and calibration were completed for both arms before first ROS use
-- [ ] Leader / follower udev symlinks exist
+- [ ] LeRobot motor setup and calibration were completed for every arm before first ROS use
+- [ ] Leader / follower udev symlinks exist for the selected setup
 - [ ] User is in `dialout` and `video` groups
-- [ ] `/dev/cam_wrist` and `/dev/cam_overhead_1` exist
-- [ ] `/dev/cam_overhead_2` exists for `dual_overhead`
-- [ ] `camera_profile` and the absolute external rig path are supplied
+- [ ] `/dev/cam_wrist` and `/dev/cam_overhead_1` exist (monomanual setups)
+- [ ] `/dev/cam_overhead_2` exists for `monomanual_dual_overhead`
+- [ ] The bimanual `_left`/`_right` device symlinks exist for `bimanual`
+- [ ] The `setup` argument matches the physically connected rig
 
 Sanity checks:
 
 ```bash
 ls -l /dev/so101_leader /dev/so101_follower 2>/dev/null || true
-ls -l /dev/cam_wrist /dev/cam_overhead_1 2>/dev/null || true
-ls -l /dev/cam_overhead_2 2>/dev/null || true
+ls -l /dev/cam_wrist /dev/cam_overhead_1 /dev/cam_overhead_2 2>/dev/null || true
+ls -l /dev/cam_wrist_left /dev/cam_wrist_right 2>/dev/null || true
 ```

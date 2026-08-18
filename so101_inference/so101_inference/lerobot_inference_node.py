@@ -29,8 +29,8 @@ from std_msgs.msg import Float64MultiArray
 import torch
 
 from so101_inference import CONTROL_FREQUENCY_HZ
-from so101_inference.camera_config import (
-    camera_topics_for_profile,
+from so101_inference.setup_config import (
+    camera_topics_for_setup,
     streams_fresh,
     streams_ready,
     validate_policy_input_features,
@@ -49,13 +49,14 @@ class LeRobotInferenceNode(Node):
         # Parameters
         # --------------------
         self.declare_parameter("repo_id", "")
-        self.declare_parameter("camera_profile", "")
+        self.declare_parameter("setup", "")
         self.declare_parameter("policy_type", "act")
         self.declare_parameter("task", "Put the green cube in the cup.")
         self.declare_parameter("max_age_s", 0.2)
 
-        self.declare_parameter("fwd_topic", "/follower/forward_controller/commands")
-        self.declare_parameter("joints_topic", "/follower/joint_states")
+        # Per-follower topics; empty entries are derived from the setup.
+        self.declare_parameter("joints_topics", [""])
+        self.declare_parameter("fwd_topics", [""])
 
         self.declare_parameter(
             "arm_joints",
@@ -71,17 +72,25 @@ class LeRobotInferenceNode(Node):
 
         # Read parameters
         self.repo_id = str(self.get_parameter("repo_id").value).strip()
-        self.camera_profile = str(self.get_parameter("camera_profile").value).strip()
+        self.setup = str(self.get_parameter("setup").value).strip()
         self.policy_type = str(self.get_parameter("policy_type").value)
         self.task = str(self.get_parameter("task").value)
         self.fps = CONTROL_FREQUENCY_HZ
         self.max_age_s = float(self.get_parameter("max_age_s").value)
 
-        self.fwd_topic = str(self.get_parameter("fwd_topic").value)
-        self.joints_topic = str(self.get_parameter("joints_topic").value)
         if not self.repo_id:
             raise ValueError("repo_id is required and must not be empty")
-        self.camera_topics = camera_topics_for_profile(self.camera_profile)
+        self.camera_topics = camera_topics_for_setup(self.setup)
+        from rosbag_to_lerobot.setups import command_topics, joint_state_topics
+
+        self.joints_topics = self._resolve_topic_list(
+            self.get_parameter("joints_topics").value, joint_state_topics(self.setup)
+        )
+        self.fwd_topics = self._resolve_topic_list(
+            self.get_parameter("fwd_topics").value, command_topics(self.setup)
+        )
+        if len(self.joints_topics) != len(self.fwd_topics):
+            raise ValueError("joints_topics and fwd_topics must have equal length")
 
         self.arm_joints = list(self.get_parameter("arm_joints").value)
 
@@ -92,7 +101,7 @@ class LeRobotInferenceNode(Node):
         self.get_logger().info(f"🚀 Using device: {self.device}")
         self.get_logger().info(f"Loading LeRobot policy from repo_id: {self.repo_id}")
         config = PreTrainedConfig.from_pretrained(self.repo_id)
-        validate_policy_input_features(config.input_features, self.camera_profile)
+        validate_policy_input_features(config.input_features, self.setup)
         # config.n_action_steps = 50
         # config.temporal_ensemble_coeff = 0.01
         policy_class = get_policy_class(self.policy_type)
@@ -116,12 +125,14 @@ class LeRobotInferenceNode(Node):
             camera_name: None for camera_name in self.camera_topics
         }
         self._rx_cameras = {camera_name: None for camera_name in self.camera_topics}
-        self._rx_joints = None
 
-        # Joint ordering cache
+        # Per-follower joint caches; the concatenated vector follows the setup order
+        self._latest_joints_vecs: list[np.ndarray | None] = [None] * len(self.joints_topics)
+        self._rx_joints: list = [None] * len(self.joints_topics)
+
+        # Joint ordering cache (shared: every follower broadcasts the same names)
         self._joint_idx: list[int] | None = None
         self._joint_idx_ready = False
-        self._latest_joints_vec: np.ndarray | None = None  # ordered float32
 
         # --------------------
         #  ROS2 Subscribers, Publishers, Timers
@@ -133,9 +144,18 @@ class LeRobotInferenceNode(Node):
                 partial(self._on_camera_image_cb, camera_name),
                 qos_profile_sensor_data,
             )
-        self.create_subscription(JointState, self.joints_topic, self._on_joints_cb, qos_profile_sensor_data)
+        for index, joints_topic in enumerate(self.joints_topics):
+            self.create_subscription(
+                JointState,
+                joints_topic,
+                partial(self._on_joints_cb, index),
+                qos_profile_sensor_data,
+            )
 
-        self.forward_pub = self.create_publisher(Float64MultiArray, self.fwd_topic, 10)
+        self.forward_pubs = [
+            self.create_publisher(Float64MultiArray, fwd_topic, 10)
+            for fwd_topic in self.fwd_topics
+        ]
 
         # --------------------
         # Timing
@@ -149,19 +169,27 @@ class LeRobotInferenceNode(Node):
 
         # Startup logs
         self.get_logger().info("LeRobotInferenceNode READY")
-        self.get_logger().info(f"  camera_profile:     {self.camera_profile}")
+        self.get_logger().info(f"  setup:             {self.setup}")
         for camera_name, camera_topic in self.camera_topics.items():
             self.get_logger().info(f"  camera {camera_name}: {camera_topic}")
-        self.get_logger().info(f"  joints_topic:       {self.joints_topic}")
-        self.get_logger().info(f"  fwd_topic:          {self.fwd_topic}")
+        for joints_topic, fwd_topic in zip(self.joints_topics, self.fwd_topics):
+            self.get_logger().info(f"  arm topics:         {joints_topic} -> {fwd_topic}")
         self.get_logger().info(f"  fps:                {self.fps:.1f}")
         self.get_logger().info(f"  max_age_s:          {self.max_age_s:.3f}")
+
+    @staticmethod
+    def _resolve_topic_list(configured, setup_topics) -> list[str]:
+        """Use setup-derived topics unless every configured entry is set."""
+        values = [str(value).strip() for value in configured]
+        if values and all(values):
+            return values
+        return list(setup_topics)
 
     def _on_camera_image_cb(self, camera_name: str, msg: Image):
         self._latest_camera_images[camera_name] = msg
         self._rx_cameras[camera_name] = self.get_clock().now()
 
-    def _on_joints_cb(self, msg: JointState):
+    def _on_joints_cb(self, arm_index: int, msg: JointState):
         # Initialize mapping once (or retry until it works)
         if not self._joint_idx_ready:
             if not self._initialize_joint_indices(msg):
@@ -169,8 +197,10 @@ class LeRobotInferenceNode(Node):
 
         # Cache ordered joints
         pos = msg.position
-        self._latest_joints_vec = np.array([pos[i] for i in self._joint_idx], dtype=np.float32)
-        self._rx_joints = self.get_clock().now()
+        self._latest_joints_vecs[arm_index] = np.array(
+            [pos[i] for i in self._joint_idx], dtype=np.float32
+        )
+        self._rx_joints[arm_index] = self.get_clock().now()
 
     def _initialize_joint_indices(self, msg: JointState) -> bool:
         name_to_idx = {name: i for i, name in enumerate(msg.name)}
@@ -199,20 +229,22 @@ class LeRobotInferenceNode(Node):
                 self._latest_camera_images,
                 self._rx_cameras,
             )
-            and self._latest_joints_vec is not None
-            and self._rx_joints is not None
+            and all(vec is not None for vec in self._latest_joints_vecs)
+            and all(rx is not None for rx in self._rx_joints)
         )
 
     def _is_data_fresh(self) -> bool:
         now = self.get_clock().now()
 
-        received_at = {**self._rx_cameras, "joints": self._rx_joints}
+        received_at = {**self._rx_cameras}
+        for index, rx in enumerate(self._rx_joints):
+            received_at[f"joints_{index}"] = rx
         return streams_fresh(received_at, now, self.max_age_s)
 
     def _build_observation(self) -> dict:
-        """Return raw RGB camera images and ordered joint state."""
+        """Return raw RGB camera images and the concatenated joint state."""
         observation = {
-            "observation.state": self._latest_joints_vec,  # (6,) float32
+            "observation.state": np.concatenate(self._latest_joints_vecs),
             "task": self.task,
         }
         for camera_name, image in self._latest_camera_images.items():
@@ -249,9 +281,12 @@ class LeRobotInferenceNode(Node):
         # Remove batch dimension and convert to numpy
         action = action.squeeze(0).cpu().numpy()
 
-        msg = Float64MultiArray()
-        msg.data = action
-        self.forward_pub.publish(msg)
+        # Split the concatenated action per follower and publish each arm's slice
+        joints_per_arm = len(action) // len(self.forward_pubs)
+        for index, publisher in enumerate(self.forward_pubs):
+            msg = Float64MultiArray()
+            msg.data = action[index * joints_per_arm:(index + 1) * joints_per_arm]
+            publisher.publish(msg)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self._inference_count += 1

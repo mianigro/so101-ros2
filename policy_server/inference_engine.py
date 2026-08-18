@@ -88,7 +88,6 @@ def _decode_compressed_images(raw_obs: dict) -> dict:
 def validate_policy_input_features(
     policy_input_features: dict[str, Any] | None,
     client_features: dict[str, dict],
-    state_dimension: int = 6,
 ) -> None:
     """Require the loaded policy schema to exactly match the ROS client schema."""
     if not policy_input_features:
@@ -104,8 +103,19 @@ def validate_policy_input_features(
         missing = sorted(client_images - policy_images)
         unexpected = sorted(policy_images - client_images)
         raise ValueError(
-            "Policy camera schema does not match the client camera_profile; "
+            f"Policy camera schema does not match the client setup; "
             f"missing={missing}, unexpected={unexpected}"
+        )
+
+    client_state = client_features.get(OBS_STATE)
+    client_state_shape = client_state.get("shape") if client_state else None
+    state_dimension: int
+    if client_state_shape and len(client_state_shape) == 1:
+        state_dimension = int(client_state_shape[0])
+    else:
+        raise ValueError(
+            f"Client {OBS_STATE} shape is missing or not a vector: "
+            f"{client_state_shape}"
         )
 
     state_feature = policy_input_features.get(OBS_STATE)
@@ -115,13 +125,6 @@ def validate_policy_input_features(
     if tuple(state_shape or ()) != (state_dimension,):
         raise ValueError(
             f"Policy {OBS_STATE} shape must be ({state_dimension},), got {state_shape}"
-        )
-
-    client_state = client_features.get(OBS_STATE)
-    client_state_shape = client_state.get("shape") if client_state else None
-    if tuple(client_state_shape or ()) != (state_dimension,):
-        raise ValueError(
-            f"Client {OBS_STATE} shape must be ({state_dimension},), got {client_state_shape}"
         )
 
 

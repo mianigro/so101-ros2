@@ -17,14 +17,15 @@ from std_srvs.srv import SetBool
 import torch
 
 from so101_inference import CONTROL_FREQUENCY_HZ
-from so101_inference.camera_config import (
-    camera_topics_for_profile,
+from so101_inference.setup_config import (
+    camera_topics_for_setup,
     streams_fresh,
     streams_ready,
 )
 from so101_inference.rsl_rl_policy import (
     EXPECTED_CAMERAS,
     EXPECTED_JOINTS,
+    REQUIRED_SETUP,
     load_policy_manifest,
     preprocess_rgb,
     safe_absolute_targets,
@@ -45,7 +46,7 @@ class RslRlInferenceNode(Node):
     def __init__(self) -> None:
         super().__init__("rsl_rl_inference_node")
         self.declare_parameter("model_dir", "")
-        self.declare_parameter("camera_profile", "dual_overhead")
+        self.declare_parameter("setup", REQUIRED_SETUP)
         self.declare_parameter("device", "cuda:0")
         self.declare_parameter("max_age_s", 0.2)
         self.declare_parameter("max_skew_s", 0.05)
@@ -54,7 +55,7 @@ class RslRlInferenceNode(Node):
 
         model_dir_value = str(self.get_parameter("model_dir").value).strip()
         model_dir = Path(model_dir_value)
-        camera_profile = str(self.get_parameter("camera_profile").value).strip()
+        setup = str(self.get_parameter("setup").value).strip()
         device_name = str(self.get_parameter("device").value).strip()
         self.max_age_s = float(self.get_parameter("max_age_s").value)
         self.max_skew_s = float(self.get_parameter("max_skew_s").value)
@@ -67,7 +68,7 @@ class RslRlInferenceNode(Node):
         if not device_name.startswith("cuda") or not torch.cuda.is_available():
             raise RuntimeError("RSL-RL deployment requires the configured CUDA workstation GPU")
 
-        self.manifest = load_policy_manifest(model_dir, camera_profile)
+        self.manifest = load_policy_manifest(model_dir, setup)
         self.device = torch.device(device_name)
         self.policy = torch.jit.load(
             self.manifest["_policy_path"], map_location=self.device
@@ -81,9 +82,9 @@ class RslRlInferenceNode(Node):
         )
         self.safety_margin = float(policy_contract["joint_limit_safety_margin"])
 
-        self.camera_topics = camera_topics_for_profile(camera_profile)
+        self.camera_topics = camera_topics_for_setup(setup)
         if tuple(self.camera_topics) != EXPECTED_CAMERAS:
-            raise ValueError("dual_overhead ROS camera order changed unexpectedly")
+            raise ValueError("monomanual_dual_overhead ROS camera order changed unexpectedly")
         self.latest_images: dict[str, Image | None] = {
             name: None for name in EXPECTED_CAMERAS
         }

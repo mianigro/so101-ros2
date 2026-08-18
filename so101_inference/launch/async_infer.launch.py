@@ -26,8 +26,10 @@ def generate_launch_description():
         DeclareLaunchArgument("policy_type", default_value="act"),
         DeclareLaunchArgument("repo_id", description="Hugging Face policy repo ID or local path"),
         DeclareLaunchArgument(
-            "camera_profile",
-            description="Required camera profile: single_overhead or dual_overhead",
+            "setup",
+            description=(
+                "Required setup: monomanual, monomanual_dual_overhead, or bimanual"
+            ),
         ),
         DeclareLaunchArgument("policy_device", default_value="cuda"),
         DeclareLaunchArgument("actions_per_chunk", default_value="100"),
@@ -35,9 +37,9 @@ def generate_launch_description():
         DeclareLaunchArgument("max_age_s", default_value="0.2"),
         DeclareLaunchArgument("task", default_value="Put the green cube in the cup."),
         DeclareLaunchArgument("aggregate_fn_name", default_value="weighted_average"),
-        # Topics
-        DeclareLaunchArgument("fwd_topic", default_value="/follower/forward_controller/commands"),
-        DeclareLaunchArgument("joints_topic", default_value="/follower/joint_states"),
+        # Per-follower topics; the empty default derives them from the setup
+        DeclareLaunchArgument("fwd_topics", default_value="['']"),
+        DeclareLaunchArgument("joints_topics", default_value="['']"),
         DeclareLaunchArgument("use_compressed", default_value="false"),
     ]
 
@@ -51,15 +53,15 @@ def generate_launch_description():
                 "server_address": LaunchConfiguration("server_address"),
                 "policy_type": LaunchConfiguration("policy_type"),
                 "repo_id": LaunchConfiguration("repo_id"),
-                "camera_profile": LaunchConfiguration("camera_profile"),
+                "setup": LaunchConfiguration("setup"),
                 "policy_device": LaunchConfiguration("policy_device"),
                 "actions_per_chunk": LaunchConfiguration("actions_per_chunk"),
                 "chunk_size_threshold": LaunchConfiguration("chunk_size_threshold"),
                 "max_age_s": LaunchConfiguration("max_age_s"),
                 "task": LaunchConfiguration("task"),
                 "aggregate_fn_name": LaunchConfiguration("aggregate_fn_name"),
-                "fwd_topic": LaunchConfiguration("fwd_topic"),
-                "joints_topic": LaunchConfiguration("joints_topic"),
+                "fwd_topics": LaunchConfiguration("fwd_topics"),
+                "joints_topics": LaunchConfiguration("joints_topics"),
                 "use_compressed": LaunchConfiguration("use_compressed"),
             }
         ],

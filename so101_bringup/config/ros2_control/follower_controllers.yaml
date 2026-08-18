@@ -1,4 +1,7 @@
-follower:
+# Wildcard sections apply to the follower controller_manager in any namespace
+# (follower, follower_left, follower_right, ...); the setup YAML owns the
+# namespace.
+/**:
   controller_manager:
     ros__parameters:
       update_rate: 100
@@ -8,6 +11,16 @@ follower:
 
       forward_controller:
         type: forward_command_controller/ForwardCommandController
+
+  joint_state_broadcaster:
+    ros__parameters:
+      joints:
+        - shoulder_pan
+        - shoulder_lift
+        - elbow_flex
+        - wrist_flex
+        - wrist_roll
+        - gripper
 
   forward_controller:
     ros__parameters:

@@ -2,9 +2,12 @@
 # SO-101 udev rules — example template
 # =============================================================================
 #
-# Creates stable symlinks so the ROS launch defaults work out of the box:
-#   Arms:    /dev/so101_leader, /dev/so101_follower
+# Creates stable symlinks so the setup YAML files work out of the box:
+#   Arms:    /dev/so101_leader, /dev/so101_follower (monomanual setups)
+#            /dev/so101_leader_left, /dev/so101_leader_right,
+#            /dev/so101_follower_left, /dev/so101_follower_right (bimanual)
 #   Cameras: /dev/cam_wrist, /dev/cam_overhead_1, /dev/cam_overhead_2
+#            /dev/cam_wrist_left, /dev/cam_wrist_right (bimanual)
 #
 # HOW TO USE
 # ----------
@@ -33,16 +36,25 @@
 # 5. Verify:
 #      ls -l /dev/so101_leader /dev/so101_follower
 #      ls -l /dev/cam_wrist /dev/cam_overhead_1
-#      ls -l /dev/cam_overhead_2  # required by the dual_overhead profile
+#      ls -l /dev/cam_overhead_2  # required by the monomanual_dual_overhead setup
+#      ls -l /dev/so101_leader_left /dev/so101_leader_right \
+#            /dev/so101_follower_left /dev/so101_follower_right \
+#            /dev/cam_wrist_left /dev/cam_wrist_right  # required by bimanual
 #
 # =============================================================================
 
 # ── Arms (tty / USB-serial) ─────────────────────────────────────────────────
 # Each Feetech servo adapter shows up as /dev/ttyACM* or /dev/ttyUSB*.
-# Use the serial number to distinguish leader from follower.
+# Use the serial number to distinguish the arms.
 
 SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_LEADER",   SYMLINK+="so101_leader",   GROUP="dialout", MODE="0660"
 SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_FOLLOWER", SYMLINK+="so101_follower", GROUP="dialout", MODE="0660"
+
+# Bimanual setup arms.
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_LEADER_LEFT",    SYMLINK+="so101_leader_left",    GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_LEADER_RIGHT",   SYMLINK+="so101_leader_right",   GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_FOLLOWER_LEFT",  SYMLINK+="so101_follower_left",  GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SERIAL_SHORT}=="SERIAL_FOLLOWER_RIGHT", SYMLINK+="so101_follower_right", GROUP="dialout", MODE="0660"
 
 # ── Cameras (video4linux) ───────────────────────────────────────────────────
 # USB cameras often register two /dev/video* nodes (video + metadata).
@@ -52,6 +64,10 @@ SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="XXXX", ENV{ID_MODEL_ID}=="YYYY", ENV{ID_SE
 ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_WRIST",    ATTR{index}=="0", SYMLINK+="cam_wrist",    GROUP="video", MODE="0660"
 ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_1", ATTR{index}=="0", SYMLINK+="cam_overhead_1", GROUP="video", MODE="0660"
 ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_OVERHEAD_2", ATTR{index}=="0", SYMLINK+="cam_overhead_2", GROUP="video", MODE="0660"
+
+# Bimanual setup wrist cameras.
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_WRIST_LEFT",  ATTR{index}=="0", SYMLINK+="cam_wrist_left",  GROUP="video", MODE="0660"
+ACTION=="add|change", SUBSYSTEM=="video4linux", KERNEL=="video*", ENV{ID_SERIAL_SHORT}=="SERIAL_WRIST_RIGHT", ATTR{index}=="0", SYMLINK+="cam_wrist_right", GROUP="video", MODE="0660"
 
 # ID_PATH alternatives for cameras without usable unique serials. Uncomment a
 # line only after replacing PATH_*; remove or comment the corresponding serial rule.

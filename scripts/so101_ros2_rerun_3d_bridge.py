@@ -23,9 +23,12 @@ from std_msgs.msg import Float64MultiArray, String
 from tf2_msgs.msg import TFMessage
 import xml.etree.ElementTree as ET
 
-from so101_camera_profiles import (
-    PROFILE_CAMERA_NAMES,
+from so101_setups import (
+    SETUP_CAMERA_NAMES,
+    command_topics,
+    follower_label,
     image_topics,
+    joint_state_topics,
 )
 
 
@@ -60,11 +63,15 @@ class CameraCfg:
 @dataclass
 class Topics:
     cameras: list[CameraCfg] = field(default_factory=list)
+    # Primary follower: drives the animated URDF and the 3D scene.
     joint_states: str = "/follower/joint_states"
     robot_description: str = "/follower/robot_description"
     tf: str = "/tf"
     tf_static: str = "/tf_static"
     forward_commands: Optional[str] = None
+    # Every follower: (topic, dataset label prefix) pairs for the plots.
+    all_joint_states: list[tuple[str, str]] = field(default_factory=list)
+    all_forward_commands: list[tuple[str, str]] = field(default_factory=list)
 
 
 class So101Ros2ToRerun3DBridge(Node):
@@ -105,6 +112,14 @@ class So101Ros2ToRerun3DBridge(Node):
         # ── Joint states ──
         self.create_subscription(JointState, topics.joint_states, self._on_joint_states,
                                  qos_profile_sensor_data, callback_group=self._cg_joints)
+        # Additional followers log their plots under a per-arm label prefix.
+        for topic, label in topics.all_joint_states:
+            if topic == topics.joint_states:
+                continue
+            self.create_subscription(
+                JointState, topic,
+                partial(self._on_labeled_joint_states, label=label),
+                qos_profile_sensor_data, callback_group=self._cg_joints)
 
         # ── URDF (robot_description) ──
         qos_urdf = QoSProfile(
@@ -131,6 +146,14 @@ class So101Ros2ToRerun3DBridge(Node):
             qos_cmd = QoSProfile(depth=10)
             self.create_subscription(Float64MultiArray, topics.forward_commands,
                                      self._on_forward_commands, qos_cmd, callback_group=self._cg_cmd)
+        for topic, label in topics.all_forward_commands:
+            if topic == topics.forward_commands:
+                continue
+            qos_cmd = QoSProfile(depth=10)
+            self.create_subscription(
+                Float64MultiArray, topic,
+                partial(self._on_labeled_forward_commands, label=label),
+                qos_cmd, callback_group=self._cg_cmd)
 
         self.get_logger().info("Rerun 3D bridge started.")
 
@@ -251,8 +274,20 @@ class So101Ros2ToRerun3DBridge(Node):
             if i < len(msg.position):
                 log_scalar(f"state/position/{name}", float(msg.position[i]))
 
+    def _on_labeled_joint_states(self, msg: JointState, label: str) -> None:
+        rr.set_time("ros_time", timestamp=stamp_to_datetime64(msg.header.stamp))
+        for i, name in enumerate(msg.name):
+            if i < len(msg.position):
+                log_scalar(f"state/position/{label}{name}", float(msg.position[i]))
+
     # ── Forward commands callback ────────────────────────────────────
     def _on_forward_commands(self, msg: Float64MultiArray) -> None:
+        self._log_forward_commands(list(msg.data), "")
+
+    def _on_labeled_forward_commands(self, msg: Float64MultiArray, label: str) -> None:
+        self._log_forward_commands(list(msg.data), label)
+
+    def _log_forward_commands(self, data: list[float], label: str) -> None:
         action_time = self._next_action_time()
         if action_time is None:
             return
@@ -266,15 +301,14 @@ class So101Ros2ToRerun3DBridge(Node):
             rr.log("action/position", rr.Clear(recursive=True))
             rr.log("state/position", rr.Clear(recursive=True))
 
-        data = list(msg.data)
         if not self._cmd_joint_order:
             for i, v in enumerate(data):
-                log_scalar(f"action/forward_commands/idx_{i}", float(v))
+                log_scalar(f"action/forward_commands/{label}idx_{i}", float(v))
             return
 
         n = min(len(self._cmd_joint_order), len(data))
         for i in range(n):
-            log_scalar(f"action/position/{self._cmd_joint_order[i]}", float(data[i]))
+            log_scalar(f"action/position/{label}{self._cmd_joint_order[i]}", float(data[i]))
 
 
 
@@ -285,24 +319,26 @@ class So101Ros2ToRerun3DBridge(Node):
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 ROS2→Rerun 3D bridge")
     p.add_argument(
-        "--camera-profile",
+        "--setup",
         required=True,
-        choices=tuple(PROFILE_CAMERA_NAMES),
-        help="Required canonical camera profile",
+        choices=tuple(SETUP_CAMERA_NAMES),
+        help="Required canonical setup",
     )
     # Other topics
-    p.add_argument("--joint-states", default="/follower/joint_states")
-    p.add_argument("--robot-description", default="/follower/robot_description",
-                   help="Topic publishing the URDF XML string")
+    p.add_argument("--joint-states", default=None,
+                   help="Primary follower joint-state topic (default: first setup follower)")
+    p.add_argument("--robot-description", default=None,
+                   help="Topic publishing the URDF XML string (default: primary follower)")
     p.add_argument("--tf", default="/tf")
     p.add_argument("--tf-static", default="/tf_static")
-    p.add_argument("--forward-commands", default="/follower/forward_controller/commands")
+    p.add_argument("--forward-commands", default=None,
+                   help="Primary follower command topic (default: first setup follower)")
     p.add_argument("--cmd-joints", nargs="*", default=[
         "shoulder_pan", "shoulder_lift", "elbow_flex",
         "wrist_flex", "wrist_roll", "gripper",
     ], help="Joint name order matching controller 'joints' param")
-    p.add_argument("--tf-prefix", default="follower/",
-                   help="TF frame prefix used by robot_state_publisher. Use '' for MoveIt/follower_split.")
+    p.add_argument("--tf-prefix", default=None,
+                   help="TF frame prefix used by robot_state_publisher (default: primary follower). Use '' for MoveIt/follower_split.")
     p.add_argument("--tf-root-frame", default="world",
                    help="Root frame of the TF tree")
     p.add_argument("--clear-state-gap-s", type=float, default=2.0)
@@ -317,19 +353,17 @@ def main() -> None:
     rr.log("/", rr.CoordinateFrame(frame=args.tf_root_frame), static=True)
 
     # ── Build camera configs ──
-    camera_topics = image_topics(args.camera_profile, compressed=True)
+    camera_topics = image_topics(args.setup, compressed=True)
     cameras = [
         CameraCfg(name=name, image_topic=topic)
         for name, topic in camera_topics.items()
     ]
 
-    view_names = {
-        "wrist": "Wrist",
-        "overhead_1": "Overhead 1",
-        "overhead_2": "Overhead 2",
-    }
+    def _view_name(camera_id: str) -> str:
+        return " ".join(part.capitalize() for part in camera_id.split("_"))
+
     camera_views = [
-        rrb.Spatial2DView(name=view_names[cam.name], origin=f"cameras/{cam.name}/image")
+        rrb.Spatial2DView(name=_view_name(cam.name), origin=f"cameras/{cam.name}/image")
         for cam in cameras
     ]
 
@@ -358,19 +392,24 @@ def main() -> None:
 
     # ── ROS 2 init ──
     rclpy.init(args=unknownargs)
+    setup_joints = list(joint_state_topics(args.setup))
+    setup_commands = list(command_topics(args.setup))
+    primary_ns = setup_joints[0].strip("/").split("/")[0]
     topics = Topics(
         cameras=cameras,
-        joint_states=args.joint_states,
-        robot_description=args.robot_description,
+        joint_states=args.joint_states or setup_joints[0],
+        robot_description=args.robot_description or f"/{primary_ns}/robot_description",
         tf=args.tf,
         tf_static=args.tf_static,
-        forward_commands=args.forward_commands or None,
+        forward_commands=args.forward_commands or setup_commands[0],
+        all_joint_states=[(t, follower_label(t.strip("/").split("/")[0])) for t in setup_joints],
+        all_forward_commands=[(t, follower_label(t.strip("/").split("/")[0])) for t in setup_commands],
     )
 
     node = So101Ros2ToRerun3DBridge(
         topics,
         cmd_joint_order=args.cmd_joints,
-        tf_prefix=args.tf_prefix,
+        tf_prefix=args.tf_prefix if args.tf_prefix is not None else f"{primary_ns}/",
         tf_root_frame=args.tf_root_frame,
         clear_state_gap_s=args.clear_state_gap_s,
     )

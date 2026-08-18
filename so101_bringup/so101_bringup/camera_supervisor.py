@@ -10,7 +10,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
-from so101_bringup.camera_config import evaluate_camera_streams
+from so101_bringup.setup_config import evaluate_camera_streams
 
 
 class CameraSupervisor(Node):

@@ -21,101 +21,89 @@ namespace episode_recorder {
 
 namespace {
 
-// Only {follower_namespace} may appear in a profile image_topic; the command
-// topic below is fixed by the recording contract. The follower joint-state
-// topic is configurable so a simulated follower (which publishes on
+// Camera and arm topics come from the so101_bringup setup YAML (the same
+// files every other launch loads), so the recorder cannot drift from the
+// rest of the stack. joint_states_topic optionally overrides the primary
+// follower's joint-state topic so a simulated follower (which publishes on
 // /follower_sim/joint_states) can be recorded with the same strict contract.
-std::string render_topic_template(
-  const std::string &template_str,
-  const std::string &follower_namespace) {
-  static const std::string kPlaceholder = "{follower_namespace}";
-  std::string topic;
-  std::size_t cursor = 0;
-  while (cursor < template_str.size()) {
-    const std::size_t start = template_str.find('{', cursor);
-    if (start == std::string::npos) {
-      topic.append(template_str, cursor, std::string::npos);
-      break;
-    }
-    topic.append(template_str, cursor, start - cursor);
-    const std::size_t end = template_str.find('}', start);
-    if (end == std::string::npos) {
-      throw std::runtime_error("unterminated '{' in image_topic: " + template_str);
-    }
-    const std::string placeholder = template_str.substr(start, end - start + 1);
-    if (placeholder != kPlaceholder) {
-      throw std::runtime_error(
-        "unsupported image_topic placeholder " + placeholder + " in " + template_str);
-    }
-    topic += follower_namespace;
-    cursor = end + 1;
-  }
-  return topic;
-}
-
-// Camera topics come from the so101_bringup camera-profile YAML (the same
-// files the camera launch loads), so the recorder cannot drift from the rest
-// of the stack. Returns an empty vector on any resolution failure.
-std::vector<std::string> topics_for_profile(
-  const std::string &camera_profile,
-  const std::string &profiles_dir,
-  const std::string &follower_namespace,
+// Returns an empty vector on any resolution failure.
+std::vector<std::string> topics_for_setup(
+  const std::string &setup,
+  const std::string &setups_dir,
+  const std::string &setup_config_file,
   const std::string &joint_states_topic,
   const rclcpp::Logger &logger) {
   std::vector<std::string> topics;
-  if (camera_profile.empty() || profiles_dir.empty()) {
+  if (setup.empty() || (setups_dir.empty() && setup_config_file.empty())) {
     return topics;
   }
 
-  const std::filesystem::path profile_path =
-    std::filesystem::path(profiles_dir) / (camera_profile + ".yaml");
+  const std::filesystem::path setup_path = setup_config_file.empty()
+    ? std::filesystem::path(setups_dir) / (setup + ".yaml")
+    : std::filesystem::path(setup_config_file);
   YAML::Node root;
   try {
-    root = YAML::LoadFile(profile_path.string());
+    root = YAML::LoadFile(setup_path.string());
   } catch (const YAML::Exception &e) {
     RCLCPP_ERROR(
-      logger, "Cannot load camera profile '%s': %s", profile_path.string().c_str(), e.what());
+      logger, "Cannot load setup '%s': %s", setup_path.string().c_str(), e.what());
     return topics;
   }
 
+  std::vector<std::string> joint_state_topics;
+  std::vector<std::string> command_topics;
   try {
-    const auto profile_name = root["profile"].as<std::string>();
-    if (profile_name != camera_profile) {
+    const auto setup_name = root["setup"].as<std::string>();
+    if (setup_name != setup) {
       RCLCPP_ERROR(
-        logger, "Camera profile '%s' declares profile '%s'", profile_path.string().c_str(),
-        profile_name.c_str());
+        logger, "Setup '%s' declares setup '%s'", setup_path.string().c_str(),
+        setup_name.c_str());
       return {};
     }
-    const auto cameras = root["cameras"];
+    const auto cameras = root["cameras"]["profile"];
     if (!cameras.IsSequence() || cameras.size() == 0) {
       RCLCPP_ERROR(
-        logger, "Camera profile '%s' must declare a non-empty cameras list",
-        profile_path.string().c_str());
+        logger, "Setup '%s' must declare a non-empty cameras.profile list",
+        setup_path.string().c_str());
       return {};
     }
     for (const auto &camera : cameras) {
-      const auto image_topic =
-        render_topic_template(camera["image_topic"].as<std::string>(), follower_namespace);
-      if (image_topic.empty() || image_topic.front() != '/') {
+      const auto image_topic = camera["image_topic"].as<std::string>();
+      if (image_topic.empty() || image_topic.front() != '/' ||
+          image_topic.find('{') != std::string::npos ||
+          image_topic.find('}') != std::string::npos) {
         RCLCPP_ERROR(
-          logger, "Camera profile '%s': image_topic must be absolute: '%s'",
-          profile_path.string().c_str(), image_topic.c_str());
+          logger, "Setup '%s': image_topic must be absolute and concrete: '%s'",
+          setup_path.string().c_str(), image_topic.c_str());
         return {};
       }
       topics.push_back(image_topic + "/compressed");
     }
+    const auto followers = root["arms"]["followers"];
+    if (!followers.IsSequence() || followers.size() == 0) {
+      RCLCPP_ERROR(
+        logger, "Setup '%s' must declare a non-empty arms.followers list",
+        setup_path.string().c_str());
+      return {};
+    }
+    for (const auto &arm : followers) {
+      const auto ns = arm["namespace"].as<std::string>();
+      joint_state_topics.push_back("/" + ns + "/joint_states");
+      command_topics.push_back("/" + ns + "/forward_controller/commands");
+    }
   } catch (const YAML::Exception &e) {
-    RCLCPP_ERROR(
-      logger, "Invalid camera profile '%s': %s", profile_path.string().c_str(), e.what());
-    return {};
-  } catch (const std::runtime_error &e) {
-    RCLCPP_ERROR(
-      logger, "Invalid camera profile '%s': %s", profile_path.string().c_str(), e.what());
+    RCLCPP_ERROR(logger, "Invalid setup '%s': %s", setup_path.string().c_str(), e.what());
     return {};
   }
 
-  topics.emplace_back(joint_states_topic);
-  topics.emplace_back("/follower/forward_controller/commands");
+  if (!joint_state_topics.empty() && !joint_states_topic.empty() &&
+      joint_states_topic != joint_state_topics.front()) {
+    joint_state_topics.front() = joint_states_topic;
+  }
+  for (std::size_t i = 0; i < joint_state_topics.size(); ++i) {
+    topics.push_back(joint_state_topics[i]);
+    topics.push_back(command_topics[i]);
+  }
   return topics;
 }
 
@@ -124,12 +112,11 @@ std::vector<std::string> topics_for_profile(
 EpisodeRecorder::EpisodeRecorder(const rclcpp::NodeOptions &options)
     : rclcpp_lifecycle::LifecycleNode("episode_recorder", options) {
   // Declare parameters
-  this->declare_parameter<std::string>("camera_profile", "");
+  this->declare_parameter<std::string>("setup", "");
+  this->declare_parameter<std::string>("setups_dir", "");
+  this->declare_parameter<std::string>("setup_config_file", "");
   this->declare_parameter<std::string>(
-    "camera_profiles_dir", "");
-  this->declare_parameter<std::string>("follower_namespace", "follower");
-  this->declare_parameter<std::string>(
-    "joint_states_topic", "/follower/joint_states");
+    "joint_states_topic", "");
   this->declare_parameter<std::string>("root_dir", "/tmp/episode_recorder");
   this->declare_parameter<std::string>("storage_id", "mcap");
   this->declare_parameter<double>("max_episode_duration", 0.0);
@@ -160,10 +147,10 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Configuring... ");
 
   // Read parameter values
-  camera_profile_ = this->get_parameter("camera_profile").as_string();
-  topics_ = topics_for_profile(
-    camera_profile_, this->get_parameter("camera_profiles_dir").as_string(),
-    this->get_parameter("follower_namespace").as_string(),
+  setup_ = this->get_parameter("setup").as_string();
+  topics_ = topics_for_setup(
+    setup_, this->get_parameter("setups_dir").as_string(),
+    this->get_parameter("setup_config_file").as_string(),
     this->get_parameter("joint_states_topic").as_string(), get_logger());
   root_dir_ = this->get_parameter("root_dir").as_string();
   storage_id_ = this->get_parameter("storage_id").as_string();
@@ -189,10 +176,10 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   if (topics_.empty()) {
     RCLCPP_ERROR(
       get_logger(),
-      "Cannot resolve camera profile '%s' from camera_profiles_dir '%s'. Pass "
-      "camera_profiles_dir pointing at so101_bringup/config/cameras/profiles.",
-      camera_profile_.c_str(),
-      this->get_parameter("camera_profiles_dir").as_string().c_str());
+      "Cannot resolve setup '%s' from setups_dir '%s'. Pass setups_dir "
+      "pointing at so101_bringup/config/setups.",
+      setup_.c_str(),
+      this->get_parameter("setups_dir").as_string().c_str());
     return CallbackReturn::FAILURE;
   }
   if (root_dir_.empty()) {
@@ -235,8 +222,8 @@ EpisodeRecorder::on_configure(const rclcpp_lifecycle::State & /*state*/) {
   subs_by_topic_.clear();
   cleaned_up_ = false;
 
-  RCLCPP_INFO(get_logger(), "Configuration complete. profile=%s, %zu topics required.",
-              camera_profile_.c_str(), topics_.size());
+  RCLCPP_INFO(get_logger(), "Configuration complete. setup=%s, %zu topics required.",
+              setup_.c_str(), topics_.size());
   return CallbackReturn::SUCCESS;
 }
 
@@ -472,7 +459,7 @@ bool EpisodeRecorder::start_episode() {
     }
     storage_options.custom_data["episode_index"] = std::to_string(next_episode_index_);
     storage_options.custom_data["task"] = task_;
-    storage_options.custom_data["camera_profile"] = camera_profile_;
+    storage_options.custom_data["setup"] = setup_;
   #endif
 
   try {
@@ -529,7 +516,7 @@ bool EpisodeRecorder::stop_episode() {
                                        next_episode_index_,
                                        task_,
                                        experiment_name_,
-                                       camera_profile_)) {
+                                       setup_)) {
     RCLCPP_ERROR(get_logger(),
                  "Failed to write episode metadata — bag saved but metadata is incomplete: %s",
                  current_episode_dir_.string().c_str());
@@ -753,7 +740,7 @@ bool EpisodeRecorder::patch_metadata_yaml_after_close(
     uint32_t episode_index,
     const std::string &task,
     const std::string &experiment_name,
-    const std::string &camera_profile) {
+    const std::string &setup) {
   const auto meta_path = episode_dir / "metadata.yaml";
 
   if (!std::filesystem::exists(meta_path)) {
@@ -779,7 +766,7 @@ bool EpisodeRecorder::patch_metadata_yaml_after_close(
 
     custom["episode_index"] = std::to_string(episode_index);
     custom["task"] = task;
-    custom["camera_profile"] = camera_profile;
+    custom["setup"] = setup;
     if (!experiment_name.empty()) {
       custom["experiment_name"] = experiment_name;
     }

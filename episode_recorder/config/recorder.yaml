@@ -1,6 +1,6 @@
 episode_recorder:
   ros__parameters:
-    # Camera and robot topics are selected exclusively by camera_profile.
+    # Camera and robot topics are selected exclusively by setup.
     root_dir: /tmp/episode_recorder
     storage_id: mcap
     max_episode_duration: 0.0

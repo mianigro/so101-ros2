@@ -94,7 +94,7 @@ Once the server is running and TCP port `8090` is reachable from the robot, star
 ```bash
 pixi run -e lerobot async_infer -- --ros-args \
   -p repo_id:="your-org/your-canonical-camera-smolvla-policy" \
-  -p camera_profile:=dual_overhead \
+  -p setup:=monomanual_dual_overhead \
   -p policy_type:=smolvla \
   -p server_address:=<vast-ai-public-ip>:8090 \
   -p actions_per_chunk:=50 \
@@ -102,11 +102,12 @@ pixi run -e lerobot async_infer -- --ros-args \
 ```
 
 The server and client run at the fixed canonical 30 Hz. The client sends the canonical LeRobot feature schema selected by
-`camera_profile`. After loading the checkpoint, the server compares that schema
-with `policy.config.input_features` and rejects setup unless the image keys
-match exactly and `observation.state` has six values. This prevents legacy
-camera renames or a single/dual-profile mismatch from reaching action
-publication. Processor and normalization configuration stored in the checkpoint
-is still loaded through LeRobot 0.6.1's `make_pre_post_processors` API.
+`setup`. After loading the checkpoint, the server compares that schema
+with `policy.config.input_features` and rejects the setup unless the image keys
+match exactly and `observation.state` matches the setup's dimension (six
+values per follower). This prevents camera renames or a setup mismatch from
+reaching action publication. Processor and normalization configuration stored
+in the checkpoint is still loaded through LeRobot 0.6.1's
+`make_pre_post_processors` API.
 
 For more async inference options and transports, see the [`so101_inference` README](../so101_inference/README.md).

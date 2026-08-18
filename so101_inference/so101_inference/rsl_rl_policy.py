@@ -26,6 +26,7 @@ EXPECTED_JOINTS = (
 EXPECTED_IMAGE_SHAPE = (3, 120, 160)
 EXPECTED_DELTA_SCALES_RAD = (1.0 / 30.0,) * 5 + (0.10,)
 EXPECTED_COMMAND_TOPIC = "/follower/forward_controller/commands"
+REQUIRED_SETUP = "monomanual_dual_overhead"
 
 
 def _sha256(path: Path) -> str:
@@ -36,7 +37,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_policy_manifest(model_dir: Path, camera_profile: str) -> dict:
+def load_policy_manifest(model_dir: Path, setup: str) -> dict:
     """Load and strictly validate the exported actor/deployment contract."""
     model_dir = model_dir.expanduser().resolve()
     manifest_path = model_dir / "policy_manifest.json"
@@ -45,8 +46,8 @@ def load_policy_manifest(model_dir: Path, camera_profile: str) -> dict:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 2:
         raise ValueError("unsupported policy manifest schema")
-    if manifest.get("camera_profile") != camera_profile or camera_profile != "dual_overhead":
-        raise ValueError("RSL-RL visual policy requires camera_profile='dual_overhead'")
+    if manifest.get("setup") != setup or setup != REQUIRED_SETUP:
+        raise ValueError(f"RSL-RL visual policy requires setup={REQUIRED_SETUP!r}")
 
     observations = manifest.get("actor_observations", {})
     if observations.get("camera_order") != list(EXPECTED_CAMERAS):

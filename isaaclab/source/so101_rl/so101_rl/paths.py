@@ -18,13 +18,14 @@ REPOSITORY_ROOT = _repository_root()
 ISAACLAB_PROJECT_ROOT = REPOSITORY_ROOT / "isaaclab"
 SOURCE_ASSET_DIR = ISAACLAB_PROJECT_ROOT / "assets" / "source"
 GENERATED_ASSET_DIR = REPOSITORY_ROOT / "build" / "isaaclab_assets"
-CAMERA_PROFILE_PATH = (
+# The nominal dual-overhead camera geometry lives in the setup file's sim
+# section (visual policies are locked to this setup).
+SETUP_PATH = (
     REPOSITORY_ROOT
     / "so101_bringup"
     / "config"
-    / "cameras"
-    / "isaacsim_profiles"
-    / "isaac_dual_overhead.yaml"
+    / "setups"
+    / "monomanual_dual_overhead.yaml"
 )
 CAMERA_SUPPORT_BOTTOM_USD_PATH = (
     REPOSITORY_ROOT
@@ -85,7 +86,7 @@ def require_vision_assets() -> None:
         path
         for path in (
             ROBOT_USD_PATH,
-            CAMERA_PROFILE_PATH,
+            SETUP_PATH,
             CAMERA_SUPPORT_BOTTOM_USD_PATH,
             CAMERA_SUPPORT_TOP_USD_PATH,
         )

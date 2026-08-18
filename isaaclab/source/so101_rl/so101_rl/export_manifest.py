@@ -57,7 +57,7 @@ def build_policy_manifest(
     return {
         "schema_version": 2,
         "task_id": task_id,
-        "camera_profile": "dual_overhead",
+        "setup": "monomanual_dual_overhead",
         "camera_calibration_sha256": camera_profile_sha256(),
         "actor_observations": {
             "cameras": camera_inputs,

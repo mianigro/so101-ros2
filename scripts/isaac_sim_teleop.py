@@ -22,14 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 XACRO_PATH = REPO_ROOT / "so101_description" / "urdf" / "so101_arm.urdf.xacro"
 DESCRIPTION_PATH = REPO_ROOT / "so101_description"
 DEFAULT_ASSET_DIR = REPO_ROOT / "build" / "isaacsim_so101"
-DEFAULT_CAMERA_RIG_CONFIG = (
-    REPO_ROOT
-    / "so101_bringup"
-    / "config"
-    / "cameras"
-    / "isaacsim_profiles"
-    / "isaac_dual_overhead.yaml"
-)
+SETUPS_DIR = REPO_ROOT / "so101_bringup" / "config" / "setups"
+# Isaac Sim supports the single-arm setups only; bimanual has no sim section.
+SIM_SETUPS = ("monomanual", "monomanual_dual_overhead")
 
 ROBOT_PRIM_PATH = "/World/SO101"
 ARTICULATION_PRIM_PATH = f"{ROBOT_PRIM_PATH}/Geometry"
@@ -42,28 +37,6 @@ COMMAND_TOPIC = "/follower/forward_controller/commands"
 # Distinct from the physical follower's /follower/joint_states so the sim can
 # run alongside the real follower without interleaving the two streams.
 JOINT_STATE_TOPIC = "/follower_sim/joint_states"
-CAMERA_NAMES_BY_PROFILE = {
-    "none": (),
-    "single_overhead": ("wrist", "overhead_1"),
-    "dual_overhead": ("wrist", "overhead_1", "overhead_2"),
-}
-EXPECTED_CAMERA_INTERFACES = {
-    "wrist": (
-        "/follower/image_raw",
-        "/follower/camera_info",
-        "follower/wrist_camera_optical_frame",
-    ),
-    "overhead_1": (
-        "/static_camera_1/image_raw",
-        "/static_camera_1/camera_info",
-        "follower/static_camera_1_optical_frame",
-    ),
-    "overhead_2": (
-        "/static_camera_2/image_raw",
-        "/static_camera_2/camera_info",
-        "follower/static_camera_2_optical_frame",
-    ),
-}
 JOINT_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -107,16 +80,19 @@ def parse_args() -> argparse.Namespace:
         help="Rebuild generated robot and camera-mount USD assets.",
     )
     parser.add_argument(
-        "--camera-profile",
-        choices=tuple(CAMERA_NAMES_BY_PROFILE),
-        default="dual_overhead",
-        help="Simulated camera set to publish (default: dual_overhead).",
+        "--setup",
+        choices=("none", *SIM_SETUPS),
+        default="monomanual_dual_overhead",
+        help="Simulated camera set to publish (default: monomanual_dual_overhead).",
     )
     parser.add_argument(
-        "--camera-rig-config",
+        "--setup-config",
         type=Path,
-        default=DEFAULT_CAMERA_RIG_CONFIG,
-        help="Isaac camera calibration YAML (default: photographed dual-overhead rig).",
+        default=None,
+        help=(
+            "Optional setup YAML with the sim section to use (default: "
+            "so101_bringup/config/setups/<setup>.yaml)."
+        ),
     )
     parser.add_argument(
         "--validate-only",
@@ -231,31 +207,47 @@ def binary_stl_bounds(path: Path) -> tuple[list[float], list[float]]:
     return lower, upper
 
 
-def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
-    if profile == "none":
+def load_sim_rig(config_path: Path, setup: str) -> dict[str, Any] | None:
+    if setup == "none":
         return None
     if config_path.is_symlink():
-        raise RuntimeError(f"camera rig config must not be a symlink: {config_path}")
+        raise RuntimeError(f"setup config must not be a symlink: {config_path}")
     if not config_path.is_file():
-        raise RuntimeError(f"camera rig config does not exist: {config_path}")
+        raise RuntimeError(f"setup config does not exist: {config_path}")
     try:
         data = _require_mapping(
-            yaml.safe_load(config_path.read_text(encoding="utf-8")), "camera rig"
+            yaml.safe_load(config_path.read_text(encoding="utf-8")), "setup config"
         )
     except yaml.YAMLError as error:
-        raise RuntimeError(f"camera rig config is not valid YAML: {error}") from error
+        raise RuntimeError(f"setup config is not valid YAML: {error}") from error
     if data.get("schema_version") != 1:
-        raise RuntimeError("camera rig schema_version must be 1")
+        raise RuntimeError("setup config schema_version must be 1")
+    if data.get("setup") != setup:
+        raise RuntimeError(
+            f"setup config must declare setup: {setup} (got {data.get('setup')!r})"
+        )
+    if data.get("sim") is None:
+        raise RuntimeError(
+            f"setup {setup!r} defines no sim section; Isaac Sim is only "
+            f"supported for {SIM_SETUPS}"
+        )
+    sim = _require_mapping(data.get("sim"), f"setup {setup!r} sim section")
+    cameras_section = _require_mapping(data.get("cameras"), "setup cameras")
+    profile = cameras_section.get("profile")
+    if not isinstance(profile, list) or not profile:
+        raise RuntimeError(f"setup {setup!r} must define a cameras.profile list")
+    profile_topics = {entry.get("id"): entry.get("image_topic") for entry in profile}
+    selected_names = tuple(profile_topics)
 
-    resolution = _require_mapping(data.get("resolution"), "camera rig resolution")
+    resolution = _require_mapping(sim.get("resolution"), "sim resolution")
     for dimension in ("width", "height"):
         value = resolution.get(dimension)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise RuntimeError(f"camera rig resolution {dimension} must be a positive integer")
-    if not math.isclose(_require_positive(data.get("fps"), "camera rig fps"), 30.0):
-        raise RuntimeError("camera rig fps must remain 30 for the current data contract")
+            raise RuntimeError(f"sim resolution {dimension} must be a positive integer")
+    if not math.isclose(_require_positive(sim.get("fps"), "sim fps"), 30.0):
+        raise RuntimeError("sim fps must remain 30 for the current data contract")
 
-    optics = _require_mapping(data.get("optics"), "camera rig optics")
+    optics = _require_mapping(sim.get("optics"), "sim optics")
     aperture = _require_positive(optics.get("horizontal_aperture_mm"), "horizontal aperture")
     near_clip = _require_positive(optics.get("near_clip_m"), "near clip")
     far_clip = _require_positive(optics.get("far_clip_m"), "far clip")
@@ -265,7 +257,7 @@ def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
     if not math.isfinite(f_stop) or f_stop < 0:
         raise RuntimeError("camera f_stop must be finite and non-negative")
 
-    support = _require_mapping(data.get("support"), "camera rig support")
+    support = _require_mapping(sim.get("support"), "sim support")
     bottom_mesh = resolve_description_uri(support.get("bottom_mesh"))
     top_mesh = resolve_description_uri(support.get("top_mesh"))
     mesh_scale = _require_positive(support.get("mesh_scale"), "support mesh_scale")
@@ -293,29 +285,33 @@ def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
     _require_vector(support.get("color_rgb"), 3, "support color_rgb")
     post_centers = _require_mapping(support.get("post_centers_m"), "support post_centers_m")
     yaw_degrees = _require_mapping(support.get("yaw_deg"), "support yaw_deg")
-    for camera_id in ("overhead_1", "overhead_2"):
-        _require_vector(post_centers.get(camera_id), 3, f"{camera_id} post center")
-        float(yaw_degrees.get(camera_id))
+    if set(post_centers) != set(yaw_degrees) or not post_centers:
+        raise RuntimeError("support post_centers_m and yaw_deg must define the same posts")
+    for camera_id, center in post_centers.items():
+        _require_vector(center, 3, f"{camera_id} post center")
+        float(yaw_degrees[camera_id])
     colliders = _require_mapping(support.get("colliders"), "support colliders")
     _require_vector(colliders.get("foot_size_m"), 3, "support foot collider")
     _require_vector(colliders.get("post_size_m"), 3, "support post collider")
     _require_positive(colliders.get("post_center_z_m"), "support post_center_z_m")
 
-    cameras = _require_mapping(data.get("cameras"), "camera rig cameras")
-    if set(cameras) != set(EXPECTED_CAMERA_INTERFACES):
-        raise RuntimeError(f"camera rig must define exactly: {sorted(EXPECTED_CAMERA_INTERFACES)}")
-    for camera_id, expected_interface in EXPECTED_CAMERA_INTERFACES.items():
-        camera = _require_mapping(cameras[camera_id], f"camera {camera_id}")
-        actual_interface = (
-            camera.get("image_topic"),
-            camera.get("camera_info_topic"),
-            camera.get("frame_id"),
+    cameras = _require_mapping(sim.get("cameras"), "sim cameras")
+    if set(cameras) != set(profile_topics):
+        raise RuntimeError(
+            f"setup {setup!r} sim cameras must match cameras.profile ids exactly: "
+            f"{sorted(profile_topics)}"
         )
-        if actual_interface != expected_interface:
+    for camera_id, profile_topic in profile_topics.items():
+        camera = _require_mapping(cameras[camera_id], f"camera {camera_id}")
+        if camera.get("image_topic") != profile_topic:
             raise RuntimeError(
-                f"camera {camera_id} must keep interface {expected_interface}, "
-                f"got {actual_interface}"
+                f"camera {camera_id} sim image_topic must match cameras.profile: "
+                f"{profile_topic!r} (got {camera.get('image_topic')!r})"
             )
+        if not str(camera.get("camera_info_topic", "")).startswith("/"):
+            raise RuntimeError(f"camera {camera_id} camera_info_topic must be absolute")
+        if not str(camera.get("frame_id", "")):
+            raise RuntimeError(f"camera {camera_id} frame_id must be set")
         fov = _require_positive(
             camera.get("horizontal_fov_deg"), f"{camera_id} horizontal_fov_deg"
         )
@@ -338,18 +334,18 @@ def load_camera_rig(config_path: Path, profile: str) -> dict[str, Any] | None:
             if position == target:
                 raise RuntimeError(f"camera {camera_id} position and look-at target must differ")
 
-    data["_config_path"] = config_path.resolve()
+    sim["_config_path"] = config_path.resolve()
     support["_bottom_mesh_path"] = bottom_mesh
     support["_top_mesh_path"] = top_mesh
     support["_measured_height_mm"] = assembled_height
     support["_insertion_depth_mm"] = insertion_depth
     support["_assembly_center_mm"] = assembly_center
-    data["_selected_camera_names"] = CAMERA_NAMES_BY_PROFILE[profile]
-    data["_horizontal_aperture_mm"] = aperture
-    data["_near_clip_m"] = near_clip
-    data["_far_clip_m"] = far_clip
-    data["_f_stop"] = f_stop
-    return data
+    sim["_selected_camera_names"] = selected_names
+    sim["_horizontal_aperture_mm"] = aperture
+    sim["_near_clip_m"] = near_clip
+    sim["_far_clip_m"] = far_clip
+    sim["_f_stop"] = f_stop
+    return sim
 
 
 def expand_follower_urdf(asset_dir: Path) -> Path:
@@ -563,8 +559,8 @@ def create_camera_supports(
     colliders = support["colliders"]
 
     usd_geom.Xform.Define(stage, "/World/CameraRig")
-    for camera_id in ("overhead_1", "overhead_2"):
-        label = "Left" if camera_id == "overhead_1" else "Right"
+    for index, camera_id in enumerate(support["post_centers_m"]):
+        label = "Left" if index == 0 else "Right"
         root_path = f"/World/CameraRig/{label}Support"
         usd_geom.Xform.Define(stage, root_path)
         root = xform_prim_type(
@@ -640,7 +636,7 @@ def create_sim_cameras(
                 orientations=[config["orientation_wxyz"]],
             )
         else:
-            prim_name = "OverheadCamera1" if camera_id == "overhead_1" else "OverheadCamera2"
+            prim_name = "".join(part.capitalize() for part in camera_id.split("_"))
             prim_path = f"/World/CameraRig/{prim_name}"
             orientation = transform_utils.look_at_quaternion(
                 eye=config["position_m"], target=config["look_at_m"]
@@ -1052,13 +1048,13 @@ def create_ros_action_graph(
 def main() -> int:
     args = parse_args()
     args.asset_dir = args.asset_dir.resolve()
-    args.camera_rig_config = args.camera_rig_config.expanduser()
-    camera_rig = load_camera_rig(args.camera_rig_config, args.camera_profile)
+    setup_config = args.setup_config or SETUPS_DIR / f"{args.setup}.yaml"
+    camera_rig = load_sim_rig(setup_config.expanduser(), args.setup)
     urdf_path = expand_follower_urdf(args.asset_dir)
     print(f"Validated follower URDF: {urdf_path}")
     if camera_rig is not None:
         print(
-            f"Validated {args.camera_profile} camera rig: {camera_rig['_config_path']} "
+            f"Validated {args.setup} sim cameras: {camera_rig['_config_path']} "
             f"({camera_rig['support']['_measured_height_mm']:.3f} mm supports, "
             f"{camera_rig['support']['_insertion_depth_mm']:.3f} mm insertion, "
             "no source symlinks)"

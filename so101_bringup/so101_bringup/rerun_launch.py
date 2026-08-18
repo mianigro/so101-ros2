@@ -39,9 +39,9 @@ def declare_rerun_arguments(rerun_delay_default="2.0"):
     ]
 
 
-def _bridge_process(pixi_task, camera_profile, rerun_env_dir):
+def _bridge_process(pixi_task, setup, rerun_env_dir):
     return ExecuteProcess(
-        cmd=["pixi", "run", pixi_task, "--", "--camera-profile", camera_profile],
+        cmd=["pixi", "run", pixi_task, "--", "--setup", setup],
         cwd=rerun_env_dir,
         additional_env={"PYTHONUNBUFFERED": "1"},
         output="screen",
@@ -51,7 +51,7 @@ def _bridge_process(pixi_task, camera_profile, rerun_env_dir):
 def _spawn_bridges(
     context,
     *,
-    camera_profile,
+    setup,
     use_rerun,
     use_rerun_3d,
     rerun_env_dir,
@@ -74,7 +74,7 @@ def _spawn_bridges(
             "SO101_RERUN_ENV_DIR=/abs/path/to/so101-ros-physical-ai or pass "
             "rerun_env_dir:=/abs/path/to/so101-ros-physical-ai."
         )
-    profile = camera_profile.perform(context)
+    profile = setup.perform(context)
     delay = float(rerun_delay_s.perform(context))
     actions = []
     if want_2d:
@@ -94,7 +94,7 @@ def _spawn_bridges(
     return actions
 
 
-def rerun_bridge_actions(camera_profile, also_requires_dir=None):
+def rerun_bridge_actions(setup, also_requires_dir=None):
     """Return the validated 2D/3D Rerun bridge actions for a top-level launch.
 
     ``also_requires_dir`` optionally names another ``LaunchConfiguration``
@@ -104,7 +104,7 @@ def rerun_bridge_actions(camera_profile, also_requires_dir=None):
     return OpaqueFunction(
         function=_spawn_bridges,
         kwargs={
-            "camera_profile": camera_profile,
+            "setup": setup,
             "use_rerun": LaunchConfiguration("use_rerun"),
             "use_rerun_3d": LaunchConfiguration("use_rerun_3d"),
             "rerun_env_dir": LaunchConfiguration("rerun_env_dir"),

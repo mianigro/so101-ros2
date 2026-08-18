@@ -1,7 +1,7 @@
 robot_type: "so101"
 fps: 30
 
-# Camera schemas come exclusively from --camera-profile. Absolute commands drive frames.
+# Camera schemas come exclusively from --setup. Absolute commands drive frames.
 reference_topic: "/follower/forward_controller/commands"
 task: "Pick and Place"
 default_max_age_s: 0.05

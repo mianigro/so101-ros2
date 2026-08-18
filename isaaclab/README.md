@@ -58,7 +58,7 @@ The commands below assume:
 - source-built Isaac Sim: `~/Documents/isaacsim` — override with
   `SO101_ISAACSIM_PYTHON`, pointing at
   `_build/linux-x86_64/release/python.sh` inside the source build;
-- camera profile: `dual_overhead`;
+- setup: `monomanual_dual_overhead` (visual policies are locked to it);
 - a CUDA GPU for visual training and deployment;
 - `cube.stl` is manipulated and `cup.stl` remains fixed during an episode;
 - the generated repository SO-101 USD is authoritative.
@@ -138,7 +138,7 @@ source "$SO101_REPO/install/setup.bash"
 
 /path/to/isaacsim/_build/linux-x86_64/release/python.sh \
   "$SO101_REPO/scripts/isaac_sim_teleop.py" \
-  --camera-profile dual_overhead \
+  --setup monomanual_dual_overhead \
   --headless --max-frames 1 \
   --rebuild-asset
 ```
@@ -439,7 +439,7 @@ colcon build --packages-select so101_inference
 source install/setup.bash
 
 ros2 launch so101_inference rsl_rl_infer.launch.py \
-  model_dir:="$ARTIFACT_DIR" camera_profile:=dual_overhead
+  model_dir:="$ARTIFACT_DIR" setup:=monomanual_dual_overhead
 ```
 
 The node starts in shadow mode and requires fresh, synchronized data from:
@@ -544,7 +544,7 @@ Regenerate after robot, camera mount, cube, or cup geometry changes.
 ### Wrong camera views
 
 Stop training. Compare the fixed task with sim teleop at the same joint pose and
-inspect `so101_bringup/config/cameras/isaacsim_profiles/isaac_dual_overhead.yaml`. Nominal
+inspect the `sim:` section of `so101_bringup/config/setups/monomanual_dual_overhead.yaml`. Nominal
 calibration is not proof of pixel-perfect real calibration.
 
 ### CUDA out of memory

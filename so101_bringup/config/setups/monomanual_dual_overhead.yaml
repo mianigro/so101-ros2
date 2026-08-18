@@ -1,0 +1,112 @@
+# Monomanual dual-overhead setup: one leader/follower arm pair, one wrist
+# camera, two overhead cameras. This file is the single source of truth for
+# the rig: arm topology, logical camera contract, physical devices, and sim
+# geometry.
+setup: monomanual_dual_overhead
+schema_version: 1
+
+arms:
+  leaders:
+    - namespace: leader
+      usb_port: /dev/so101_leader
+      tf_xyz: [-0.5, -0.5, 0.0]
+      tf_yaw_deg: 90.0
+  followers:
+    - namespace: follower
+      usb_port: /dev/so101_follower
+      tf_xyz: [0.0, 0.0, 0.0]
+      tf_yaw_deg: 0.0
+
+cameras:
+  profile:
+    - id: wrist
+      node_name: cam_wrist
+      namespace: follower
+      image_topic: /follower/image_raw
+      frame_id: follower/wrist_camera_optical_frame
+      feature: wrist
+      default_backend: gscam
+    - id: overhead_1
+      node_name: cam_overhead_1
+      namespace: static_camera_1
+      image_topic: /static_camera_1/image_raw
+      frame_id: follower/static_camera_1_optical_frame
+      feature: overhead_1
+      default_backend: gscam
+    - id: overhead_2
+      node_name: cam_overhead_2
+      namespace: static_camera_2
+      image_topic: /static_camera_2/image_raw
+      frame_id: follower/static_camera_2_optical_frame
+      feature: overhead_2
+      default_backend: gscam
+  rig:
+    wrist:
+      device: /dev/cam_wrist
+    overhead_1:
+      device: /dev/cam_overhead_1
+    overhead_2:
+      device: /dev/cam_overhead_2
+
+sim:
+  resolution:
+    width: 640
+    height: 480
+  fps: 30.0
+
+  optics:
+    horizontal_aperture_mm: 20.955
+    near_clip_m: 0.01
+    far_clip_m: 5.0
+    f_stop: 0.0
+
+  support:
+    bottom_mesh: package://so101_description/meshes/camera_rig/cam_mount_bottom.stl
+    top_mesh: package://so101_description/meshes/camera_rig/cam_mount_top.stl
+    mesh_scale: 0.001
+    # Native STL coordinates, in millimetres. Local +Y is vertical.
+    assembly_center_mm: [18.7000003, 0.0, 36.5125008]
+    # The top's 8 mm socket slides over the bottom's upper tongue.
+    top_translation_mm: [18.7000003, 223.1000000, 36.5125008]
+    expected_height_mm: 465.5501770
+    color_rgb: [1.0, 0.26, 0.0]
+    post_centers_m:
+      overhead_1: [0.0, 0.135, 0.0]
+      overhead_2: [0.0, -0.135, 0.0]
+    yaw_deg:
+      overhead_1: 0.0
+      overhead_2: 180.0
+    colliders:
+      foot_size_m: [0.0374, 0.093025, 0.0072]
+      post_size_m: [0.0254, 0.036625, 0.458350177]
+      post_center_z_m: 0.2363750885
+
+  cameras:
+    wrist:
+      parent_link: gripper_link
+      # Optical center and 25 degree face angle measured from the replacement STL.
+      translation_m: [0.0025, -0.0720574, 0.0041503]
+      orientation_wxyz: [0.6903455, 0.1530459, 0.1530459, -0.6903455]
+      horizontal_fov_deg: 90.0
+      housing_size_m: [0.032, 0.032, 0.005]
+      image_topic: /follower/image_raw
+      camera_info_topic: /follower/camera_info
+      frame_id: follower/wrist_camera_optical_frame
+
+    overhead_1:
+      position_m: [0.02, 0.160, 0.455]
+      look_at_m: [0.20, 0.160, 0.06]
+      horizontal_fov_deg: 70.0
+      housing_size_m: [0.13, 0.045, 0.035]
+      image_topic: /static_camera_1/image_raw
+      camera_info_topic: /static_camera_1/camera_info
+      frame_id: follower/static_camera_1_optical_frame
+
+    overhead_2:
+      position_m: [0.02, -0.160, 0.455]
+      look_at_m: [0.20, -0.160, 0.06]
+      horizontal_fov_deg: 70.0
+      housing_size_m: [0.13, 0.045, 0.035]
+      image_topic: /static_camera_2/image_raw
+      camera_info_topic: /static_camera_2/camera_info
+      frame_id: follower/static_camera_2_optical_frame

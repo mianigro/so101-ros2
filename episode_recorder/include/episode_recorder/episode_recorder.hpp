@@ -40,7 +40,7 @@ public:
 
 private:
   // ROS2 Parameters
-  std::string camera_profile_;
+  std::string setup_;
   std::string root_dir_;
   std::string storage_id_;
   std::vector<std::string> topics_;
@@ -110,7 +110,7 @@ private:
                                       uint32_t episode_index,
                                       const std::string &task,
                                       const std::string &experiment_name,
-                                      const std::string &camera_profile);
+                                      const std::string &setup);
   #endif
 };
 

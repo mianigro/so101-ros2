@@ -1,0 +1,43 @@
+# Game config
+discrete: True
+height: 210  # Original height of the image
+lookback_frames: 6
+
+# Training Hyperparameters
+training_config:
+  # Training
+  batch_size: 64  # Number of samples used for each training iteration
+  n_epochs: 3  # Number of epochs to train on each batch of data
+  n_steps: 2000000  # Total number of game steps to run during training
+
+  # LR
+  max_norm: 0.5
+  alpha: 3.0e-4  # Learning rate for the optimizer
+  lr_decay: 0.98
+  lr_decay_step_size: 10 # Steps to decay, these steps are learn() steps
+
+  # Saving
+  save_interval: 25  # Learn iters to save at
+  save_video_interval: 50  # Save video interval
+
+
+# Model config
+model_config:
+  # Architecture
+  d_model: 256  # Dimension of attention head
+  num_heads: 8  # Number of heads
+  num_layers: 4  # Layers of self attention blocks
+  d_ff: 1024  # Dimension of feed forward network
+  dropout: 0.1  # Dropout in the mid layer
+
+  # PPO
+  gae_lambda: 0.95  # Generalized Advantage Estimation lambda parameter
+  policy_clip: 0.2
+  value_clip_range: 0.2
+  gamma: 0.99  # Discount factor for future rewards
+  N: 4096  # Number of steps between learning iterations
+  
+  # Entropy
+  entropy_coef: 0.01
+  entropy_decay: 0.985
+  min_entropy_coef: 0.000001

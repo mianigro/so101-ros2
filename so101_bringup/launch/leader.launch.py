@@ -88,6 +88,7 @@ def generate_launch_description():
                 default_value="",
                 description="TF frame prefix for robot_state_publisher, e.g. 'leader/'",
             ),
+            DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument(
                 "controller_config_file",
                 default_value=PathJoinSubstitution(
@@ -99,7 +100,6 @@ def generate_launch_description():
                     ]
                 ),
             ),
-            DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument(
                 "rviz_config",
                 default_value=PathJoinSubstitution(

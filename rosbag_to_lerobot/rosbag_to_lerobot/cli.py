@@ -26,7 +26,7 @@ from pathlib import Path
 from lerobot.configs import VALID_VIDEO_CODECS
 
 from rosbag_to_lerobot.config import load_config
-from rosbag_to_lerobot.camera_profiles import CAMERA_NAMES_BY_PROFILE
+from rosbag_to_lerobot.setups import CAMERA_NAMES_BY_SETUP
 from rosbag_to_lerobot.converter import (
     convert_all_bags,
     DATASET_TAGS_BY_SOURCE,
@@ -52,20 +52,21 @@ def main() -> None:
         "--config", required=True, type=Path, help="Path to YAML config file."
     )
     parser.add_argument(
-        "--camera-profile",
+        "--setup",
         required=True,
-        choices=tuple(CAMERA_NAMES_BY_PROFILE),
-        help="Required camera profile recorded in every input episode",
+        choices=tuple(CAMERA_NAMES_BY_SETUP),
+        help="Required setup recorded in every input episode",
     )
     parser.add_argument(
         "--joint-states-topic",
         default="auto",
         help=(
-            "Topic recorded as observation.state. 'auto' (default) resolves "
-            "per episode: /follower/joint_states for the physical follower, "
-            "/follower_sim/joint_states for Isaac Sim follower recordings, so "
-            "mixed directories convert in one run. Pass an explicit topic to "
-            "pin it for every episode."
+            "Primary joint-states topic recorded as observation.state. 'auto' "
+            "(default) resolves per episode: /follower/joint_states for the "
+            "physical follower, /follower_sim/joint_states for Isaac Sim "
+            "follower recordings, so mixed directories convert in one run. "
+            "Pass an explicit topic to pin it for every episode "
+            "(single-arm setups only)."
         ),
     )
     parser.add_argument(
@@ -145,7 +146,7 @@ def main() -> None:
 
     try:
         cfg = load_config(
-            args.config, args.camera_profile, joint_states_topic=args.joint_states_topic
+            args.config, args.setup, joint_states_topic=args.joint_states_topic
         )
 
         output_dir = args.output_dir.expanduser() if args.output_dir else None
