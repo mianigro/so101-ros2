@@ -23,6 +23,7 @@ from so101_rl.tasks.common import (
 )
 from so101_rl.tasks.common import mdp as common_mdp
 from so101_rl.tasks.common.visual_env_cfg import contact_material, contact_properties
+from so101_rl.visual_contract import SO101_TEMPORAL_LOOKBACK_FRAMES
 
 from . import mdp
 
@@ -298,12 +299,8 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
         super().__post_init__()
 
 
-@configclass
-class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
-    """Nominal fixed-pose environment used to prove visual learnability first."""
-
-    def __post_init__(self):
-        super().__post_init__()
+    def _apply_task_fixed_mode(self) -> None:
+        """Disable every randomization source for the fixed-pose variant."""
         self._apply_fixed_mode()
         self.events.object_material = None
         self.events.cup_material = None
@@ -317,3 +314,44 @@ class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
             cup_xy_range_full=(0.0, 0.0),
             object_yaw_range_full=(0.0, 0.0),
         )
+
+
+@configclass
+class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
+    """Nominal fixed-pose environment used to prove visual learnability first."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._apply_task_fixed_mode()
+
+
+def _enable_camera_history(env_cfg) -> None:
+    """Serve every actor camera group as a frame-history window.
+
+    Temporal actors (transformer/mamba families) consume camera observations
+    of shape (num_envs, lookback, channels, height, width) ordered oldest to
+    newest; Isaac Lab history buffers provide exactly that when the history
+    dimension is not flattened.
+    """
+    for group_name in ("wrist", "overhead_1", "overhead_2"):
+        term = getattr(env_cfg.observations, group_name).rgb
+        term.history_length = SO101_TEMPORAL_LOOKBACK_FRAMES
+        term.flatten_history_dim = False
+
+
+@configclass
+class SO101ObjectInCupVisionTemporalEnvCfg(SO101ObjectInCupVisionEnvCfg):
+    """Object-in-cup environment with camera frame history for temporal actors."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _enable_camera_history(self)
+
+
+@configclass
+class SO101ObjectInCupVisionTemporalFixedEnvCfg(SO101ObjectInCupVisionTemporalEnvCfg):
+    """Fixed-pose frame-history environment for temporal actors."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._apply_task_fixed_mode()

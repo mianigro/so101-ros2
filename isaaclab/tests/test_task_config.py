@@ -17,11 +17,13 @@ from so101_rl.tasks.common import SO101VisualObservationsCfg
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.tasks.object_in_cup.agents.rsl_rl_vision_ppo_cfg import (
     SO101ObjectInCupVisionPPOCfg,
+    SO101ObjectInCupVisionTransformerPPOCfg,
 )
 from so101_rl.tasks.object_in_cup.mdp.critic_observations import CRITIC_STATE_DIM
 from so101_rl.tasks.object_in_cup.object_in_cup_env_cfg import (
     SO101ObjectInCupVisionEnvCfg,
     SO101ObjectInCupVisionFixedEnvCfg,
+    SO101ObjectInCupVisionTemporalEnvCfg,
 )
 from so101_rl.tasks.three_boxes_in_cups.agents.rsl_rl_vision_ppo_cfg import (
     SO101ThreeBoxesInCupsVisionPPOCfg,
@@ -40,6 +42,7 @@ from so101_rl.tasks.three_boxes_in_cups.three_boxes_in_cups_env_cfg import (
 from so101_rl.visual_contract import (
     SO101_ACTOR_OBSERVATION_GROUPS,
     SO101_JOINT_NAMES,
+    SO101_TEMPORAL_LOOKBACK_FRAMES,
 )
 
 
@@ -86,10 +89,34 @@ class TaskConfigTests(unittest.TestCase):
             task_ids,
             {
                 "SO101-Object-In-Cup-Vision-Fixed-v0",
+                "SO101-Object-In-Cup-Vision-Mamba-Fixed-v0",
+                "SO101-Object-In-Cup-Vision-Mamba-v0",
+                "SO101-Object-In-Cup-Vision-Transformer-Fixed-v0",
+                "SO101-Object-In-Cup-Vision-Transformer-v0",
                 "SO101-Object-In-Cup-Vision-v0",
                 "SO101-Three-Boxes-In-Cups-Vision-Fixed-v0",
                 "SO101-Three-Boxes-In-Cups-Vision-v0",
             },
+        )
+
+    def test_temporal_task_serves_camera_history_windows(self):
+        with patch(
+            "so101_rl.tasks.object_in_cup.object_in_cup_env_cfg.load_asset_manifest",
+            return_value=_MANIFEST,
+        ):
+            cfg = SO101ObjectInCupVisionTemporalEnvCfg()
+        cfg.validate()
+        for group_name in ("wrist", "overhead_1", "overhead_2"):
+            term = getattr(cfg.observations, group_name).rgb
+            self.assertEqual(term.history_length, SO101_TEMPORAL_LOOKBACK_FRAMES)
+            self.assertFalse(term.flatten_history_dim)
+        joint_term = cfg.observations.joint_state.absolute_joint_positions
+        self.assertEqual(joint_term.history_length, 0)
+        agent = SO101ObjectInCupVisionTransformerPPOCfg()
+        self.assertEqual(agent.actor.lookback_frames, SO101_TEMPORAL_LOOKBACK_FRAMES)
+        self.assertEqual(
+            agent.actor.class_name,
+            "models.transformers_ppo.models:TransformerActorCritic",
         )
 
     def test_control_rate_action_contract_and_geometry_binding(self):

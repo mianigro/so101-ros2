@@ -49,6 +49,9 @@ def bootstrap_local_isaac_sim(entrypoint: Path) -> None:
         )
 
     package_path = entrypoint.parent / "source" / "so101_rl"
+    # The repository-owned RL model families import as the top-level
+    # ``models`` package from the project root next to the entry point.
+    models_path = entrypoint.parent
     source_paths = sorted(
         path for path in (isaaclab_root / "source").iterdir() if path.is_dir()
     )
@@ -57,6 +60,7 @@ def bootstrap_local_isaac_sim(entrypoint: Path) -> None:
     ]
     python_paths = [
         package_path,
+        models_path,
         *source_paths,
         isaaclab_site_packages,
         *map(Path, inherited_paths),

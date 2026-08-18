@@ -37,4 +37,4 @@ class TensorBroadcastPPO(PPO):
 class TensorBroadcastPPOCfg(RslRlPpoAlgorithmCfg):
     """Select the repository-owned distributed-safe PPO implementation."""
 
-    class_name: str = "so101_rl.tasks.common.agents.distributed_ppo:TensorBroadcastPPO"
+    class_name: str = "models.ppo.distributed_ppo:TensorBroadcastPPO"

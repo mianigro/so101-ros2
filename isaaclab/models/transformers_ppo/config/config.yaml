@@ -1,7 +1,0 @@
-# Game config
-game: breakout
-multi_gpu: True
-architecture: mamba # Architecture type, transformer or mamba
-final_layer_pooling: False # Use final layer pooling
-final_pool_skip: False  # If skip is used in layer pooling
-seed_base: 42 # This is the base seed for rank, final seed = seed_base + rank

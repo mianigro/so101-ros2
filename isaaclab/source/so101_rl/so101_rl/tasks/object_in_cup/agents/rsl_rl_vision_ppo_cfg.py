@@ -3,7 +3,12 @@
 from isaaclab.utils.configclass import configclass
 from isaaclab_tasks.utils import PresetCfg
 
+from models.transformers_ppo.ppo_cfg import (
+    RslRlMambaActorCfg,
+    RslRlTransformerActorCfg,
+)
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
+from so101_rl.visual_contract import SO101_TEMPORAL_LOOKBACK_FRAMES
 
 
 @configclass
@@ -20,4 +25,68 @@ class SO101ObjectInCupVisionPPORunnerCfg(PresetCfg):
 class SO101ObjectInCupVisionFixedPPORunnerCfg(PresetCfg):
     default = SO101ObjectInCupVisionPPOCfg().replace(
         experiment_name="so101_object_in_cup_vision_fixed"
+    )
+
+
+@configclass
+class SO101ObjectInCupVisionTransformerPPOCfg(SO101ObjectInCupVisionPPOCfg):
+    """Temporal transformer actor over the SO-101 camera history window."""
+
+    experiment_name = "so101_object_in_cup_vision_transformer"
+    actor = RslRlTransformerActorCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlTransformerActorCfg.GaussianDistributionCfg(
+            init_std=0.7
+        ),
+        lookback_frames=SO101_TEMPORAL_LOOKBACK_FRAMES,
+        d_model=256,
+        num_heads=4,
+        num_layers=2,
+        d_ff=512,
+        dropout=0.1,
+    )
+
+
+@configclass
+class SO101ObjectInCupVisionTransformerPPORunnerCfg(PresetCfg):
+    default = SO101ObjectInCupVisionTransformerPPOCfg()
+
+
+@configclass
+class SO101ObjectInCupVisionTransformerFixedPPORunnerCfg(PresetCfg):
+    default = SO101ObjectInCupVisionTransformerPPOCfg().replace(
+        experiment_name="so101_object_in_cup_vision_transformer_fixed"
+    )
+
+
+@configclass
+class SO101ObjectInCupVisionMambaPPOCfg(SO101ObjectInCupVisionPPOCfg):
+    """Temporal mamba actor over the SO-101 camera history window.
+
+    Instantiating the actor requires the optional ``mamba_ssm`` package.
+    """
+
+    experiment_name = "so101_object_in_cup_vision_mamba"
+    actor = RslRlMambaActorCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMambaActorCfg.GaussianDistributionCfg(init_std=0.7),
+        lookback_frames=SO101_TEMPORAL_LOOKBACK_FRAMES,
+        d_model=256,
+        num_layers=2,
+    )
+
+
+@configclass
+class SO101ObjectInCupVisionMambaPPORunnerCfg(PresetCfg):
+    default = SO101ObjectInCupVisionMambaPPOCfg()
+
+
+@configclass
+class SO101ObjectInCupVisionMambaFixedPPORunnerCfg(PresetCfg):
+    default = SO101ObjectInCupVisionMambaPPOCfg().replace(
+        experiment_name="so101_object_in_cup_vision_mamba_fixed"
     )

@@ -16,8 +16,8 @@ from so101_rl.camera_profile import (
     look_at_opengl_xyzw,
     wxyz_to_xyzw,
 )
+from models.ppo.models import SpatialSoftmaxCNNModel
 from so101_rl.export_manifest import build_policy_manifest
-from so101_rl.tasks.common.agents.models import SpatialSoftmaxCNNModel
 from so101_rl.tasks.common.agents.rsl_rl_ppo_cfg import SO101VisualPPOCfg
 from so101_rl.visual_contract import SO101_ACTOR_OBSERVATION_GROUPS
 

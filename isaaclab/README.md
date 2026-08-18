@@ -89,6 +89,23 @@ single-box checkpoint into the three-box task or vice versa: the deployable
 actors have the same interface, but the training-only critics have different
 input widths.
 
+### Model families
+
+The actor model is chosen through the task ID. The single-box scenario is
+additionally registered for the temporal model families in
+[`models/`](models/README.md), which consume a four-frame camera history
+window instead of the latest frame:
+
+| Actor family | Fixed task | Randomized task |
+|---|---|---|
+| Spatial-softmax CNN (default) | `SO101-Object-In-Cup-Vision-Fixed-v0` | `SO101-Object-In-Cup-Vision-v0` |
+| Temporal transformer | `SO101-Object-In-Cup-Vision-Transformer-Fixed-v0` | `SO101-Object-In-Cup-Vision-Transformer-v0` |
+| Temporal mamba (needs `mamba_ssm`) | `SO101-Object-In-Cup-Vision-Mamba-Fixed-v0` | `SO101-Object-In-Cup-Vision-Mamba-v0` |
+
+Do not resume a checkpoint across actor families: the deployable actor
+interfaces differ (single frame vs. history window) and so do the stored
+network weights.
+
 Pass the selected ID with `--task` to `live`, `train`, `train_multigpu`, `play`,
 or `export`. For example:
 
@@ -133,10 +150,10 @@ If they are missing, build and source the ROS workspace, then generate them:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-SO101_REPO=/path/to/so101-ros2
+SO101_REPO=/home/anon/Documents/so101-ros2
 source "$SO101_REPO/install/setup.bash"
 
-/path/to/isaacsim/_build/linux-x86_64/release/python.sh \
+/home/anon/Documents/isaacsim/_build/linux-x86_64/release/python.sh \
   "$SO101_REPO/scripts/isaac_sim_teleop.py" \
   --setup monomanual_dual_overhead \
   --headless --max-frames 1 \
