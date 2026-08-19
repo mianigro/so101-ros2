@@ -219,17 +219,19 @@ The pickup half of the ladder is outcome-based rather than contact-based:
    contact: a scoop or squeeze that lifts the cube earns it identically to a
    textbook pinch.
 
-3. **Transport** (weight `+3.0`, dense) — activated once the cube centre clears
-   `z_rest + 0.001` m, `(1 - tanh(r_oc / 0.08))` supplies the directional
-   signal toward the cup. Its raw term is multiplied by a per-env decay
-   schedule `decay(n)` over the number of consecutive steps the cube has been
-   continuously above the clearance: `1.0` for the first `grace_steps` (30)
-   steps, then a linear ramp to `decay_floor` (0.2) over the next `decay_steps`
-   (120) steps. The counter resets to zero the moment the cube drops below
-   clearance, so a fresh transport after a genuine drop re-arms the full
-   reward. This prevents the policy from settling into a stable
-   hover-and-farm policy where the dense transport term dominates the sparse
-   insertion/release/stability rewards.
+3. **Transport** (weight `+3.0`, dense) — `(1 - tanh(r_oc / 0.08))` supplies
+   the directional signal toward the cup, conditioned on lift height: a linear
+   ramp from 0 at `z_rest + 0.001` m to 1 at `lift_height` (0.03 m) above that
+   gate scales the term, so pushing the cube along the table earns nothing and
+   partial credit accrues only with height actually gained. The conditioned
+   term is further multiplied by a per-env decay schedule `decay(n)` over the
+   number of consecutive steps the cube has been continuously above the
+   clearance: `1.0` for the first `grace_steps` (30) steps, then a linear ramp
+   to `decay_floor` (0.2) over the next `decay_steps` (120) steps. The counter
+   resets to zero the moment the cube drops below clearance, so a fresh
+   transport after a genuine drop re-arms the full reward. This prevents the
+   policy from settling into a stable hover-and-farm policy where the dense
+   transport term dominates the sparse insertion/release/stability rewards.
 
 Insertion progress is:
 

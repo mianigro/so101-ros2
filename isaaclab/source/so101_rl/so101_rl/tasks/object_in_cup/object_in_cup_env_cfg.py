@@ -135,6 +135,10 @@ class ObjectInCupRewardsCfg:
         params={
             "std": 0.08,
             "minimum_height": OBJECT_REST_HEIGHT + OBJECT_LIFT_CLEARANCE,
+            # Transport credit scales with lift height: zero at the off-table
+            # gate, full once the cube is ~3 cm above it (just over the cup
+            # rim), so pushing the cube toward the cup earns nothing.
+            "lift_height": 0.03,
             # Full credit for ~0.5 s after lift, then decay to 0.2 over ~2 s so
             # hovering near the cup cannot be farmed indefinitely.
             "grace_steps": 30,

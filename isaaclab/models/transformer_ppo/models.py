@@ -12,7 +12,10 @@ network and action distributions come from ``distribution_cfg``.
 Each 2D observation group must carry a frame-history window of shape
 ``(batch, lookback_frames, channels, height, width)`` ordered oldest to
 newest, which Isaac Lab produces with ``history_length`` set on the camera
-observation terms and ``flatten_history_dim = False``.
+observation terms and ``flatten_history_dim = False``. Isaac Lab zeroes the
+history buffers on env reset, so reset-zeroed slots are backfilled with the
+oldest real frame before encoding; episode-start steps then read as "no
+motion yet" instead of producing spurious frame-difference spikes.
 """
 
 from __future__ import annotations
@@ -271,11 +274,37 @@ def _frame_diff_features(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((first, x[:, 1:] - x[:, :-1]), dim=1)
 
 
+def _backfill_padding(images: torch.Tensor) -> torch.Tensor:
+    """Replace reset-zeroed history slots with the oldest real frame.
+
+    Isaac Lab zeroes the camera history buffers on env reset while real frames
+    are centered at -0.5, so an all-zero frame is unambiguous padding (the
+    abs-sum is exactly zero only when every pixel is zero). Holding the oldest
+    real frame in those slots makes the frame-difference features read "no
+    motion yet" instead of a large embedding jump, matches deployment warmup
+    where the current frame is held until the history fills, and needs no
+    padding mask in the temporal core: duplicated tokens share one value, so
+    attention pooling over them equals pooling over the real frame alone.
+    """
+    batch, lookback = images.shape[0], images.shape[1]
+    channels, height, width = images.shape[2], images.shape[3], images.shape[4]
+    is_padding = images.abs().sum(dim=[2, 3, 4]) == 0
+    first_real = torch.argmax((~is_padding).to(torch.int64), dim=1)
+    index = first_real.view(batch, 1, 1, 1, 1).expand(
+        batch, 1, channels, height, width
+    )
+    fill = images.gather(1, index).squeeze(1)
+    return torch.where(
+        is_padding.view(batch, lookback, 1, 1, 1), fill.unsqueeze(1), images
+    )
+
+
 class _CameraPipeline(nn.Module):
     """Per-camera frame-history encoding: CNN, frame differences, temporal core.
 
-    Shared by training and by the TorchScript/ONNX export wrappers so the
-    deployed policy runs the exact same operations as the trained actor.
+    Reset-zeroed history slots are backfilled with the oldest real frame before
+    encoding. Shared by training and by the TorchScript/ONNX export wrappers so
+    the deployed policy runs the exact same operations as the trained actor.
     """
 
     def __init__(self, encoder, sequence_model, d_model, final_layer_pooling, final_pool_skip, frame_diff):
@@ -286,7 +315,7 @@ class _CameraPipeline(nn.Module):
         # Created unconditionally so TorchScript sees a stable module set; only
         # used when frame_diff is enabled.
         self.diff_fusion = nn.Linear(2 * d_model, d_model)
-        nn.init.orthogonal_(self.diff_fusion.weight, gain=np.sqrt(2))
+        nn.init.orthogonal_(self.diff_fusion.weight)
         nn.init.zeros_(self.diff_fusion.bias)
         if final_layer_pooling:
             self.pooling = _AttentionPooling(d_model, final_pool_skip)
@@ -296,6 +325,7 @@ class _CameraPipeline(nn.Module):
     def forward(self, images):
         # images: (batch, lookback_frames, channels, height, width),
         # oldest frame first so index -1 is the newest observation.
+        images = _backfill_padding(images)
         batch = images.shape[0]
         lookback = images.shape[1]
         frames = images.reshape(
@@ -331,9 +361,11 @@ class _TransformerTemporalCore(nn.Module):
             ),
         )
 
+        # Unit-gain orthogonal init: sqrt(2) is a ReLU fan-in gain, and the
+        # pre-LN residual path should not start with inflated activations.
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.orthogonal_(m.weight)
                 nn.init.zeros_(m.bias)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.ones_(m.weight)
@@ -356,8 +388,10 @@ class TransformerActorCritic(MLPModel):
     are concatenated with the (normalized) 1D groups before the shared MLP
     head. Attention is causal by default so each frame's representation
     depends only on the past, matching the policy's information structure;
-    dropout defaults to zero because train/rollout distribution mismatch
-    breaks PPO's on-policy assumption.
+    pooling defaults to learned attention over the whole window so the
+    history, not just the newest frame, drives the head; dropout defaults to
+    zero because train/rollout distribution mismatch breaks PPO's on-policy
+    assumption.
     """
 
     is_recurrent = False
@@ -378,7 +412,7 @@ class TransformerActorCritic(MLPModel):
         num_layers: int = 2,
         d_ff: int = 256,
         dropout: float = 0.0,
-        final_layer_pooling: bool = False,
+        final_layer_pooling: bool = True,
         final_pool_skip: bool = False,
         frame_diff: bool = True,
         causal_mask: bool = True,

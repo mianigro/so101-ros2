@@ -268,7 +268,7 @@ Headless two-GPU run:
   --num_gpus 2 \
   --task SO101-Object-In-Cup-Vision-Fixed-v0 \
   --rl_library rsl_rl \
-  --num_envs 64 --headless \
+  --num_envs 32 --headless \
   physics=isaacsim_physx
 ```
 
@@ -300,6 +300,22 @@ Fixed checkpoints are written under:
 logs/rsl_rl/so101_object_in_cup_vision_fixed/<run>/model_<iteration>.pt
 ```
 
+### Monitor training with TensorBoard
+
+Training writes TensorBoard event files by default (RSL-RL's default
+logger), next to the checkpoints under `logs/rsl_rl/<experiment_name>/<run>/`.
+From the repository root, launch TensorBoard with the Isaac Lab environment's
+Python:
+
+```bash
+"$ISAACLAB_PYTHON" -m tensorboard.main --logdir logs/rsl_rl
+```
+
+Open `http://localhost:6006`. Pointing `--logdir` at `logs/rsl_rl` shows every
+experiment together for comparison; pass a single run directory to isolate one
+run. The run-acceptance checks below (`approach`, `lift_progress`,
+`transport`, `grasp_held`, ...) are evaluated on these curves.
+
 Inspect a checkpoint visibly:
 
 ```bash
@@ -330,6 +346,11 @@ stay zero: that indicates the policy is hovering the cube near the cup to farm
 the dense transport term. Transport decays to 20% over ~2.5 s of sustained
 aloft holding and re-arms on a drop, so a healthy run shows `transport` rising
 and falling as the cube is carried and inserted, not a flat plateau.
+
+`transport` credit is conditioned on lift height — it ramps in over the first
+3 cm above the resting gate — so `transport` should only move after
+`lift_progress` has moved. Transport climbing while lift stays flat means the
+cube is being pushed or dragged toward the cup rather than carried.
 
 For the three-box task, reject a run whose `approach_progress` or
 `closure_progress` rises while grasp and lift remain zero. The dense
@@ -544,6 +565,7 @@ camera/action latency.
 | Randomized checkpoints | `logs/rsl_rl/so101_object_in_cup_vision/` |
 | Three-box fixed checkpoints | `logs/rsl_rl/so101_three_boxes_in_cups_vision_fixed/` |
 | Three-box randomized checkpoints | `logs/rsl_rl/so101_three_boxes_in_cups_vision/` |
+| TensorBoard event logs | `logs/rsl_rl/<experiment_name>/<run>/` |
 | Exported actor | User-selected `--output-dir` |
 
 Generated assets, logs, exports, and local environments are ignored by Git.

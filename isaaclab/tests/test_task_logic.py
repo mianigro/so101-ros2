@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
-from isaaclab.managers import ObservationTermCfg
+from isaaclab.managers import ObservationTermCfg, RewardTermCfg
 from so101_rl.tasks.object_in_cup.mdp.critic_observations import (
     CRITIC_STATE_COMPONENTS,
     CRITIC_STATE_DIM,
@@ -155,12 +155,20 @@ class PlacementLogicTests(unittest.TestCase):
             object_dropped(env, minimum_height=-0.02).tolist(), [True, False]
         )
 
-    def test_transport_starts_at_off_ground_threshold(self):
+    def test_transport_credit_scales_with_lift_height(self):
         object_positions = torch.tensor(
-            [[0.0, 0.0, 0.0134], [0.0, 0.0, 0.0135]]
+            [
+                [0.0, 0.0, 0.0134],
+                [0.0, 0.0, 0.0135],
+                [0.0, 0.0, 0.0285],
+                [0.0, 0.0, 0.0435],
+                [0.0, 0.0, 0.0125],
+            ],
+            dtype=torch.float32,
         )
         cup_positions = torch.zeros_like(object_positions)
         env = SimpleNamespace(
+            device="cpu",
             scene={
                 "object": SimpleNamespace(
                     data=SimpleNamespace(
@@ -174,10 +182,24 @@ class PlacementLogicTests(unittest.TestCase):
                 ),
             }
         )
+        term = transport_object(
+            RewardTermCfg(func=transport_object),
+            SimpleNamespace(num_envs=5, device="cpu"),
+        )
 
-        reward = transport_object(env, std=0.08, minimum_height=0.0135)
+        reward = term(
+            env, std=0.08, minimum_height=0.0135, lift_height=0.03
+        ).tolist()
 
-        self.assertEqual(reward.tolist(), [0.0, 1.0])
+        # The cube sits directly above the cup, so the proximity score is 1.0
+        # and the reward isolates the lift conditioning: nothing at or below
+        # the off-table gate (pushing the cube cannot farm the term), half
+        # credit halfway up the ramp, full credit at carry height.
+        self.assertEqual(reward[0], 0.0)
+        self.assertEqual(reward[1], 0.0)
+        self.assertAlmostEqual(reward[2], 0.5, places=5)
+        self.assertAlmostEqual(reward[3], 1.0, places=5)
+        self.assertEqual(reward[4], 0.0)
 
 
 class VisualLatencyResetTests(unittest.TestCase):

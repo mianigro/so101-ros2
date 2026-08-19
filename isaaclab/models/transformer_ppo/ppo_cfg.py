@@ -15,7 +15,7 @@ class RslRlTransformerActorCfg(RslRlMLPModelCfg):
     num_layers: int = 2
     d_ff: int = 256
     dropout: float = 0.0
-    final_layer_pooling: bool = False
+    final_layer_pooling: bool = True
     final_pool_skip: bool = False
     frame_diff: bool = True
     causal_mask: bool = True

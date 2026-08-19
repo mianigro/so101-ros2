@@ -196,8 +196,10 @@ class SelectiveSSM(nn.Module):
         self.D = nn.Parameter(torch.ones(self.d_inner))
         self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
 
+        # Unit-gain orthogonal init: the gated SSM should not start with
+        # inflated projections; the dt/A S4D init below follows the Mamba paper.
         for module in (self.in_proj, self.x_proj, self.out_proj):
-            nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+            nn.init.orthogonal_(module.weight)
         # Mamba's dt init: softplus(bias) sampled log-uniformly in
         # [dt_min, dt_max] and a small uniform weight so selectivity is
         # present but the initial step sizes stay bounded.

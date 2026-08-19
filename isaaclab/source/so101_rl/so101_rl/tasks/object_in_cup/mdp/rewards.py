@@ -100,8 +100,11 @@ def lift_progress(
 class transport_object(ManagerTermBase):
     """Reward moving the lifted cube toward the cup, decaying while held aloft.
 
-    The reward is ``base * (1 - tanh(r_xy/std))`` where ``base`` starts at 1.0
-    and decays the longer the cube has been continuously above ``minimum_height``,
+    The reward is ``lift_factor * base * (1 - tanh(r_xy/std))`` where
+    ``lift_factor`` ramps linearly from 0 at ``minimum_height`` to 1 at
+    ``minimum_height + lift_height``, so pushing the cube along the table earns
+    nothing -- only height actually gained pays.  ``base`` starts at 1.0 and
+    decays the longer the cube has been continuously above ``minimum_height``,
     so a policy that simply hovers near the cup cannot farm it indefinitely.
 
     A grace window of ``grace_steps`` pays full credit (genuine transport right
@@ -124,6 +127,7 @@ class transport_object(ManagerTermBase):
         env: ManagerBasedRLEnv,
         std: float,
         minimum_height: float,
+        lift_height: float,
         grace_steps: int = 30,
         decay_steps: int = 120,
         decay_floor: float = 0.2,
@@ -149,7 +153,12 @@ class transport_object(ManagerTermBase):
             (self._aloft_steps - ramp_start) / (ramp_end - ramp_start), 0.0, 1.0
         )
         base = 1.0 - (1.0 - decay_floor) * progress
-        return (1.0 - torch.tanh(radial_distance / std)) * lifted.float() * base
+        # Transport credit is conditioned on lift height: zero while the cube is
+        # merely being pushed around the table, full once genuinely carried.
+        lift_factor = torch.clamp(
+            (relative[:, 2] - minimum_height) / lift_height, 0.0, 1.0
+        )
+        return (1.0 - torch.tanh(radial_distance / std)) * lift_factor * base
 
 
 def insert_object(

@@ -199,6 +199,9 @@ class TaskConfigTests(unittest.TestCase):
         self.assertAlmostEqual(
             cfg.rewards.transport.params["minimum_height"], 0.0135
         )
+        # Transport credit is conditioned on lift height so pushing the cube
+        # cannot farm it.
+        self.assertAlmostEqual(cfg.rewards.transport.params["lift_height"], 0.03)
         # The pincer contact sensors are removed from this task's scene.
         self.assertFalse(hasattr(cfg.scene, "fixed_jaw_contact"))
         self.assertFalse(hasattr(cfg.scene, "moving_jaw_contact"))

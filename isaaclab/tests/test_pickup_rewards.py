@@ -295,7 +295,11 @@ class ApproachProgressTests(unittest.TestCase):
                     data=SimpleNamespace(root_pos_w=_proxy(cube))
                 ),
                 "ee_frame": SimpleNamespace(
-                    data=SimpleNamespace(target_pos_w=_proxy(grasp_position))
+                    # The ee_frame carries one target per frame slot; the
+                    # reward reads slot 0 (the nominal grasp point).
+                    data=SimpleNamespace(
+                        target_pos_w=_proxy(grasp_position.unsqueeze(1))
+                    )
                 ),
             },
         )
@@ -440,6 +444,7 @@ class TransportDecayTests(unittest.TestCase):
             env,
             std=0.08,
             minimum_height=0.0135,
+            lift_height=0.03,
             grace_steps=30,
             decay_steps=120,
             decay_floor=0.2,
@@ -468,11 +473,13 @@ class TransportDecayTests(unittest.TestCase):
 
         term = TransportObject(SimpleNamespace(), env)
         call = lambda: term(
-            env, std=0.08, minimum_height=0.0135,
+            env, std=0.08, minimum_height=0.0135, lift_height=0.03,
             grace_steps=30, decay_steps=120, decay_floor=0.2,
         ).item()
 
         # Step through the grace window (30 steps): base stays at 1.0.
+        for _ in range(29):
+            call()
         last_grace = call()
         self.assertAlmostEqual(last_grace, radial_score)
 
@@ -497,7 +504,7 @@ class TransportDecayTests(unittest.TestCase):
 
         term = TransportObject(SimpleNamespace(), env)
         call = lambda: term(
-            env, std=0.08, minimum_height=0.0135,
+            env, std=0.08, minimum_height=0.0135, lift_height=0.03,
             grace_steps=30, decay_steps=120, decay_floor=0.2,
         ).item()
 
