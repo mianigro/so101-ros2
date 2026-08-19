@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Open the SO-101 task live with zero or random actions and no checkpoint."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+REPOSITORY_ROOT = PROJECT_ROOT.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "source" / "so101_rl"))
+
+from so101_rl.runtime import launch_isaac_sim_before_task_imports  # noqa: E402
+
+launch_isaac_sim_before_task_imports(Path(__file__), default_visualizer="kit")
+
+import so101_rl.tasks  # noqa: E402,F401
+from isaaclab_rl.entrypoints import (  # noqa: E402
+    run_random_agent_cli,
+    run_zero_agent_cli,
+)
+
+
+def main() -> int:
+    """Open a vectorized live scene using Isaac Lab's checkpoint-free agents."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--policy", choices=("zero", "random"), default="zero")
+    settings, arguments = parser.parse_known_args(sys.argv[1:])
+
+    if not any(arg == "--task" or arg.startswith("--task=") for arg in arguments):
+        arguments.extend(("--task", "SO101-Object-In-Cup-Vision-Fixed-v0"))
+    if not any(
+        arg == "--num_envs" or arg.startswith("--num_envs=") for arg in arguments
+    ):
+        arguments.extend(("--num_envs", "4"))
+
+    os.chdir(REPOSITORY_ROOT)
+    if settings.policy == "random":
+        return run_random_agent_cli(arguments)
+    return run_zero_agent_cli(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
