@@ -346,13 +346,43 @@ class ApproachProgressTests(unittest.TestCase):
         env = self._make_env(grasp)
         term = self._term(env)
         cumulative = 0.0
-        # Approach, retreat, and re-approach: only the improvements pay.
-        for distance in (0.20, 0.14, 0.18, 0.10, 0.16, 0.06, 0.12, 0.02):
+        # Approach, retreat, and re-approach without leaving the retry radius:
+        # only the improvements pay, and the payoff telescopes to the best.
+        for distance in (0.20, 0.14, 0.18, 0.10, 0.16, 0.06, 0.05, 0.02):
             grasp.copy_(torch.tensor([[0.20 + distance, -0.065, 0.0125]]))
             cumulative += term(env, position_scale=0.08).item()
         best = self._score(0.02) / self.STEP_DT
         self.assertAlmostEqual(cumulative, best, places=5)
         self.assertLessEqual(cumulative, best + 1e-6)
+
+    def test_retreat_re_arms_a_discounted_approach_budget(self):
+        grasp = torch.tensor([[0.30, -0.065, 0.0125]])
+        env = self._make_env(grasp)
+        term = self._term(env)
+
+        def call():
+            return term(env, position_scale=0.08).item() * self.STEP_DT
+
+        def at(distance):
+            grasp.copy_(torch.tensor([[0.20 + distance, -0.065, 0.0125]]))
+
+        # The first attempt pays the full telescoped score...
+        at(0.02)
+        self.assertAlmostEqual(call(), self._score(0.02), places=6)
+        # ...retreating beyond the retry radius pays nothing...
+        at(0.12)
+        self.assertEqual(call(), 0.0)
+        # ...but re-arms the budget, so the return leg pays again at half.
+        at(0.02)
+        recovery = (self._score(0.02) - self._score(0.06)) * 0.5
+        self.assertAlmostEqual(call(), recovery, places=6)
+        # A second cycle pays a quarter: cycling decays geometrically.
+        at(0.12)
+        self.assertEqual(call(), 0.0)
+        at(0.02)
+        self.assertAlmostEqual(call(), recovery * 0.5, places=6)
+        # Holding position still pays nothing.
+        self.assertEqual(call(), 0.0)
 
     def test_reset_re_arms_for_a_new_episode(self):
         grasp = torch.tensor([[0.30, -0.065, 0.0125]])

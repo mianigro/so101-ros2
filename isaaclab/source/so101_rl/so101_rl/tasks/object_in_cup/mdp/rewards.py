@@ -8,12 +8,15 @@ requires the outcome itself.  The single shaping term that opens the ladder,
 ``approach_progress``, pays only the episode-best improvement of a bounded
 gripper-to-cube proximity score: it says "bring the gripper's grasp region to
 the cube" -- nothing about approach direction, orientation, or jaw geometry --
-and its episode-best bookkeeping makes it impossible to farm by hovering or
-re-approaching.
+and its episode-best bookkeeping makes hovering pay nothing.  A genuine
+retreat beyond the retry radius re-arms the budget so recovering from a
+missed attempt earns again, but each re-arm halves the payable fraction, so
+cycling in and out cannot farm it either.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -44,23 +47,36 @@ class approach_progress(ManagerTermBase):
     grasp strategy earns it identically -- the term prescribes nothing about
     *how* the cube is grabbed, it only bridges the gap between flailing in the
     void and the first lucky grasp that ``lift_progress`` can reward.
+
+    Failed attempts are recoverable: once the grasp point has been closer than
+    ``retry_radius`` and then withdraws beyond it, the record is lowered to the
+    score at ``retry_radius`` so the return leg of a fresh attempt pays again
+    instead of nothing.  Each re-arm multiplies the payable fraction by
+    ``retry_discount``, so retrying after a miss earns reward but cycling in
+    and out of the radius cannot out-earn genuine first-time progress.  A
+    retreat that never got inside the radius re-arms nothing, so far-field
+    behaviour is untouched.
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self._best = torch.zeros(env.num_envs, device=env.device)
         self._initialized = torch.ones_like(self._best, dtype=torch.bool)
+        self._retry_factor = torch.ones(env.num_envs, device=env.device)
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
         env_ids = slice(None) if env_ids is None else env_ids
         self._best[env_ids] = 0.0
         self._initialized[env_ids] = True
+        self._retry_factor[env_ids] = 1.0
 
     def __call__(
         self,
         env: ManagerBasedRLEnv,
         *,
         position_scale: float = 0.08,
+        retry_radius: float = 0.06,
+        retry_discount: float = 0.5,
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
         ee_frame_name: str = "ee_frame",
     ) -> torch.Tensor:
@@ -69,13 +85,28 @@ class approach_progress(ManagerTermBase):
         score = target_alignment_score(
             cube, grasp_point, position_scale=position_scale
         )
+        # Trigger distance for the retry re-arm, in the same frame as the score.
+        distance = torch.linalg.vector_norm(cube - grasp_point, dim=-1)
+
+        # A genuine retreat beyond the radius lowers the best to the score at
+        # the radius, so a fresh approach pays the recovery delta again.  The
+        # strict > keeps the latch from refiring until real progress is made,
+        # and the decaying retry factor bounds cycling income geometrically.
+        rearm_score = 1.0 - math.tanh(retry_radius / position_scale)
+        rearm = (distance > retry_radius) & (self._best > rearm_score)
+        self._retry_factor = torch.where(
+            rearm, self._retry_factor * retry_discount, self._retry_factor
+        )
+        self._best = torch.where(
+            rearm, torch.full_like(self._best, rearm_score), self._best
+        )
         increment, self._best, self._initialized = episode_best_increment(
             score,
             self._best,
             self._initialized,
             torch.ones_like(self._best, dtype=torch.bool),
         )
-        return increment / env.step_dt
+        return increment * self._retry_factor / env.step_dt
 
 
 def lift_progress(

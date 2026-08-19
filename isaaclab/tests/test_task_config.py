@@ -187,7 +187,10 @@ class TaskConfigTests(unittest.TestCase):
             ),
         )
         self.assertEqual(cfg.rewards.approach.weight, 1.0)
-        self.assertEqual(cfg.rewards.approach.params["position_scale"], 0.08)
+        self.assertEqual(cfg.rewards.approach.params["position_scale"], 0.15)
+        # Retries after a miss re-earn the approach budget at a discount.
+        self.assertEqual(cfg.rewards.approach.params["retry_radius"], 0.06)
+        self.assertEqual(cfg.rewards.approach.params["retry_discount"], 0.5)
         self.assertEqual(cfg.rewards.lift_progress.weight, 1.0)
         self.assertEqual(
             cfg.rewards.lift_progress.params["object_rest_height"], 0.0125

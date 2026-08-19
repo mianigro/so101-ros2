@@ -116,9 +116,17 @@ class ObjectInCupRewardsCfg:
         func=mdp.approach_progress,
         weight=1.0,
         params={
-            # Usable tanh gradient out to roughly 16 cm from the cube; the
-            # score saturates at 1.0 at the nominal grasp point.
-            "position_scale": 0.08,
+            # Wide tanh so proximity pays across the whole workspace, not just
+            # the last few cm: with scale 0.08 the score at 15 cm was 0.05 and
+            # the policy plateaued out of reach of the cube. The score
+            # saturates at 1.0 at the nominal grasp point.
+            "position_scale": 0.15,
+            # Retrying after a miss pays: withdrawing past 6 cm lowers the
+            # episode-best to the 6 cm score, so a fresh approach earns the
+            # recovery delta again, halved per re-arm so cycling cannot
+            # out-earn genuine progress.
+            "retry_radius": 0.06,
+            "retry_discount": 0.5,
         },
     )
     lift_progress = RewTerm(

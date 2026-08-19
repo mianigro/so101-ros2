@@ -190,9 +190,9 @@ Rebuilding different assets can change these values.
 
 | Term | Raw value | Weight | Purpose |
 |---|---|---:|---|
-| Approach progress | new episode-best of `(1 - tanh(d_og / 0.08))` | `+1.0` | Bring the gripper's grasp region to the cube; jaw geometry does not enter |
+| Approach progress | new episode-best of `(1 - tanh(d_og / 0.15))`, re-armed at half credit when the gripper retreats beyond 6 cm | `+1.0` | Bring the gripper's grasp region to the cube and retry after a miss; jaw geometry does not enter |
 | Lift progress | `clip((p_o.z - z_rest) / 0.05, 0, 1)` each step (dense) | `+1.0` | The cube is picked up, however achieved |
-| Transport | `(1 - tanh(r_oc / 0.08)) * 1[z_oc >= z_rest + 0.001] * decay(n_aloft)` | `+3.0` | Move the object toward the cup; full credit for ~0.5 s after lift then decaying to 0.2 over ~2 s so hovering cannot be farmed |
+| Transport | `(1 - tanh(r_oc / 0.08)) * lift_ramp(z_oc) * decay(n_aloft)` with `lift_ramp` rising 0 -> 1 over 3 cm above `z_rest + 0.001` | `+3.0` | Move the object toward the cup, paid only in proportion to height actually gained; full credit for ~0.5 s after lift then decaying to 0.2 over ~2 s so hovering cannot be farmed |
 | Insertion | vertical progress times `1[r_oc <= xy_tolerance]` | `+5.0` | Lower an aligned object |
 | Release | `1[inside cup and q_g >= 1.20]` | `+8.0` | Open after insertion |
 | Stable | `1[released, inside, and slow]` | `+20.0` | Complete a settled placement |
@@ -204,12 +204,20 @@ Rebuilding different assets can change these values.
 The pickup half of the ladder is outcome-based rather than contact-based:
 
 1. **Approach** (weight `+1.0`) — the only shaping term. It scores
-   `1 - tanh(d_og / 0.08)` between the cube centre and the nominal grasp
+   `1 - tanh(d_og / 0.15)` between the cube centre and the nominal grasp
    point and pays only the improvement over the episode's best score
-   (total budget `1`). Hovering at the cube or backing off and re-approaching
-   cannot farm it, and it prescribes nothing about approach direction,
-   orientation, or grasp strategy — it bridges the gap between flailing in
-   the void and the first lucky grasp that lift can reward.
+   (total budget `1`). The wide scale keeps usable gradient across the whole
+   ~20 cm workspace so the reach itself earns reward; hovering at the cube or
+   backing off and re-approaching cannot farm it, and it prescribes nothing
+   about approach direction, orientation, or grasp strategy — it bridges the
+   gap between flailing in the void and the first lucky grasp that lift can
+   reward.
+   A missed attempt is recoverable: withdrawing beyond 6 cm after having been
+   closer lowers the record to the 6 cm score, so the return leg of a fresh
+   attempt pays the recovery delta again — halved per re-arm, so a policy
+   that cycles in and out of the radius earns geometrically less than one
+   that keeps making genuine progress. Retreating without ever having closed
+   inside the radius re-arms nothing, so far-field behaviour is untouched.
 
 2. **Lift** (weight `+1.0`, dense) — a smooth ramp on the cube's height above
    its resting height, saturating 5 cm above rest (`height_scale = 0.05`).
