@@ -68,7 +68,7 @@ def main() -> int:
     server.start()
     try:
         argv = [
-            str(PROJECT_ROOT / "rollout_sim"),
+            str(PROJECT_ROOT / "rollout_sim.py"),
             "--eval",
             "--task", args.task,
             "--task-prompt", args.task_prompt,

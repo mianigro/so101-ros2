@@ -3,7 +3,7 @@
 # BC retrain, eval.  checkpoint_in must point at round 0's checkpoint
 # directory (rounds/round_0/checkpoint/run/checkpoints/<step>/).
 # Run: pixi shell -e lerobot
-#      python pi05-self-improve/run_round --config pi05-self-improve/configs/round_1.yaml
+#      python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_1.yaml
 round_index: 1
 phase: sim
 checkpoint_in: rounds/round_0/checkpoint/run/checkpoints/replace_me

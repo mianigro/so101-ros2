@@ -55,7 +55,7 @@ class PolicyServerProcess:
         self.host = host
         self.port = port
         self._argv = [
-            str(PROJECT_ROOT / "serve_policy"),
+            str(PROJECT_ROOT / "serve_policy.py"),
             "--repo-id", repo_id,
             "--host", host,
             "--port", str(port),
@@ -120,7 +120,7 @@ def _run_sim_rollout(config: RoundConfig, rounds_root: Path,
                      device: str = "cuda:0",
                      num_envs: Optional[int] = None) -> None:
     argv = [
-        str(PROJECT_ROOT / "rollout_sim"),
+        str(PROJECT_ROOT / "rollout_sim.py"),
         "--config", str(_config_cache_path(config, rounds_root)),
         "--rounds-root", str(rounds_root),
         "--device", device,

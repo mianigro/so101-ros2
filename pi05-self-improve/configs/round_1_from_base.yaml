@@ -2,7 +2,7 @@
 # lerobot/pi05_base. This skips the Phase 1 BC checkpoint but still builds a
 # mixed dataset from successful autonomous rollouts plus human teleop data.
 # Run: pixi shell -e lerobot
-#      python pi05-self-improve/run_round --config pi05-self-improve/configs/round_1_from_base.yaml
+#      python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_1_from_base.yaml
 round_index: 1
 phase: sim
 checkpoint_in: null

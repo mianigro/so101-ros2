@@ -1,7 +1,7 @@
 # Round 0 — Phase 1 baseline: BC fine-tune of lerobot/pi05_base on the
 # human teleop dataset (pure mimicry, no self-generated data yet).
 # Run: pixi shell -e lerobot
-#      python pi05-self-improve/run_round --config pi05-self-improve/configs/round_0.yaml --stages train,eval
+#      python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_0.yaml --stages train,eval
 round_index: 0
 phase: sim
 checkpoint_in: null

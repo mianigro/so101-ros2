@@ -133,7 +133,8 @@ def run_post(config: RoundConfig, rounds_root: Path, *, input_dir: Path,
         subprocess.run(convert_cmd, check=True)
 
     judge_cmd = [
-        sys.executable, str(REPOSITORY_ROOT / "pi05-self-improve" / "judge_rollouts"),
+        sys.executable,
+        str(REPOSITORY_ROOT / "pi05-self-improve" / "judge_rollouts.py"),
         "--round-dir", str(round_dir),
         "--dataset-repo-id", repo_id,
         "--model-id", vlm_model_id,
