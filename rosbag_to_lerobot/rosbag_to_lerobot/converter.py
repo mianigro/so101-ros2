@@ -88,6 +88,13 @@ DATASET_TAGS_BY_SOURCE: Dict[str, List[str]] = {
         "reinforcement-learning",
         "so101-ros-physical-ai",
     ],
+    "autonomous": [
+        "so101",
+        "ros2",
+        "reinforcement-learning",
+        "self-improvement",
+        "so101-ros-physical-ai",
+    ],
 }
 
 
@@ -412,8 +419,10 @@ def convert_all_bags(
         collect_p95 (bool, optional): If *True*, collects additional data during episode sync.
         overwrite (bool, optional): If *True*, delete any existing dataset directory before writing
         dataset_source (str, optional): Provenance used to tag the dataset on the Hub.
-            One of "teleop" (human teleoperation / imitation-learning, default) or
-            "ppo" (autonomous rollouts of an exported PPO policy / reinforcement-learning).
+            One of "teleop" (human teleoperation / imitation-learning, default),
+            "ppo" (autonomous rollouts of an exported PPO policy /
+            reinforcement-learning), or "autonomous" (self-improvement rollouts
+            of a VLA policy / reinforcement-learning, self-improvement).
             Only affects ``push_to_hub``.
     """
     if dataset_source not in DATASET_TAGS_BY_SOURCE:

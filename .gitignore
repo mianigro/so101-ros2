@@ -47,3 +47,6 @@ Thumbs.db
 # --- Isaac Lab RL runtime artifacts ---
 logs/
 isaaclab/.venv/
+
+# --- pi05-self-improve round artifacts (raw rollouts, datasets, checkpoints) ---
+pi05-self-improve/rounds/

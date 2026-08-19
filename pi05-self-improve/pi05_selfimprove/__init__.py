@@ -1,0 +1,23 @@
+# Copyright 2026 Dmitri Manajev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""pi05-self-improve: pi0.5-style self-improvement loop for the SO-101 stack.
+
+Phase 1: behavioral-cloning baseline (lerobot pi05 fine-tuned on teleop data).
+Phase 2: autonomous rollouts -> success judging -> success filtering ->
+co-training with teleop data, iterated over rounds, first in Isaac Sim and
+then on the real robot (supervised).
+"""
+
+__version__ = "0.1.0"

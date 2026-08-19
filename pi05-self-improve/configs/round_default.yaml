@@ -1,0 +1,40 @@
+round_index: 0
+phase: sim
+checkpoint_in: null
+rollout:
+  task_id: SO101-Object-In-Cup-Vision-Fixed-v0
+  task_prompt: pick up the cube and place it in the cup
+  num_envs: 8
+  num_episodes: 48
+  max_episode_steps: 450
+  actions_per_chunk: 16
+  aggregate: weighted_average
+  chunk_size_threshold: 0.3
+  seed: 0
+  server_host: 127.0.0.1
+  server_port: 8660
+  joint_map: null
+  image_key_map: null
+judge:
+  name: scripted
+  vlm_model_id: Qwen/Qwen3-VL-2B-Instruct
+  confirm_human: true
+  min_successes: 8
+dataset:
+  repo_prefix: local/so101_pi05_round
+  teleop_repo_ids:
+  - algorithmtheworld/so101-pick-and-place
+  teleop_episode_cap: null
+  keep_failures_on_disk: true
+train:
+  steps: 20000
+  batch_size: 8
+  save_steps: 5000
+  policy_type: pi05
+  init_from: base
+  base_repo_id: lerobot/pi05_base
+  freeze_vision_encoder: true
+  num_workers: 4
+  extra_args: []
+eval:
+  num_episodes: 24
