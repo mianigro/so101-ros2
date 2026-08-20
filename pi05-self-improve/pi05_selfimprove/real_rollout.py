@@ -76,9 +76,11 @@ def run_session(config: RoundConfig, *, setup: str, experiment: str,
     input_policy = init_weights_source(config)
     commands = session_commands(config, setup=setup, experiment=experiment,
                                 policy_server_address=policy_server_address)
+    server_port = policy_server_address.rsplit(":", 1)[-1]
     print("\n=== Supervised self-improvement session ===")
     print("Start the policy server on the GPU machine first, e.g.:")
     print(f"  pixi run -e lerobot python policy_server/zmq_server.py "
+          f"--host 0.0.0.0 --port {server_port} "
           f"(serving {input_policy})\n")
     if dry_run:
         for command in commands:
@@ -118,6 +120,8 @@ def run_post(config: RoundConfig, rounds_root: Path, *, input_dir: Path,
     """Convert kept episodes -> tag autonomous -> VLM judge -> verdicts."""
     round_dir = config.round_dir(rounds_root)
     round_dir.mkdir(parents=True, exist_ok=True)
+    # Persist the effective config so later stage commands can reference it.
+    config.save(round_dir / "config.yaml")
 
     convert_cmd = [
         "pixi", "run", "-e", "lerobot", "convert", "--",
@@ -149,9 +153,13 @@ def run_post(config: RoundConfig, rounds_root: Path, *, input_dir: Path,
     approved = sum(1 for entry in verdicts if entry.get("approved"))
     print(f"\n{approved}/{len(verdicts)} episodes approved. Build the round "
           f"dataset next:")
-    print(f"  python pi05-self-improve/build_round_dataset "
+    print(f"  python pi05-self-improve/build_round_dataset.py "
           f"--config {round_dir / 'config.yaml'} "
           f"--real-dataset-repo-id {repo_id}")
+    print("or run both refine stages at once:")
+    print(f"  python pi05-self-improve/run_round.py "
+          f"--config {round_dir / 'config.yaml'} "
+          f"--stages build,train --real-dataset-repo-id {repo_id}")
     meta_path = round_dir / contract.META_FILENAME
     meta = {}
     if meta_path.exists():

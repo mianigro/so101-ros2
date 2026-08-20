@@ -162,7 +162,7 @@ class LoopImportTests(unittest.TestCase):
         run_round.assert_called_once_with(
             config, Path(tmp), ["rollout"], visualizer="kit",
             policy_device="cuda:1", policy_dtype="bfloat16",
-            sim_device="cuda:0", num_envs=None)
+            sim_device="cuda:0", num_envs=None, real_dataset_repo_id=None)
 
     def test_run_round_routes_policy_and_sim_to_separate_devices(self) -> None:
         from pi05_selfimprove import loop
@@ -189,6 +189,47 @@ class LoopImportTests(unittest.TestCase):
             config, Path(tmp), eval_mode=False,
             visualizer=None, device="cuda:0", num_envs=None,
         )
+
+    def test_real_phase_rejects_sim_stages(self) -> None:
+        from pi05_selfimprove.loop import run_round
+
+        config = RoundConfig(round_index=2, phase="real",
+                             checkpoint_in="rounds/round_1/ckpt")
+        config.train.init_from = "previous"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "pi05_selfimprove.loop.PolicyServerProcess") as server:
+            for stages in (["rollout"], ["eval"], ["rollout", "build"]):
+                with self.assertRaisesRegex(ValueError, "phase=real"):
+                    run_round(config, Path(tmp), stages)
+        server.assert_not_called()
+
+    def test_real_phase_allows_refine_stages(self) -> None:
+        from pi05_selfimprove import loop
+
+        config = RoundConfig(round_index=2, phase="real",
+                             checkpoint_in="rounds/round_1/ckpt")
+        config.train.init_from = "previous"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "pi05_selfimprove.dataset_tools.build_round_dataset"
+                ".build_from_config",
+                return_value={"repo_id": "local/x"}) as build, mock.patch(
+                "pi05_selfimprove.train_bc.run_training", return_value={}):
+            loop.run_round(config, Path(tmp), ["build", "train"])
+        build.assert_called_once()
+
+    def test_build_stage_receives_real_dataset_repo_id(self) -> None:
+        from pi05_selfimprove import loop
+
+        config = RoundConfig(round_index=2, phase="real",
+                             checkpoint_in="rounds/round_1/ckpt")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "pi05_selfimprove.dataset_tools.build_round_dataset"
+                ".build_from_config",
+                return_value={"repo_id": "local/x"}) as build:
+            loop.run_round(config, Path(tmp), ["build"],
+                           real_dataset_repo_id="local/so101_pi05_round2_real")
+        build.assert_called_once_with(
+            config, Path(tmp), real_dataset_repo_id="local/so101_pi05_round2_real")
 
 
 if __name__ == "__main__":

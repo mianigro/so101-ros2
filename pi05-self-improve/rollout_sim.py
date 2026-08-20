@@ -52,13 +52,9 @@ from pi05_selfimprove.wire import RolloutClient  # noqa: E402
 
 logger = logging.getLogger("rollout_sim")
 
-#: Standard SO-101 rig -> lerobot/pi05_base (openpi) camera mapping, for
-#: watching or rolling out the raw base checkpoint zero-shot.
-PI05_BASE_IMAGE_KEY_MAP = {
-    "observation.images.wrist": "observation.images.left_wrist_0_rgb",
-    "observation.images.overhead_1": "observation.images.base_0_rgb",
-    "observation.images.overhead_2": "observation.images.right_wrist_0_rgb",
-}
+#: Preset camera remap for zero-shot base checkpoints (see contract).
+PI05_BASE_IMAGE_KEY_MAP = contract.PI05_BASE_IMAGE_KEY_MAP
+resolve_image_key_map = contract.resolve_image_key_map
 
 
 def build_features() -> dict:
@@ -118,22 +114,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "preset name 'pi05_base' or repeatable client=policy pairs "
              "like observation.images.wrist=observation.images.left_wrist_0_rgb")
     return parser.parse_args(argv)
-
-
-def resolve_image_key_map(cli_values):
-    """Merge CLI --image-key-map entries (preset name or k=v pairs)."""
-    resolved = {}
-    for entry in cli_values or []:
-        if entry == "pi05_base":
-            resolved.update(PI05_BASE_IMAGE_KEY_MAP)
-        elif "=" in entry:
-            client_key, policy_key = entry.split("=", 1)
-            resolved[client_key.strip()] = policy_key.strip()
-        else:
-            raise SystemExit(
-                f"--image-key-map expects 'pi05_base' or client=policy, "
-                f"got {entry!r}")
-    return resolved
 
 
 def main(argv: list[str] | None = None) -> int:

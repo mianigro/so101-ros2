@@ -9,7 +9,7 @@ ROS 2 stack for the SO-101 robot arm in a leader/follower configuration using Fe
 
 
 ### Isaac Lab and Isaac Sim
-For reinforcement learning and simulation Isaac Sim and Isaac Lab is used. Currently this uses PPO training for the SO-101 robot arm. Its visual actor consumes the same wrist/two-overhead RGB streams and six absolute joint positions available on the real robot, while a privileged state is used only by the training critic. It uses this repository's generated robot USD and supplied STL assets without modifying Isaac Lab or putting ROS 2 in the training loop. See [isaaclab/README.md](isaaclab/README.md) for asset preparation, visual PPO, multi-GPU/live playback, export, and shadow-mode deployment. The design, reward equations, algorithm support, neural-network configuration, and task/model extension process are in [isaaclab/METHODOLOGY.md](isaaclab/METHODOLOGY.md).
+Isaac Sim and Isaac Lab provide the simulated SO-101 workcell used by [`pi05-self-improve/`](pi05-self-improve/README.md) to gather self-improvement data for π0.5-class VLAs. The `object-in-cup` task mirrors the real `monomanual_dual_overhead` rig (wrist + two overhead RGB streams and six absolute joint positions), and its termination terms double as the scripted success oracle for autonomous rollouts — no RL training remains in the loop. It uses this repository's generated robot USD and supplied STL assets without modifying Isaac Lab or putting ROS 2 in the simulation loop. See [isaaclab/README.md](isaaclab/README.md) for asset preparation and live simulation, and [`pi05-self-improve/`](pi05-self-improve/README.md) for the generate → judge → refine loop.
 
 ---
 
@@ -326,36 +326,6 @@ pixi run replay -- \
 ```
 
 See the [episode_recorder README](episode_recorder/README.md) for details.
-
-### Record PPO demonstrations for VLA training
-
-Use the follower-only recording stack so teleop cannot publish competing commands:
-
-```bash
-ros2 launch so101_bringup follower_recording.launch.py \
-  setup:=monomanual_dual_overhead \
-  experiment_name:=ppo_pick_and_place \
-  task:="Pick up the cube and place it in the container."
-```
-
-In a second terminal, launch the exported PPO actor and validate it in shadow
-mode before arming:
-
-```bash
-ros2 launch so101_inference rsl_rl_infer.launch.py \
-  model_dir:="$ARTIFACT_DIR" setup:=monomanual_dual_overhead
-
-ros2 service call /so101_rl/set_enabled \
-  std_srvs/srv/SetBool "{data: true}"
-```
-
-Only after PPO is armed, start `teleop_episode_keyboard` and press **r**. The
-recorder stores the 30 Hz absolute controller targets published by PPO; do not
-run the leader/follower teleop relay during these episodes.
-
-When converting these PPO-recorded episodes to a LeRobot dataset, pass
-`--dataset-source ppo` so the Hub dataset is tagged `reinforcement-learning`
-rather than `teleoperation` (see `rosbag_to_lerobot/README.md`).
 
 ---
 

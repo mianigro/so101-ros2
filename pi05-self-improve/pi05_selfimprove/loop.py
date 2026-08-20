@@ -152,12 +152,21 @@ def run_round(config: RoundConfig, rounds_root: Path,
               policy_device: str = "cuda",
               policy_dtype: str = "bfloat16",
               sim_device: str = "cuda:0",
-              num_envs: Optional[int] = None) -> Dict[str, Any]:
+              num_envs: Optional[int] = None,
+              real_dataset_repo_id: Optional[str] = None) -> Dict[str, Any]:
     """Execute the requested stages of one self-improvement round."""
     unknown = [stage for stage in stages if stage not in ALL_STAGES]
     if unknown:
         raise ValueError(f"unknown stages {unknown}; expected subset of "
                          f"{ALL_STAGES}")
+    if config.phase == "real" and set(stages) & {"rollout", "eval"}:
+        raise ValueError(
+            f"round {config.round_index} is phase=real; the sim-only "
+            "rollout/eval stages cannot run. Generate data with "
+            "'real_rollout.py session/post', then refine with "
+            "'run_round.py --stages build,train "
+            "--real-dataset-repo-id local/so101_pi05_round"
+            f"{config.round_index}_real'.")
 
     input_policy = None
     if any(stage in {"rollout", "train", "eval"} for stage in stages):
@@ -206,7 +215,8 @@ def run_round(config: RoundConfig, rounds_root: Path,
     if "build" in stages:
         from .dataset_tools.build_round_dataset import build_from_config
 
-        summary = build_from_config(config, rounds_root)
+        summary = build_from_config(config, rounds_root,
+                                    real_dataset_repo_id=real_dataset_repo_id)
         _update_round_meta(round_dir, "dataset", summary)
 
     if "train" in stages:
@@ -253,7 +263,8 @@ def main(argv: Optional[list] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run one pi0.5 self-improvement round (sim phase).",
+        description="Run one pi0.5 self-improvement round "
+                    "(sim rollout/eval; refine stages for both phases).",
     )
     parser.add_argument("--config", type=Path, required=True,
                         help="round YAML")
@@ -286,6 +297,12 @@ def main(argv: Optional[list] = None) -> int:
         help="one-off override of the config's rollout.num_envs (e.g. 4 "
              "when the kit viewport pushes the sim GPU's memory)",
     )
+    parser.add_argument(
+        "--real-dataset-repo-id", default=None,
+        help="phase=real rounds: converted rollout dataset judged in "
+             "verdicts.jsonl (see real_rollout.py post); passed to the "
+             "build stage instead of the sim npz episodes",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -299,7 +316,8 @@ def main(argv: Optional[list] = None) -> int:
                      policy_device=args.policy_device,
                      policy_dtype=args.policy_dtype,
                      sim_device=args.sim_device,
-                     num_envs=args.num_envs)
+                     num_envs=args.num_envs,
+                     real_dataset_repo_id=args.real_dataset_repo_id)
     print(json.dumps(meta, indent=2))
     return 0
 

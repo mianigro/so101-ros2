@@ -20,9 +20,6 @@ ROS 2 inference package for the SO-101 robot arm. Runs [LeRobot 0.6.1](https://g
 - **Stale-data gating** — observations older than `max_age_s` are automatically discarded to prevent the robot from acting on outdated sensor data.
 - **Pluggable transports** — ZeroMQ (`zmq`) and gRPC (`grpc`) transport backends, selected via a single parameter.
 - **Built-in telemetry** — periodic summaries of FPS, queue depth, actions executed, observations sent/dropped, and round-trip latency.
-- **RSL-RL visual PPO deployment** — loads repository-exported TorchScript actors,
-  enforces the dual-overhead manifest/checksum, runs 30 Hz local GPU inference,
-  and starts in safety-gated shadow mode.
 
 ## Nodes
 
@@ -30,30 +27,6 @@ ROS 2 inference package for the SO-101 robot arm. Runs [LeRobot 0.6.1](https://g
 |------|-----------|-------------|
 | `lerobot_inference_node` | `lerobot_inference_node` | Synchronous local inference — loads the policy on-device |
 | `async_ros2_inference_client` | `async_inference_node` | Asynchronous remote inference — offloads policy to a server |
-| `rsl_rl_inference_node` | `rsl_rl_inference_node` | Local visual-PPO inference with explicit arming and hold-on-failure |
-
-### RSL-RL visual PPO (local, shadow-first)
-
-Export the checkpoint through `isaaclab/export`, rebuild this ROS package, then:
-
-```bash
-ros2 launch so101_inference rsl_rl_infer.launch.py \
-  model_dir:=/absolute/path/to/artifact-dir setup:=monomanual_dual_overhead
-```
-
-The node validates `policy_manifest.json` and the TorchScript checksum, subscribes
-to all three raw RGB topics and `/follower/joint_states`, bilinearly resizes to
-160x120, applies `RGB / 255 - 0.5`, and computes bounded absolute joint targets at
-30 Hz. It publishes nothing in shadow mode. After simulation acceptance and
-recorded-real-input shadow checks, arm with:
-
-```bash
-ros2 service call /so101_rl/set_enabled std_srvs/srv/SetBool "{data: true}"
-```
-
-All sources must be fresh and within 50 ms source-timestamp skew. Manual disable,
-stale/skewed inputs, inference failure, NaN/Inf, or an invalid action causes one
-measured-position hold command, disarming, and an explicit-rearm requirement.
 
 ## Quick Start
 

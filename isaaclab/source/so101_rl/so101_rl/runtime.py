@@ -12,7 +12,6 @@ from typing import Any
 
 
 _EARLY_APP_LAUNCHER: Any | None = None
-_DISTRIBUTED_CUDA_WARMED = False
 
 
 def bootstrap_local_isaac_sim(entrypoint: Path) -> None:
@@ -91,8 +90,8 @@ def launch_isaac_sim_before_task_imports(
         entrypoint: Repository entry point being executed.
         arguments: Command-line arguments excluding the executable name.
         default_visualizer: Visualizer used when the caller did not select one.
-            ``live`` passes ``"kit"``; training, playback, and export require an
-            explicit ``--visualizer kit`` to open a native window.
+            ``live`` passes ``"kit"``; other entries require an explicit
+            ``--visualizer kit`` to open a native window.
     """
     global _EARLY_APP_LAUNCHER
 
@@ -104,8 +103,6 @@ def launch_isaac_sim_before_task_imports(
     if any(argument in {"-h", "--help"} for argument in requested_arguments):
         return
 
-    _warm_up_distributed_cuda_before_isaac_sim(requested_arguments)
-
     # Importing AppLauncher is deliberately the first Isaac Lab import in each
     # entry point. It does not import pxr; constructing it starts Kit.
     from isaaclab.app import AppLauncher
@@ -116,8 +113,6 @@ def launch_isaac_sim_before_task_imports(
     # Isaac Lab no longer exposes --headless itself, but this external project
     # retains it as a documented compatibility flag.
     parser.add_argument("--headless", action="store_true", default=False)
-    parser.add_argument("--distributed", action="store_true", default=False)
-    parser.add_argument("--video", action="store_true", default=False)
     launcher_arguments, _ = parser.parse_known_args(
         AppLauncher._fuse_kit_args(requested_arguments)
     )
@@ -145,112 +140,6 @@ def launch_isaac_sim_before_task_imports(
         sys.argv = original_argv
 
     atexit.register(close_early_isaac_sim)
-
-
-def _warm_up_distributed_cuda_before_isaac_sim(arguments: list[str]) -> None:
-    """Initialize the training NCCL group before Kit creates its CUDA context.
-
-    On the local two-RTX source-built Isaac Sim installation, creating an NCCL
-    communicator after the rendered scene has started crashes in
-    `libcarb.cudainterop.plugin.so`. A small collective before Kit establishes
-    CUDA/NCCL in the safe order. The group remains alive for RSL-RL training;
-    RSL-RL's later request to initialize the same group is validated and reused.
-    """
-    global _DISTRIBUTED_CUDA_WARMED
-
-    if _DISTRIBUTED_CUDA_WARMED:
-        return
-    if "--distributed" not in arguments:
-        return
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    if world_size <= 1:
-        return
-    # The workaround is specific to the source-built Isaac Sim runtime selected
-    # by bootstrap_local_isaac_sim. Packaged Isaac Sim installations retain
-    # their normal Isaac Lab/RSL-RL initialization path.
-    if os.environ.get("SO101_ISAACSIM_BOOTSTRAPPED") != "1":
-        return
-
-    import torch
-
-    if torch.distributed.is_initialized():
-        return
-    local_rank = int(os.environ["LOCAL_RANK"])
-    global_rank = int(os.environ["RANK"])
-    if local_rank >= torch.cuda.device_count():
-        raise RuntimeError(
-            f"distributed local rank {local_rank} has no matching visible CUDA device"
-        )
-
-    torch.cuda.set_device(local_rank)
-    original_init_process_group = torch.distributed.init_process_group
-    try:
-        original_init_process_group(
-            backend="nccl", rank=global_rank, world_size=world_size
-        )
-        ready = torch.ones((), device=f"cuda:{local_rank}")
-        torch.distributed.all_reduce(ready)
-        if ready.item() != float(world_size):
-            raise RuntimeError(
-                "pre-Kit NCCL initialization returned an invalid all-reduce result"
-            )
-    except BaseException:
-        if torch.distributed.is_initialized():
-            torch.distributed.destroy_process_group()
-        raise
-
-    def reuse_initialized_process_group(*args: Any, **kwargs: Any) -> None:
-        """Reuse the validated pre-Kit group for RSL-RL's identical request."""
-        if not torch.distributed.is_initialized():
-            original_init_process_group(*args, **kwargs)
-            return
-
-        requested_backend = kwargs.get("backend", args[0] if args else None)
-        requested_rank = kwargs.get("rank")
-        requested_world_size = kwargs.get("world_size")
-        actual_backend = str(torch.distributed.get_backend()).lower()
-        if (
-            requested_backend is not None
-            and str(requested_backend).lower() != actual_backend
-        ):
-            raise RuntimeError(
-                f"RSL-RL requested distributed backend {requested_backend!r}, but the "
-                f"pre-Kit group uses {actual_backend!r}"
-            )
-        if (
-            requested_rank is not None
-            and requested_rank != torch.distributed.get_rank()
-        ):
-            raise RuntimeError(
-                f"RSL-RL requested rank {requested_rank}, but the pre-Kit group uses "
-                f"rank {torch.distributed.get_rank()}"
-            )
-        if (
-            requested_world_size is not None
-            and requested_world_size != torch.distributed.get_world_size()
-        ):
-            raise RuntimeError(
-                f"RSL-RL requested world size {requested_world_size}, but the pre-Kit "
-                f"group uses {torch.distributed.get_world_size()}"
-            )
-
-    torch.distributed.init_process_group = reuse_initialized_process_group
-    atexit.register(_close_distributed_process_group)
-
-    _DISTRIBUTED_CUDA_WARMED = True
-    print(
-        f"[SO101 DDP] Rank {global_rank}/{world_size - 1} initialized the persistent "
-        f"NCCL training group on cuda:{local_rank} before Isaac Sim startup.",
-        flush=True,
-    )
-
-
-def _close_distributed_process_group() -> None:
-    """Release the repository-owned process group during interpreter shutdown."""
-    import torch
-
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
 
 
 def close_early_isaac_sim() -> None:

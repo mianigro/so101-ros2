@@ -306,6 +306,17 @@ class RolloutSummary:
         }
 
 
+def _clear_stale_tmp(tmp_dir: Path) -> None:
+    """Drop frame memmaps leaked by an interrupted earlier run (~1.2 GB/episode)."""
+    if not tmp_dir.exists():
+        return
+    for path in tmp_dir.iterdir():
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning("could not remove stale tmp file %s", path)
+
+
 def run_rollouts(
     env,
     client: RolloutClient,
@@ -340,6 +351,8 @@ def run_rollouts(
     summary = RolloutSummary()
     episode_counter = 0
     recorders: List[Optional[EpisodeRecorder]] = [None] * num_envs
+    if record:
+        _clear_stale_tmp(rollouts_raw / "tmp")
 
     obs, _ = env.reset()
     timestep = 0
@@ -385,6 +398,9 @@ def run_rollouts(
             if timestep % 30 == 0:
                 logger.debug("starved envs at t=%d: %s", timestep, starved)
 
+        # --- absolute sim-radian targets (clamped to URDF limits) ----------
+        targets_sim = joint_map.to_sim(commands)
+
         # --- record the frame before stepping ------------------------------
         if record:
             all_images = read_cameras(env)
@@ -399,17 +415,18 @@ def run_rollouts(
                     recorder.start()
                     recorders[env_id] = recorder
                     episode_counter += 1
+                # Map the clamped target back so the recorded action is
+                # exactly what the env executes, not the pre-clamp command.
                 recorders[env_id].add(
                     {camera: frames[env_id]
                      for camera, frames in all_images.items()},
                     state_dataset[env_id],
-                    commands[env_id],
+                    joint_map.to_dataset(targets_sim[env_id]),
                     state_sim[env_id],
-                    joint_map.to_sim(commands[env_id]),
+                    targets_sim[env_id],
                 )
 
         # --- step with absolute sim-radian targets -------------------------
-        targets_sim = joint_map.to_sim(commands)
         step_return = env.step(
             torch.tensor(targets_sim, dtype=torch.float32, device=env.device))
         # ManagerBasedRLEnv.step returns (obs, reward, terminated,

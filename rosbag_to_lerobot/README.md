@@ -76,7 +76,7 @@ If `--output-dir` is omitted, LeRobot writes to its default cache location (typi
 | `--sync-p95` | Collect p95 sync latency stats (slightly more overhead) |
 | `--vcodec <codec>` | LeRobot RGB encoder name (`libsvtav1` default; also `h264`, `hevc`, `h264_nvenc`) |
 | `--use-videos` / `--no-use-videos` | MP4 video (default) vs individual images |
-| `--dataset-source` | Provenance tag set for the Hub dataset: `teleop` (default, imitation-learning) or `ppo` (reinforcement-learning). See [Publishing](#publishing-to-hugging-face-hub) |
+| `--dataset-source` | Provenance tag set for the Hub dataset: `teleop` (default, imitation-learning) or `autonomous` (self-improvement rollouts, reinforcement-learning). See [Publishing](#publishing-to-hugging-face-hub) |
 
 ---
 
@@ -120,9 +120,9 @@ The Hub dataset is tagged from `--dataset-source` so its provenance is accurate:
 | `--dataset-source` | Recorded from | Hub tags |
 |--------------------|---------------|----------|
 | `teleop` (default) | Human teleoperation | `teleoperation`, `imitation-learning` |
-| `ppo`              | Autonomous rollouts of an exported PPO policy | `reinforcement-learning` |
+| `autonomous` | Self-improvement rollouts of a VLA policy (see [`pi05-self-improve/`](../pi05-self-improve/)) | `reinforcement-learning`, `self-improvement` |
 
-Both sources share the same 30 Hz command contract; only the provenance tag set differs. When pushing episodes recorded by a PPO policy (see the top-level README's "Record PPO demonstrations for VLA training"), pass `--dataset-source ppo` so the dataset is not mislabeled as teleoperation.
+Both sources share the same 30 Hz command contract; only the provenance tag set differs. When pushing autonomous VLA rollouts, pass `--dataset-source autonomous` so the dataset is not mislabeled as teleoperation.
 
 ---
 
@@ -204,7 +204,7 @@ usage: convert --input-dir DIR --config FILE --setup SETUP --repo-id ID [options
   --vcodec          LeRobot RGB encoder (libsvtav1 | libaom-av1 | h264 |
                     hevc | auto | a supported hardware encoder)
   --push-hub        Push final dataset to HuggingFace Hub
-  --dataset-source  Provenance tags: teleop (default) | ppo
+  --dataset-source  Provenance tags: teleop (default) | autonomous
   --sync-p95        Collect p95 sync stats
   --overwrite       Delete the complete output directory and rebuild from MCAP
 ```

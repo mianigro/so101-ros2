@@ -51,6 +51,12 @@ def main() -> int:
     parser.add_argument("--actions-per-chunk", type=int, default=16)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--metrics-out", type=Path, default=None)
+    parser.add_argument(
+        "--image-key-map", action="append", default=None, metavar="MAP",
+        help="camera key remap for zero-shot base checkpoints, forwarded to "
+             "rollout_sim: the preset 'pi05_base' or repeatable "
+             "client=policy pairs like "
+             "observation.images.wrist=observation.images.left_wrist_0_rgb")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -79,6 +85,8 @@ def main() -> int:
         ]
         if args.metrics_out:
             argv += ["--metrics-out", str(args.metrics_out)]
+        for entry in args.image_key_map or []:
+            argv += ["--image-key-map", entry]
         logger.info("launching: %s", " ".join(argv))
         subprocess.run(argv, check=True)
     finally:

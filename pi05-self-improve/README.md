@@ -137,6 +137,8 @@ pi05-self-improve/rollout_sim.py --config pi05-self-improve/configs/round_1.yaml
 
 # Success-rate measurement only, no recording
 python pi05-self-improve/eval_policy.py --repo-id <checkpoint> --num-episodes 24
+# The raw (unfinetuned) base needs its OpenPI camera keys remapped:
+python pi05-self-improve/eval_policy.py --repo-id lerobot/pi05_base --image-key-map pi05_base
 
 # Filter successes + mix teleop + write the round dataset
 python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_1.yaml
@@ -190,6 +192,11 @@ rounds/round_1/
 
 The real phase uses the same generate→evaluate→refine stages with the
 *existing* robot stack; a human supervisor stays in the loop for safety.
+`configs/round_2_real.yaml` is the example real-phase round (`phase: real`,
+VLM judge with human confirmation, weights continued from the previous
+round's `checkpoint_in`). `run_round` refuses the sim-only `rollout`/`eval`
+stages for real rounds — generation happens through `real_rollout.py`, the
+refine stages stay shared.
 
 ```bash
 pixi shell -e lerobot   # on the robot host
@@ -198,23 +205,30 @@ pixi shell -e lerobot   # on the robot host
 #    inference; you run teleop_episode_keyboard in another terminal and
 #    press r/s/d around each autonomous episode.
 python pi05-self-improve/real_rollout.py session \
-    --config pi05-self-improve/configs/round_2.yaml --experiment pi05_selfimprove
+    --config pi05-self-improve/configs/round_2_real.yaml --experiment pi05_selfimprove
 
 # 2) Post-process: convert kept MCAP episodes (--dataset-source autonomous),
 #    VLM-judge final frames, write verdicts.jsonl; --interactive to confirm
 #    each verdict yourself.
 python pi05-self-improve/real_rollout.py post \
-    --config pi05-self-improve/configs/round_2.yaml --interactive
+    --config pi05-self-improve/configs/round_2_real.yaml --interactive
 
-# 3) Same refine stages as sim rounds:
-python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_2.yaml \
+# 3) Same refine stages as sim rounds (approved real episodes + teleop mix):
+python pi05-self-improve/run_round.py \
+    --config pi05-self-improve/configs/round_2_real.yaml \
+    --stages build,train \
     --real-dataset-repo-id local/so101_pi05_round2_real
-python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_2.yaml
+# or stage by stage:
+python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_2_real.yaml \
+    --real-dataset-repo-id local/so101_pi05_round2_real
+python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_2_real.yaml
 ```
 
 The GPU side serves the checkpoint to the robot with the existing
 `policy_server` (see `policy_server/README.md`); point
-`real_rollout session --policy-server-address` at it.
+`real_rollout session --policy-server-address` at it. The session wrapper
+prints the matching server command — note `zmq_server`'s default port
+(5555) differs from the client default (`127.0.0.1:8090`).
 
 ## VLM judge
 
@@ -260,7 +274,7 @@ pi05-self-improve/
 ├── build_round_dataset.py  # filter successes + mix teleop → LeRobot dataset
 ├── train_bc.py          # round-0 baseline / round-N retrain wrapper
 ├── real_rollout.py      # supervised-assist real-robot session + post
-├── configs/              # baseline, continuation, and base-start round YAMLs
+├── configs/              # baseline, continuation, base-start, real-phase round YAMLs
 ├── pi05_selfimprove/
 │   ├── contract.py       # joints, cameras, JointMap (dataset ↔ sim units)
 │   ├── config.py         # RoundConfig

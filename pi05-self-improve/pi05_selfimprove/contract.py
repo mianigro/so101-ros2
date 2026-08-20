@@ -68,6 +68,32 @@ STATE_FEATURE_KEY = "observation.state"
 ACTION_FEATURE_KEY = "action"
 TASK_FIELD = "task"
 
+#: Standard SO-101 rig -> lerobot/pi05_base (openpi) camera mapping, for
+#: zero-shot rollouts/evals of the raw base checkpoint.  Dataset/client keys
+#: map onto the openpi keys the base was pretrained with; finetuned
+#: checkpoints trained with this mapping keep the same schema.
+PI05_BASE_IMAGE_KEY_MAP: Dict[str, str] = {
+    "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+    "observation.images.overhead_1": "observation.images.base_0_rgb",
+    "observation.images.overhead_2": "observation.images.right_wrist_0_rgb",
+}
+
+
+def resolve_image_key_map(cli_values: Optional[List[str]]) -> Dict[str, str]:
+    """Merge ``--image-key-map`` CLI entries (preset name or k=v pairs)."""
+    resolved: Dict[str, str] = {}
+    for entry in cli_values or []:
+        if entry == "pi05_base":
+            resolved.update(PI05_BASE_IMAGE_KEY_MAP)
+        elif "=" in entry:
+            client_key, policy_key = entry.split("=", 1)
+            resolved[client_key.strip()] = policy_key.strip()
+        else:
+            raise SystemExit(
+                f"--image-key-map expects 'pi05_base' or client=policy, "
+                f"got {entry!r}")
+    return resolved
+
 CONTROL_FREQUENCY_HZ = 30.0
 CONTROL_PERIOD_S = 1.0 / CONTROL_FREQUENCY_HZ
 
@@ -289,6 +315,7 @@ __all__ = [
     "NPZ_SUCCESS",
     "NPZ_TASK",
     "NUM_JOINTS",
+    "PI05_BASE_IMAGE_KEY_MAP",
     "ROLL_FILENAME",
     "SIM_GRIPPER_RANGE",
     "SIM_JOINT_LIMITS_RAD",
@@ -302,5 +329,6 @@ __all__ = [
     "identity_joint_map",
     "iter_episode_files",
     "read_jsonl",
+    "resolve_image_key_map",
     "save_episode_npz",
 ]

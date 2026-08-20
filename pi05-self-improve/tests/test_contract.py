@@ -169,5 +169,38 @@ class VisualContractCrossCheck(unittest.TestCase):
                          set(contract.CAMERA_KEYS))
 
 
+class ImageKeyMapTests(unittest.TestCase):
+    def test_base_preset_maps_openpi_keys(self) -> None:
+        self.assertEqual(
+            contract.PI05_BASE_IMAGE_KEY_MAP["observation.images.wrist"],
+            "observation.images.left_wrist_0_rgb")
+        self.assertEqual(
+            contract.PI05_BASE_IMAGE_KEY_MAP["observation.images.overhead_1"],
+            "observation.images.base_0_rgb")
+        self.assertEqual(
+            contract.PI05_BASE_IMAGE_KEY_MAP["observation.images.overhead_2"],
+            "observation.images.right_wrist_0_rgb")
+
+    def test_preset_resolution(self) -> None:
+        self.assertEqual(contract.resolve_image_key_map(["pi05_base"]),
+                         contract.PI05_BASE_IMAGE_KEY_MAP)
+
+    def test_pairs_merge_with_preset(self) -> None:
+        resolved = contract.resolve_image_key_map([
+            "observation.images.wrist=observation.images.left_wrist_0_rgb",
+            "pi05_base",
+        ])
+        self.assertEqual(len(resolved), 3)
+        self.assertEqual(resolved["observation.images.overhead_1"],
+                         "observation.images.base_0_rgb")
+
+    def test_none_resolves_empty(self) -> None:
+        self.assertEqual(contract.resolve_image_key_map(None), {})
+
+    def test_bad_entry_exits(self) -> None:
+        with self.assertRaises(SystemExit):
+            contract.resolve_image_key_map(["not-a-preset"])
+
+
 if __name__ == "__main__":
     unittest.main()
