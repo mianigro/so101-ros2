@@ -5,8 +5,6 @@ from __future__ import annotations
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
@@ -23,7 +21,6 @@ from so101_rl.tasks.common import (
 )
 from so101_rl.tasks.common import mdp as common_mdp
 from so101_rl.tasks.common.visual_env_cfg import contact_material, contact_properties
-from so101_rl.visual_contract import SO101_TEMPORAL_LOOKBACK_FRAMES
 
 from . import mdp
 
@@ -83,20 +80,7 @@ class ObjectInCupSceneCfg(SO101VisualSceneCfg):
 
 @configclass
 class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
-    """Deployable actor observations plus task-specific training state."""
-
-    @configclass
-    class CriticStateCfg(ObsGroup):
-        task_state = ObsTerm(
-            func=mdp.critic_task_state,
-            params={"robot_cfg": SO101_ROBOT_JOINT_CFG},
-        )
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    critic_state: CriticStateCfg = CriticStateCfg()
+    """Deployable actor observations for the object-in-cup scenario."""
 
 
 @configclass
@@ -331,39 +315,6 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
 @configclass
 class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
     """Nominal fixed-pose environment used to prove visual learnability first."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        self._apply_task_fixed_mode()
-
-
-def _enable_camera_history(env_cfg) -> None:
-    """Serve every actor camera group as a frame-history window.
-
-    The transformer actor consumes camera observations of shape
-    (num_envs, lookback, channels, height, width) ordered oldest to newest;
-    Isaac Lab history buffers provide exactly that when the history dimension
-    is not flattened. The recurrent mamba actor is not windowed and uses the
-    plain single-frame environment configs.
-    """
-    for group_name in ("wrist", "overhead_1", "overhead_2"):
-        term = getattr(env_cfg.observations, group_name).rgb
-        term.history_length = SO101_TEMPORAL_LOOKBACK_FRAMES
-        term.flatten_history_dim = False
-
-
-@configclass
-class SO101ObjectInCupVisionTemporalEnvCfg(SO101ObjectInCupVisionEnvCfg):
-    """Object-in-cup environment with camera frame history for temporal actors."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        _enable_camera_history(self)
-
-
-@configclass
-class SO101ObjectInCupVisionTemporalFixedEnvCfg(SO101ObjectInCupVisionTemporalEnvCfg):
-    """Fixed-pose frame-history environment for temporal actors."""
 
     def __post_init__(self):
         super().__post_init__()

@@ -17,15 +17,6 @@ SO101_ACTOR_OBSERVATION_GROUPS = (
     "overhead_2",
 )
 
-SO101_TEMPORAL_LOOKBACK_FRAMES = 4
-"""Camera frames supplied to the transformer actor, ordered oldest to newest.
-
-Environment camera observation terms use this as ``history_length`` and the
-transformer family uses it as ``lookback_frames``; the two must match. The
-recurrent mamba actor is not windowed: it consumes single frames and keeps
-its own state.
-"""
-
 SO101_ARM_ACTION_PATTERN = "shoulder_.*|elbow_flex|wrist_.*"
 SO101_ARM_DELTA_RAD = 1.0 / 30.0
 SO101_GRIPPER_DELTA_RAD = 0.10
@@ -48,5 +39,4 @@ __all__ = [
     "SO101_GRIPPER_DELTA_RAD",
     "SO101_JOINT_NAMES",
     "SO101_NORMALIZED_ACTION_CLIP",
-    "SO101_TEMPORAL_LOOKBACK_FRAMES",
 ]

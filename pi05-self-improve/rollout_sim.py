@@ -40,7 +40,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = PROJECT_ROOT.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(REPOSITORY_ROOT / "isaaclab"))
 sys.path.insert(0, str(REPOSITORY_ROOT / "isaaclab" / "source" / "so101_rl"))
 
 from so101_rl.runtime import launch_isaac_sim_before_task_imports  # noqa: E402
