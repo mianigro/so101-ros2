@@ -1,277 +1,490 @@
-# π0.5-style self-improvement loop for SO-101
+# π0.5 self-improvement for SO-101
 
-This project implements the π0.5 recipe — *knowledge-insulated self-improvement through autonomous data* — on the SO-101 stack. A flow-matching VLA baseline trained by behavioral cloning, which then **generates its own training data** (autonomous rollouts), **evaluates** it (scripted oracle in sim, VLM judge on the real robot), **filters out failures**, and **retrains on its own successes co-trained with human data** — round after round.
+This project implements the π0.5 self-improvement recipe on the SO-101 stack.
+A policy first learns from human teleoperation, then collects autonomous
+rollouts, keeps successful episodes, mixes them with the original human data,
+and retrains. Repeating that loop teaches the policy from states and recoveries
+that are missing from pure behavioral-cloning data.
 
+The workflow has two phases:
+
+```text
+Phase 1 — human data and baseline
+    human teleop data → behavioral-cloning baseline (round 0)
+
+Phase 2 — self-improvement rounds
+    checkpoint → generate → evaluate → refine → next checkpoint
+                       │          │
+                       ├─ A: Isaac Sim + scripted oracle
+                       └─ B: real robot + VLM and human confirmation
 ```
-            ┌────────────────────────────────────────────────────┐
-            │                                                    │
-  human     ▼   generate π          evaluate        refine       │
- teleop ─────► (BC baseline) ────► rollouts ───► success filter ─┘
-  data          round 0            (sim/real)   + teleop co-train
-                                   judge              │
-                                                      ▼
-                                                π round N (BC retrain)
-```
 
-| Loop stage | Reuses | Adds |
-|---|---|---|
-| Baseline BC | `lerobot-train` (pixi `lerobot` env), `lerobot/pi05_base` | round config + wrapper |
-| Sim rollouts | `isaaclab/` SO-101 task (`SO101-Object-In-Cup-Vision-Fixed-v0`), `so101_rl` runtime bootstrap, calibrated 3-camera rig | VLA rollout client, chunked-action execution mirroring the async real-robot client, npz episode recording |
-| Success judging | the RL env's scripted `stable_placement` oracle | Qwen3-VL judge for real episodes |
-| Real rollouts | `follower_recording.launch.py`, `async_infer.launch.py`, `policy_server`, `teleop_episode_keyboard`, `rosbag_to_lerobot` | supervised-assist session wrapper + VLM judging |
-| Dataset | LeRobot v3.0 writer (as in `rosbag_to_lerobot`) | success filtering + teleop mixing |
-| Retraining | `lerobot-train` | round-N fine-tune from the selected base or previous checkpoint |
+Each Phase 2 round uses **one** rollout option: Isaac Sim or the real robot.
+The two options generate and judge data differently, then rejoin at the same
+dataset-build and BC-retraining steps.
 
-## Phase 1 — the baseline
-π0.5 is a ~3B VLA trained on human teleoperation. Behavioral cloning alone suffers from covariate shift — one small error puts the robot into a state the human data never covered, and the policy has never learned to recover. The baseline is therefore only the *starting point* of the loop, not the deliverable.
+---
 
-Round 0 fine-tunes `lerobot/pi05_base` on the human teleop dataset:
+## Requirements
+
+### Common
+
+- Complete the main repository [installation](../README.md#installation) and
+  build the ROS 2 workspace.
+- Install the Pixi `lerobot` environment. It provides LeRobot 0.6.1 with the
+  π0.5 extras and is already defined in `pixi.toml`.
+- Make the human teleoperation dataset listed in
+  `dataset.teleop_repo_ids` available through the LeRobot cache or Hub.
+- Use a GPU with enough memory for the selected policy.
+
+Fine-tuning the 3B π0.5 model generally needs at least 40 GB of VRAM with
+`freeze_vision_encoder: true`, the default. On a smaller GPU, the workflow can
+use SmolVLA by setting `train.policy_type: smolvla` and
+`train.base_repo_id: lerobot/smolvla_base` in each round config.
+
+### Option A — Isaac Sim
+
+- Build the Isaac Sim assets described in
+  [`isaaclab/README.md`](../isaaclab/README.md): the SO-101 robot and camera-rig
+  USDs under `build/isaacsim_so101/`, plus the cube and cup assets produced by
+  `isaaclab/prepare_assets`.
+- Allow sufficient disk space for rollouts. One 15-second episode with three
+  480×640 cameras is about 1.2 GiB before compression; a 48-episode round can
+  require tens of GiB.
+
+### Option B — real robot
+
+- Complete the [hardware setup](../docs/hardware.md), including motor
+  calibration and udev rules, before commanding the SO-101.
+- Use a calibrated follower and the cameras defined by the selected setup.
+- Keep a human supervisor beside the robot throughout every autonomous
+  episode.
+- Run a reachable policy server on the GPU host.
+
+## Initial setup
+
+Run commands from the repository root unless a section says otherwise:
 
 ```bash
-# Init
+cd /home/anon/Documents/so101-ros2
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
 pixi shell -e lerobot
-
-# Train behavioural clone dry run
-python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_0.yaml --dry-run # inspect
-
-# Train behavioural clone
-python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_0.yaml --stages train,eval
 ```
 
-This is plain `lerobot-train --policy.path=lerobot/pi05_base` under the hood, checkpoints stay local by default (`--policy.push_to_hub=false`). The round's checkpoint lands in `rounds/round_0/checkpoint/run/checkpoints <step>/` and its sim success rate in `rounds/round_0/metrics_eval.json`.
+---
 
-**VRAM note:** fine-tuning the 3B π0.5 needs a large GPU (≥40 GB with
-`freeze_vision_encoder: true`, the default). On smaller cards the entire loop
-runs unchanged with a lighter VLA — set `train.policy_type: smolvla` and
-`train.base_repo_id: lerobot/smolvla_base` in the round config.
+## Phase 1 — human data and baseline
 
-## Phase 2 — the self-improvement loop
+Round 0 fine-tunes `lerobot/pi05_base` on human demonstrations. This baseline
+is the starting point of self-improvement, not the final policy: behavioral
+cloning alone does not show the policy how to recover after it leaves the
+states covered by the demonstrations.
 
-Each round is **generate → evaluate → refine**:
+### Step 1 — collect and convert human demonstrations
 
-1. **Generate** — the checkpoint drives the sim robot autonomously
-   (`rollout_sim.py`), executing 50-step flow-matching chunks with the same
-   temporal aggregation (`weighted_average`) as the real async inference
-   nodes, so sim data matches real deployment semantics. Everything is
-   recorded: 3 cameras at dataset resolution (480×640 @ 30 Hz), joint
-   states, executed actions, task prompt.
-2. **Evaluate** — in sim, ground truth comes from the RL task's scripted
-   oracle (cube settled in the cup, gripper released, 15 consecutive steps
-   → termination term `success`). On the real robot, Qwen3-VL-2B judges the
-   final frames against the task text, and a human confirms the verdicts.
-3. **Refine** — successes are encoded into a LeRobot v3.0 dataset mixed with
-   the original teleop data (co-training anchor), and the policy is
-   BC-retrained from the round's selected input policy. Because the robot now
-   learns from *its own successful executions and recoveries*, it acquires
-   the recovery skills pure mimicry never showed it.
+Use the main README to [collect teleoperated episodes](../README.md#data-collection)
+on either the physical follower or Isaac Sim, then
+[convert them to a LeRobot dataset](../README.md#lerobot-dataset-conversion).
+These are human-controlled demonstrations; the sim/real choice for autonomous
+self-improvement comes later in Phase 2.
 
-Run a full sim round (the wrapper starts/stops the GPU policy server around
-each stage so rollouts and training never compete for memory):
+If an existing LeRobot dataset will be used, make sure it is available locally
+or from the Hub.
 
-```bash
-pixi shell -e lerobot
-python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_1.yaml
-```
+### Step 2 — configure round 0
 
-`configs/round_1.yaml` needs `checkpoint_in` pointing at round 0's
-checkpoint directory.
+Edit `pi05-self-improve/configs/round_0.yaml` and set:
 
-### Start Phase 2 directly from the base model
+- `dataset.teleop_repo_ids` to the human dataset used for the baseline and as
+  the co-training anchor in later rounds.
+- `train.base_repo_id` and `train.policy_type` if π0.5 is not being used.
+- The rollout task, camera mapping, and evaluation settings when the baseline
+  will be evaluated in Isaac Sim.
 
-Phase 1 is optional. To generate the first autonomous round directly with
-`lerobot/pi05_base`, use the standalone config:
+`round_index: 0`, `train.init_from: base`, and `checkpoint_in: null` identify
+this as baseline training from the published base model.
+
+### Step 3 — inspect, train, and evaluate
+
+First inspect the generated `lerobot-train` command without starting a job:
 
 ```bash
-pixi shell -e lerobot
 python pi05-self-improve/train_bc.py \
-    --config pi05-self-improve/configs/round_1_from_base.yaml --dry-run
-python pi05-self-improve/run_round.py \
-    --config pi05-self-improve/configs/round_1_from_base.yaml
+  --config pi05-self-improve/configs/round_0.yaml \
+  --dry-run
 ```
 
-Add `--visualizer kit` to watch rollout and evaluation episodes in the native
-Isaac Sim window. Without it, simulation remains headless for faster batch data
-generation:
+Train the baseline and evaluate it in Isaac Sim:
 
 ```bash
 python pi05-self-improve/run_round.py \
-    --config pi05-self-improve/configs/round_1_from_base.yaml \
-    --stages rollout \
-    --visualizer kit \
-    --policy-device cuda:1 \
-    --sim-device cuda:0
+  --config pi05-self-improve/configs/round_0.yaml \
+  --stages train,eval
 ```
 
-On a two-GPU machine this keeps the π0.5 policy server on GPU 1 and Isaac Sim
-on GPU 0, so their VRAM allocations do not compete.
-
-This skips the Phase 1 checkpoint, not the human-data anchor: the refine stage
-still trains on the successful autonomous rollouts mixed with the datasets in
-`dataset.teleop_repo_ids`. The config also supplies the SO-101-to-OpenPI camera
-mapping required by the raw base checkpoint. The same mapping is passed to
-`lerobot-train` as `rename_map` and remains valid for evaluation of the new
-checkpoint. If the base policy produces fewer than `judge.min_successes`
-successful episodes, dataset construction stops instead of training on an
-undersized autonomous sample.
-
-Every stage can also run alone:
+If Isaac Sim is not available because Phase 2 will use only the real robot,
+train without the sim-only evaluation stage:
 
 ```bash
-# Serve a checkpoint for rollouts/eval (pixi lerobot env, GPU)
-python pi05-self-improve/serve_policy.py --repo-id rounds/round_0/checkpoint/run/checkpoints/20000
-
-# Autonomous rollouts in Isaac Sim
-pi05-self-improve/rollout_sim.py --config pi05-self-improve/configs/round_1.yaml \
-    --rounds-root pi05-self-improve/rounds
-
-# Success-rate measurement only, no recording
-python pi05-self-improve/eval_policy.py --repo-id <checkpoint> --num-episodes 24
-
-# Filter successes + mix teleop + write the round dataset
-python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_1.yaml
-
-# BC retrain from the selected input policy on the mixed dataset
-python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_1.yaml
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_0.yaml \
+  --stages train
 ```
 
-Round artifacts (all under `rounds/round_N/`, gitignored):
+The checkpoint is written under
+`pi05-self-improve/rounds/round_0/checkpoint/run/checkpoints/<step>/`. Sim
+evaluation metrics are written to
+`pi05-self-improve/rounds/round_0/metrics_eval.json`.
 
+---
+
+## Phase 2 — self-improvement rounds
+
+Each self-improvement round performs three operations:
+
+1. **Generate** autonomous rollouts in Isaac Sim or on the supervised real
+   robot.
+2. **Evaluate** each rollout with the sim oracle or the real-robot VLM judge
+   plus human confirmation.
+3. **Refine** by filtering successes, mixing them with the human teleop data,
+   and BC-retraining from the selected input checkpoint.
+
+### Step 1 — configure the next round
+
+Use `configs/round_1.yaml` as the Isaac Sim example or
+`configs/round_2_real.yaml` as the real-robot example. Before running either
+one, check these fields:
+
+| Field | Required value |
+|---|---|
+| `round_index` | A new round number; do not reuse an existing artifact directory |
+| `phase` | `sim` for Option A or `real` for Option B |
+| `checkpoint_in` | The previous checkpoint, for example `pi05-self-improve/rounds/round_0/checkpoint/run/checkpoints/<step>` |
+| `train.init_from` | `previous` when continuing from `checkpoint_in` |
+| `dataset.teleop_repo_ids` | The human-data anchor mixed into this round |
+| `judge.name` | `scripted` for sim or `vlm` for real rollouts |
+
+If the first self-improvement round runs on the real robot, adapt the real
+example to `round_index: 1` and point `checkpoint_in` at the round-0 baseline.
+
+### Step 2 — collect autonomous rollouts
+
+Choose one of the following options for this round.
+
+#### Option A — Isaac Sim rollouts
+
+Run only the autonomous data-collection stage:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --stages rollout
 ```
+
+`run_round.py` starts and stops the rollout policy server automatically. The
+checkpoint drives the sim robot with chunked actions, while every episode's
+three camera streams, joint states, executed actions, task prompt, and scripted
+oracle verdict are recorded.
+
+To watch the rollout in the native Isaac Sim window:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --stages rollout \
+  --visualizer kit
+```
+
+On a two-GPU machine, keep the policy and simulation allocations separate:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --stages rollout \
+  --policy-device cuda:1 \
+  --sim-device cuda:0
+```
+
+To run rollout, refinement, and sim evaluation in one command instead, omit
+`--stages`:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml
+```
+
+#### Option B — real-robot rollouts
+
+Real rounds use the existing ROS 2 recording and async-inference stack. They
+do **not** support the `run_round.py` `rollout` or `eval` stages. Collection is
+a supervised session followed by conversion and judging.
+
+This workflow uses three terminals.
+
+**Terminal 1 — policy server on the GPU host:**
+
+```bash
+cd /home/anon/Documents/so101-ros2
+pixi run -e lerobot python policy_server/zmq_server.py \
+  --host 0.0.0.0 \
+  --port 8090
+```
+
+The async client loads the checkpoint named by the real-round config. Port
+`8090` is specified explicitly because the server's default port is `5555`.
+
+**Terminal 2 — follower, cameras, recording, and inference on the robot
+host:**
+
+```bash
+cd /home/anon/Documents/so101-ros2
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+pixi shell -e lerobot
+
+export POLICY_GPU_HOST=192.168.1.100
+
+python pi05-self-improve/real_rollout.py session \
+  --config pi05-self-improve/configs/round_2_real.yaml \
+  --experiment pi05_selfimprove \
+  --policy-server-address "${POLICY_GPU_HOST}:8090"
+```
+
+Set `POLICY_GPU_HOST` to the GPU machine's hostname or IP address. Use
+`127.0.0.1` when the policy server and robot stack run on the same machine.
+
+Wait for the launch processes to become ready before starting the keyboard
+controller.
+
+**Terminal 3 — supervised episode controls:**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/anon/Documents/so101-ros2/install/setup.bash
+ros2 run episode_recorder teleop_episode_keyboard
+```
+
+The supervisor controls each autonomous episode:
+
+- **r** or **Right Arrow**: start recording.
+- **s** or **Left Arrow**: stop and keep the episode.
+- **d** or **Backspace**: discard the episode.
+- **q**: quit the keyboard controller.
+
+Watch the arm continuously and stop the session immediately if the motion is
+unsafe. End Terminal 2 with `Ctrl-C` when collection is complete.
+
+Post-process the kept episodes on the robot host. This converts the MCAP
+recordings to a LeRobot dataset, asks Qwen3-VL for verdicts, and lets the human
+confirm or correct every verdict:
+
+```bash
+python pi05-self-improve/real_rollout.py post \
+  --config pi05-self-improve/configs/round_2_real.yaml \
+  --repo-id local/so101_pi05_round2_real \
+  --interactive
+```
+
+The default input directory is
+`~/.ros/so101_episodes/pi05_selfimprove/`. Pass `--input-dir` when a different
+experiment directory was used.
+
+### Step 3 — evaluate and filter the rollouts
+
+For **Option A**, the Isaac Lab task writes its scripted `stable_placement`
+verdict during rollout: the cube must settle in the cup, the gripper must be
+released, and the condition must hold for 15 consecutive steps. These verdicts
+in `rollouts.jsonl` remain authoritative for the sim training dataset. The VLM
+can optionally cross-check them:
+
+```bash
+python pi05-self-improve/judge_rollouts.py \
+  --round-dir pi05-self-improve/rounds/round_1
+```
+
+For **Option B**, the `real_rollout.py post --interactive` command writes the
+VLM verdicts and human approvals to `verdicts.jsonl`. Real episodes enter the
+training dataset only after approval.
+
+Both paths enforce `judge.min_successes`. Dataset construction stops instead
+of training on an undersized autonomous sample when too few rollouts succeed.
+
+### Step 4 — build the mixed dataset and retrain
+
+For an Isaac Sim round:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --stages build,train
+```
+
+For a real-robot round, pass the converted autonomous dataset from the post
+step:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_2_real.yaml \
+  --stages build,train \
+  --real-dataset-repo-id local/so101_pi05_round2_real
+```
+
+Both commands filter approved autonomous successes, mix them with the datasets
+in `dataset.teleop_repo_ids`, and fine-tune from the round's selected input
+policy.
+
+### Step 5 — evaluate and repeat
+
+Evaluate a newly trained sim round with the scripted oracle:
+
+```bash
+python pi05-self-improve/run_round.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --stages eval
+```
+
+Real-robot evaluation remains supervised and uses the real session workflow;
+`run_round.py --stages eval` is sim-only.
+
+For the next round, increment `round_index`, point `checkpoint_in` at the new
+checkpoint, select `phase: sim` or `phase: real`, and repeat Phase 2. A later
+round may switch from simulation to the real robot, as long as its config and
+judge match the selected rollout option.
+
+---
+
+## Reference
+
+### Run individual stages
+
+The wrappers above are the normal workflow. These commands expose the
+individual sim and refinement stages for debugging or reruns:
+
+```bash
+CHECKPOINT=pi05-self-improve/rounds/round_0/checkpoint/run/checkpoints/20000
+
+# Serve a checkpoint for sim rollout clients
+python pi05-self-improve/serve_policy.py \
+  --repo-id "$CHECKPOINT"
+
+# Collect autonomous Isaac Sim rollouts; serve_policy.py must already be running
+python pi05-self-improve/rollout_sim.py \
+  --config pi05-self-improve/configs/round_1.yaml \
+  --rounds-root pi05-self-improve/rounds
+
+# Measure sim success rate without recording episodes
+python pi05-self-improve/eval_policy.py \
+  --repo-id "$CHECKPOINT" \
+  --num-episodes 24
+
+# Filter successes, mix teleop data, and write the round dataset
+python pi05-self-improve/build_round_dataset.py \
+  --config pi05-self-improve/configs/round_1.yaml
+
+# Retrain from the input policy on the mixed dataset
+python pi05-self-improve/train_bc.py \
+  --config pi05-self-improve/configs/round_1.yaml
+```
+
+### Round artifacts
+
+All generated artifacts are gitignored under
+`pi05-self-improve/rounds/round_N/`:
+
+```text
 rounds/round_1/
 ├── config.yaml           # effective round configuration
-├── rollouts_raw/         # every episode as compressed npz (kept, failures too)
-├── rollouts.jsonl        # per-episode oracle verdicts {success, reason, ...}
-├── verdicts.jsonl        # VLM verdicts (cross-check in sim, authoritative on real)
-├── dataset_summary.json  # what went into the mixed dataset
-├── checkpoint/           # lerobot-train run + checkpoints/<step>/
-├── metrics_eval.json     # success rate + failure breakdown after this round
+├── rollouts_raw/         # every sim episode as compressed npz, including failures
+├── rollouts.jsonl        # per-episode sim oracle verdicts
+├── verdicts.jsonl        # VLM verdicts; authoritative with human approval for real data
+├── dataset_summary.json  # inputs to the mixed dataset
+├── checkpoint/           # lerobot-train run and checkpoints/<step>/
+├── metrics_eval.json     # sim success rate and failure breakdown
 └── round_meta.json       # accumulated stage records
 ```
 
-### Prerequisites
+### Sim-to-real contract
 
-- Isaac Sim assets built exactly as for the RL project (`isaaclab/README.md`):
-  `build/isaacsim_so101/…` robot/camera-rig USDs and `isaaclab/prepare_assets`
-  cube/cup USDs — `rollout_sim.py` reuses the same `so101_rl.runtime` bootstrap.
-- The pixi `lerobot` env (lerobot 0.6.1 with `pi` extras) — already in `pixi.toml`.
-- The teleop dataset(s) listed under `dataset.teleop_repo_ids` reachable
-  through the LeRobot cache or the Hub.
+- **Action space:** datasets record absolute calibrated joint positions in
+  `shoulder_pan … gripper` order. The sim rollout replaces the RL environment's
+  delta action term with absolute `JointPositionAction` targets, so policy
+  chunks are applied directly.
+- **Temporal aggregation:** sim uses the same chunked-action execution and
+  `weighted_average` aggregation as the real async-inference client.
+- **Gripper mapping:** the calibrated dataset range, approximately
+  `[-0.56, 0.55]` radians, differs from the nominal sim range `[0, 1.5]`.
+  `JointMap` in `pi05_selfimprove/contract.py` applies the configurable affine
+  mapping and clamps commands to sim joint limits.
+- **Cameras:** the sim rig renders three cameras at the dataset resolution of
+  480×640 and 30 Hz with calibrated intrinsics and aspect ratio.
 
-### Sim-to-real details worth knowing
+### VLM judge
 
-- **Action space**: datasets record *absolute* calibrated joint positions
-  (radians, `shoulder_pan … gripper`). The rollout loop replaces the RL
-  env's delta-action term with absolute `JointPositionAction` targets in the
-  same joint order, so the policy's output chunks are applied 1:1.
-- **Gripper mapping**: the calibrated gripper range (≈[-0.56, 0.55] rad in
-  dataset units) differs from the URDF/sim range ([0, 1.5] rad nominal).
-  `JointMap` in `pi05_selfimprove/contract.py` carries this affine map
-  (identity for the five arm joints) and is configurable per round via
-  `rollout.joint_map`. Commands are clamped to sim joint limits.
-- **Cameras**: the sim rig renders at dataset resolution (480×640) with the
-  same calibrated intrinsics/aspect as the RL cameras, so the VLA sees the
-  same image distribution it was fine-tuned on.
-- **Disk**: each recorded episode is ~1.2 GiB raw (3×480×640 @ 30 Hz × 15 s);
-  frames stream through memmaps and land as compressed npz (~10–50% of raw).
-  A 48-episode round is on the order of tens of GiB under `rounds/`.
-
-## Real-robot rounds (supervised-assist)
-
-The real phase uses the same generate→evaluate→refine stages with the
-*existing* robot stack; a human supervisor stays in the loop for safety.
-`configs/round_2_real.yaml` is the example real-phase round (`phase: real`,
-VLM judge with human confirmation, weights continued from the previous
-round's `checkpoint_in`). `run_round` refuses the sim-only `rollout`/`eval`
-stages for real rounds — generation happens through `real_rollout.py`, the
-refine stages stay shared.
+`judge_rollouts.py` loads Qwen3-VL-2B locally and requests a strict JSON
+verdict from the final overhead and wrist frames:
 
 ```bash
-pixi shell -e lerobot   # on the robot host
+# Cross-check the sim oracle; agreement is stored in round_meta.json
+python pi05-self-improve/judge_rollouts.py \
+  --round-dir pi05-self-improve/rounds/round_1
 
-# 1) Supervised session: wrapper spawns follower_recording + async pi05
-#    inference; you run teleop_episode_keyboard in another terminal and
-#    press r/s/d around each autonomous episode.
-python pi05-self-improve/real_rollout.py session \
-    --config pi05-self-improve/configs/round_2_real.yaml --experiment pi05_selfimprove
-
-# 2) Post-process: convert kept MCAP episodes (--dataset-source autonomous),
-#    VLM-judge final frames, write verdicts.jsonl; --interactive to confirm
-#    each verdict yourself.
-python pi05-self-improve/real_rollout.py post \
-    --config pi05-self-improve/configs/round_2_real.yaml --interactive
-
-# 3) Same refine stages as sim rounds (approved real episodes + teleop mix):
-python pi05-self-improve/run_round.py \
-    --config pi05-self-improve/configs/round_2_real.yaml \
-    --stages build,train \
-    --real-dataset-repo-id local/so101_pi05_round2_real
-# or stage by stage:
-python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_2_real.yaml \
-    --real-dataset-repo-id local/so101_pi05_round2_real
-python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_2_real.yaml
+# Judge converted real episodes and confirm each verdict
+python pi05-self-improve/judge_rollouts.py \
+  --round-dir pi05-self-improve/rounds/round_2 \
+  --dataset-repo-id local/so101_pi05_round2_real \
+  --interactive
 ```
 
-The GPU side serves the checkpoint to the robot with the existing
-`policy_server` (see `policy_server/README.md`); point
-`real_rollout session --policy-server-address` at it. The session wrapper
-prints the matching server command — note `zmq_server`'s default port
-(5555) differs from the client default (`127.0.0.1:8090`).
+Sim training data always stays gated by the scripted oracle. Real training
+data is gated by the VLM verdict plus human confirmation.
 
-## VLM judge
+### Implementation map
 
-`judge_rollouts.py` loads Qwen3-VL-2B locally (already in the HF cache) and
-asks for a strict-JSON verdict over the final overhead+wrist frames:
+| Loop stage | Reuses | Adds |
+|---|---|---|
+| Baseline BC | `lerobot-train`, `lerobot/pi05_base` | Round config and training wrapper |
+| Sim rollouts | Isaac Lab SO-101 task, `so101_rl` bootstrap, calibrated three-camera rig | VLA rollout client, chunked execution, NPZ episode recording |
+| Real rollouts | ROS 2 follower recording, async inference, policy server, episode keyboard, LeRobot conversion | Supervised-assist session and VLM judging |
+| Success judging | Isaac Lab `stable_placement` oracle | Qwen3-VL judge and human confirmation for real episodes |
+| Dataset | LeRobot v3.0 writer | Success filtering and teleop mixing |
+| Retraining | `lerobot-train` | Round-N fine-tuning from the selected checkpoint |
 
-```bash
-# Cross-check the sim oracle (agreement rate lands in round_meta.json)
-python pi05-self-improve/judge_rollouts.py --round-dir pi05-self-improve/rounds/round_1
-
-# Authoritative judging of converted real episodes
-python pi05-self-improve/judge_rollouts.py --round-dir pi05-self-improve/rounds/round_2 \
-    --dataset-repo-id local/so101_pi05_round2_real --interactive
-```
-
-Sim training data always stays gated by the scripted oracle (ground truth);
-the VLM verdicts are recorded alongside for analysis. Real training data is
-gated by VLM + human confirmation.
-
-## Tests
+### Tests
 
 ```bash
 cd pi05-self-improve
-python -m unittest discover -s tests            # fast, no lerobot needed
-../.pixi/envs/lerobot/bin/python -m unittest discover -s tests   # full
+python -m unittest discover -s tests
+../.pixi/envs/lerobot/bin/python -m unittest discover -s tests
 ```
 
-The suite covers the wire protocol round-trip, the joint map math (including
-a cross-check against `so101_rl.visual_contract`), the chunk-aggregation
-buffer, npz episode recording, verdict parsing, the training command
-assembly, and an end-to-end dataset build (npz + teleop → mixed LeRobot
-v3.0 dataset with real video encoding).
+The suite covers the wire protocol, joint mapping, action-chunk aggregation,
+NPZ episode recording, verdict parsing, training-command assembly, and the
+end-to-end mixed-dataset build.
 
-## Layout
+### Layout
 
-```
+```text
 pi05-self-improve/
-├── serve_policy.py      # GPU rollout policy server (pixi lerobot env)
-├── rollout_sim.py       # autonomous sim rollouts (boots Isaac Sim)
-├── run_round.py         # one-click round: rollout→build→train→eval
-├── eval_policy.py       # success-rate measurement for a checkpoint
-├── judge_rollouts.py    # Qwen3-VL judge (sim cross-check / real authoritative)
-├── build_round_dataset.py  # filter successes + mix teleop → LeRobot dataset
-├── train_bc.py          # round-0 baseline / round-N retrain wrapper
-├── real_rollout.py      # supervised-assist real-robot session + post
-├── configs/              # baseline, continuation, base-start, real-phase round YAMLs
+├── serve_policy.py          # GPU policy server for Isaac Sim rollouts
+├── rollout_sim.py           # autonomous Isaac Sim rollouts
+├── run_round.py             # sim round orchestration; shared build/train stages
+├── eval_policy.py           # sim success-rate measurement
+├── judge_rollouts.py        # Qwen3-VL judge
+├── build_round_dataset.py   # filter successes and mix teleop data
+├── train_bc.py              # baseline and round-N BC training wrapper
+├── real_rollout.py          # supervised real session and post-processing
+├── configs/                 # baseline, sim, base-start, and real round YAMLs
 ├── pi05_selfimprove/
-│   ├── contract.py       # joints, cameras, JointMap (dataset ↔ sim units)
-│   ├── config.py         # RoundConfig
-│   ├── wire.py           # stdlib-only client/server protocol
-│   ├── rollout_server.py # policy serving (batched predict_action_chunk)
-│   ├── sim_rollout.py    # rollout loop, recorder, oracle classification
-│   ├── judges/           # scripted oracle + Qwen3-VL judge
-│   ├── dataset_tools/    # success filtering + mixing
-│   ├── train_bc.py       # lerobot-train wrapper
-│   ├── real_rollout.py   # real-phase orchestration
-│   └── loop.py           # run_round orchestration (server lifecycle)
+│   ├── contract.py          # joint, camera, and sim/dataset mappings
+│   ├── config.py            # round configuration
+│   ├── wire.py              # sim rollout client/server protocol
+│   ├── rollout_server.py    # batched policy serving
+│   ├── sim_rollout.py       # rollout loop, recorder, and oracle classification
+│   ├── judges/              # scripted and Qwen3-VL judges
+│   ├── dataset_tools/       # filtering and dataset mixing
+│   ├── train_bc.py          # lerobot-train integration
+│   ├── real_rollout.py      # real-phase orchestration
+│   └── loop.py              # run_round orchestration and server lifecycle
 └── tests/
 ```
