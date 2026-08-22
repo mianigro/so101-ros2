@@ -46,20 +46,114 @@ source install/setup.bash
 pixi install --all
 ```
 
-### Configuration (TODO)
+### Configuration
 
-#### Configuration Files
-- `so101_bringup/config/setups/` — one YAML per canonical setup (`monomanual`, `monomanual_dual_overhead`, `bimanual`): arms (namespaces, USB ports, TF placement), logical camera contract, physical rig devices, and Isaac Sim geometry (`sim:` section). Controller parameters are generated from the setup at launch.
-- `so101_teleop/config/teleop.yaml` — relay rate, stale timeout, joint order
-- `episode_recorder/config/recorder.yaml` — MCAP storage and timing
-- `rosbag_to_lerobot/config/so101_30hz.yaml` / `bimanual_30hz.yaml` — per-setup LeRobot conversion schemas
+`setup` selects the canonical rig contract used by bringup, recording, Rerun,
+LeRobot conversion, and inference. Use the same setup throughout a workflow:
 
+- `monomanual`: one leader/follower pair, one wrist camera, and one overhead camera
+- `monomanual_dual_overhead`: one leader/follower pair, one wrist camera, and two overhead cameras
+- `bimanual`: two leader/follower pairs, two wrist cameras, and one shared overhead camera
 
-#### ROS2 Controls
-This is the configurable ROS2 contols
+The checked-in setup files work directly when their `/dev` names match your
+udev rules. For machine-specific changes, copy the selected setup and pass the
+absolute copy with `setup_config_file`:
 
-#### ROS2 Topics
-Here are the ROS2 topics
+```bash
+export SO101_REPO="$PWD"
+export SO101_SETUP=monomanual_dual_overhead
+export SO101_CONFIG_DIR="$HOME/.config/so101/setups"
+
+mkdir -p "$SO101_CONFIG_DIR"
+cp "$SO101_REPO/so101_bringup/config/setups/$SO101_SETUP.yaml" \
+  "$SO101_CONFIG_DIR/$SO101_SETUP.yaml"
+
+# Edit the copied YAML, then launch it
+ros2 launch so101_bringup teleop.launch.py \
+  setup:=$SO101_SETUP \
+  setup_config_file:="$SO101_CONFIG_DIR/$SO101_SETUP.yaml"
+```
+
+Keep `setup` equal to the file's canonical setup name and keep
+`schema_version: 1`. The usual machine-specific fields are arm `usb_port`,
+`tf_xyz`, and `tf_yaw_deg`; camera `device` or `gscam_config`; and, for the
+single-pair setups, `sim` camera geometry. `bimanual` has no `sim` section and
+is not supported by the Isaac Sim workflow.
+
+Arm namespaces and camera IDs, features, and topics form the dataset and policy
+contract. Leave them unchanged unless you intend to change that contract across
+the complete stack. If you do change it, also point conversion, inference, and
+the standalone visualization scripts at the directory containing the custom
+setup:
+
+```bash
+export SO101_SETUPS_DIR="$SO101_CONFIG_DIR"
+```
+
+#### Configuration files
+
+| File | Purpose | How it is selected |
+|------|---------|--------------------|
+| `so101_bringup/config/setups/<setup>.yaml` | Arm namespaces, USB ports, TF placement, logical camera contract, physical devices, and optional Isaac Sim geometry | `setup:=...`; use `setup_config_file:=/absolute/path.yaml` for an edited copy |
+| `so101_bringup/config/ros2_control/{leader,follower}_controllers.yaml` | Reusable controller types, six-joint order, position command interface, and 100 Hz controller-manager rate | Loaded automatically for every arm namespace |
+| `so101_teleop/config/teleop.yaml` | Leader/follower topic defaults, stale timeout, and joint order; command publication is fixed at 30 Hz | `teleop_params_file:=/absolute/path.yaml` on top-level teleop and recording launches |
+| `episode_recorder/config/recorder.yaml` | MCAP storage and episode freshness/timing settings | `params_file:=/absolute/path.yaml` on `episode_recorder/recorder.launch.py`; common output and task values are top-level launch arguments |
+| `rosbag_to_lerobot/config/so101_30hz.yaml` | Single-arm 30 Hz state/action conversion schema | `--config .../so101_30hz.yaml` with either single-arm `--setup` |
+| `rosbag_to_lerobot/config/bimanual_30hz.yaml` | Bimanual 30 Hz state/action conversion schema | `--config .../bimanual_30hz.yaml --setup bimanual` |
+
+Camera features in converted datasets always come from `--setup`, not from
+camera entries in the conversion YAML. See [Extra Configuration](#extra-configuration)
+for the complete launch-argument reference and common combinations.
+
+#### ROS 2 controls
+
+Real arms use `feetech_ros2_driver/FeetechHardwareInterface` over the setup's
+USB port. `hardware_type:=mock` replaces it with
+`mock_components/GenericSystem` for wiring tests without connected hardware.
+The setup YAML supplies arm namespaces and ports; controller parameters are
+static wildcard YAMLs reused in each namespace rather than generated from the
+setup.
+
+| Arm role | Controllers | Interfaces |
+|----------|-------------|------------|
+| Leader | `joint_state_broadcaster` | Position and velocity state only |
+| Follower | `joint_state_broadcaster`, `forward_controller` | Position and velocity state; absolute position command |
+
+The forward command is a `Float64MultiArray` containing six absolute joint
+positions in this order: `shoulder_pan`, `shoulder_lift`, `elbow_flex`,
+`wrist_flex`, `wrist_roll`, `gripper`. Teleop publishes it at the canonical
+30 Hz; each controller manager runs at 100 Hz.
+
+#### ROS 2 topics
+
+The setup expands the topic patterns below. `<arm>` means any leader or
+follower namespace in the selected setup, while `<camera>` means a logical
+camera namespace.
+
+| Setup | Arm namespaces | Camera namespaces |
+|-------|----------------|-------------------|
+| `monomanual` | `leader`, `follower` | wrist: `follower`; overhead 1: `static_camera_1` |
+| `monomanual_dual_overhead` | `leader`, `follower` | wrist: `follower`; overheads: `static_camera_1`, `static_camera_2` |
+| `bimanual` | `leader_left`, `leader_right`, `follower_left`, `follower_right` | wrists: `follower_left`, `follower_right`; overhead: `static_camera_1` |
+
+| Topic | Type | Purpose |
+|-------|------|---------|
+| `/<leader>/joint_states` | `sensor_msgs/msg/JointState` | Leader position and velocity state consumed by teleop |
+| `/<follower>/joint_states` | `sensor_msgs/msg/JointState` | Physical or mock follower state used by recording, visualization, and inference |
+| `/follower_sim/joint_states` | `sensor_msgs/msg/JointState` | Isaac Sim follower state for either single-arm setup |
+| `/<follower>/forward_controller/commands` | `std_msgs/msg/Float64MultiArray` | Absolute six-joint targets from teleop or inference; Isaac Sim consumes the single-arm `/follower/...` topic too |
+| `/<camera>/image_raw` | `sensor_msgs/msg/Image` | Raw physical or Isaac Sim image |
+| `/<camera>/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | JPEG stream recorded to MCAP and used by Rerun and optional compressed inference |
+| `/<camera>/camera/camera_info` | `sensor_msgs/msg/CameraInfo` | Physical `gscam` calibration metadata |
+| `/<camera>/camera_info` | `sensor_msgs/msg/CameraInfo` | Isaac Sim calibration metadata |
+| `/<arm>/robot_description` | `std_msgs/msg/String` | Namespaced URDF published for `ros2_control` and 3D visualization |
+| `/<arm>/dynamic_joint_states` | `control_msgs/msg/DynamicJointState` | Complete state-interface values from the joint-state broadcaster |
+| `/<arm>/controller_manager/activity` | `controller_manager_msgs/msg/ControllerManagerActivity` | Controller and hardware lifecycle changes |
+| `/tf` | `tf2_msgs/msg/TFMessage` | Dynamic arm transforms |
+| `/tf_static` | `tf2_msgs/msg/TFMessage` | Arm placement and other static transforms |
+| `/parameter_events` | `rcl_interfaces/msg/ParameterEvent` | Standard ROS 2 parameter changes |
+| `/rosout` | `rcl_interfaces/msg/Log` | Standard ROS 2 logs |
+
 
 ---
 
@@ -455,7 +549,7 @@ Rerun launches its own web viewer by default. Pass `--viewer native` to open the
 
 ---
 
-## Configuration
+## Extra Configuration
 
 ### Launch arguments
 

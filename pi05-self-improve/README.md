@@ -1,24 +1,17 @@
-# pi05-self-improve — π0.5-style self-improvement loop for SO-101
+# π0.5-style self-improvement loop for SO-101
 
-This project implements the π0.5 recipe — *knowledge-insulated self-improvement
-through autonomous data* — on the SO-101 stack: a flow-matching VLA baseline
-trained by behavioral cloning, which then **generates its own training data**
-(autonomous rollouts), **evaluates** it (scripted oracle in sim, VLM judge on
-the real robot), **filters out failures**, and **retrains on its own
-successes co-trained with human data** — round after round.
+This project implements the π0.5 recipe — *knowledge-insulated self-improvement through autonomous data* — on the SO-101 stack. A flow-matching VLA baseline trained by behavioral cloning, which then **generates its own training data** (autonomous rollouts), **evaluates** it (scripted oracle in sim, VLM judge on the real robot), **filters out failures**, and **retrains on its own successes co-trained with human data** — round after round.
 
 ```
-            ┌──────────────────────────────────────────────────┐
-            │                                                  │
-  human     ▼   generate            evaluate        refine    │
- teleop ─────► π (BC baseline) ──► rollouts ──► success filter ─┘
+            ┌────────────────────────────────────────────────────┐
+            │                                                    │
+  human     ▼   generate π          evaluate        refine       │
+ teleop ─────► (BC baseline) ────► rollouts ───► success filter ─┘
   data          round 0            (sim/real)   + teleop co-train
-                                   judge            │
-                                                    ▼
-                                              π round N (BC retrain)
+                                   judge              │
+                                                      ▼
+                                                π round N (BC retrain)
 ```
-
-Nothing here replaces the existing repo pieces — it orchestrates them:
 
 | Loop stage | Reuses | Adds |
 |---|---|---|
@@ -29,27 +22,23 @@ Nothing here replaces the existing repo pieces — it orchestrates them:
 | Dataset | LeRobot v3.0 writer (as in `rosbag_to_lerobot`) | success filtering + teleop mixing |
 | Retraining | `lerobot-train` | round-N fine-tune from the selected base or previous checkpoint |
 
-## Phase 1 — the baseline (mimicry and its limits)
-
-π0.5 is a ~3B VLA (PaliGemma backbone + Gemma action expert) trained with
-flow matching on human teleoperation: it predicts the action trajectory a
-human would take. Behavioral cloning alone suffers from covariate shift —
-one small error puts the robot into a state the human data never covered,
-and the policy has never learned to recover. The baseline is therefore only
-the *starting point* of the loop, not the deliverable.
+## Phase 1 — the baseline
+π0.5 is a ~3B VLA trained on human teleoperation. Behavioral cloning alone suffers from covariate shift — one small error puts the robot into a state the human data never covered, and the policy has never learned to recover. The baseline is therefore only the *starting point* of the loop, not the deliverable.
 
 Round 0 fine-tunes `lerobot/pi05_base` on the human teleop dataset:
 
 ```bash
+# Init
 pixi shell -e lerobot
-python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_0.yaml --dry-run  # inspect
+
+# Train behavioural clone dry run
+python pi05-self-improve/train_bc.py --config pi05-self-improve/configs/round_0.yaml --dry-run # inspect
+
+# Train behavioural clone
 python pi05-self-improve/run_round.py --config pi05-self-improve/configs/round_0.yaml --stages train,eval
 ```
 
-This is plain `lerobot-train --policy.path=lerobot/pi05_base` under the hood;
-round checkpoints stay local by default (`--policy.push_to_hub=false`).
-The round's checkpoint lands in `rounds/round_0/checkpoint/run/checkpoints/<step>/`
-and its sim success rate in `rounds/round_0/metrics_eval.json`.
+This is plain `lerobot-train --policy.path=lerobot/pi05_base` under the hood, checkpoints stay local by default (`--policy.push_to_hub=false`). The round's checkpoint lands in `rounds/round_0/checkpoint/run/checkpoints <step>/` and its sim success rate in `rounds/round_0/metrics_eval.json`.
 
 **VRAM note:** fine-tuning the 3B π0.5 needs a large GPU (≥40 GB with
 `freeze_vision_encoder: true`, the default). On smaller cards the entire loop
@@ -131,14 +120,12 @@ Every stage can also run alone:
 # Serve a checkpoint for rollouts/eval (pixi lerobot env, GPU)
 python pi05-self-improve/serve_policy.py --repo-id rounds/round_0/checkpoint/run/checkpoints/20000
 
-# Autonomous rollouts (boots Isaac Sim like the isaaclab/ entry points)
+# Autonomous rollouts in Isaac Sim
 pi05-self-improve/rollout_sim.py --config pi05-self-improve/configs/round_1.yaml \
     --rounds-root pi05-self-improve/rounds
 
 # Success-rate measurement only, no recording
 python pi05-self-improve/eval_policy.py --repo-id <checkpoint> --num-episodes 24
-# The raw (unfinetuned) base needs its OpenPI camera keys remapped:
-python pi05-self-improve/eval_policy.py --repo-id lerobot/pi05_base --image-key-map pi05_base
 
 # Filter successes + mix teleop + write the round dataset
 python pi05-self-improve/build_round_dataset.py --config pi05-self-improve/configs/round_1.yaml
