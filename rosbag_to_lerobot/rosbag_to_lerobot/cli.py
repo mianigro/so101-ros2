@@ -109,8 +109,9 @@ def main() -> None:
         help=(
             "Provenance of the recorded episodes, used to tag the dataset on the "
             "Hub when --push-hub is set. 'teleop' = human teleoperation "
-            "(imitation-learning, default); 'ppo' = autonomous rollouts of an "
-            "exported PPO policy (reinforcement-learning). Both use the same 30 Hz "
+            "(imitation-learning, default); 'autonomous' = "
+            "self-improvement rollouts of a VLA policy "
+            "(reinforcement-learning, self-improvement). Both use the same 30 Hz "
             "command contract."
         ),
     )

@@ -148,18 +148,19 @@ def test_setup_validation_accepts_bimanual_camera_set():
     validate_setup_topics("bimanual", topic_types, "episode_000001")
 
 
-def test_dataset_tags_distinguish_teleop_and_ppo_sources():
+def test_dataset_tags_distinguish_teleop_and_autonomous_sources():
     from rosbag_to_lerobot.converter import DATASET_TAGS_BY_SOURCE
 
     teleop = DATASET_TAGS_BY_SOURCE["teleop"]
     assert "teleoperation" in teleop
     assert "imitation-learning" in teleop
 
-    ppo = DATASET_TAGS_BY_SOURCE["ppo"]
-    assert "reinforcement-learning" in ppo
-    assert "teleoperation" not in ppo
-    assert "imitation-learning" not in ppo
-    assert teleop is not ppo
+    autonomous = DATASET_TAGS_BY_SOURCE["autonomous"]
+    assert "reinforcement-learning" in autonomous
+    assert "self-improvement" in autonomous
+    assert "teleoperation" not in autonomous
+    assert "imitation-learning" not in autonomous
+    assert teleop is not autonomous
 
 
 def test_timing_config_cannot_redefine_camera_membership(tmp_path):

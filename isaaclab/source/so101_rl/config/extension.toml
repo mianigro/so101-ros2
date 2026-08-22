@@ -1,9 +1,9 @@
 [package]
 version = "0.1.0"
-title = "SO-101 RL"
-description = "SO-101 visual-manipulation reinforcement-learning tasks"
+title = "SO-101 Sim"
+description = "SO-101 visual-manipulation simulation environments"
 category = "Simulation"
-keywords = ["isaaclab", "reinforcement-learning", "so101"]
+keywords = ["isaaclab", "simulation", "so101"]
 repository = ""
 authors = ["SO-101 ROS 2 contributors"]
 

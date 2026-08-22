@@ -10,10 +10,6 @@ gym.register(
         "env_cfg_entry_point": (
             f"{__name__}.object_in_cup_env_cfg:SO101ObjectInCupVisionFixedEnvCfg"
         ),
-        "rsl_rl_cfg_entry_point": (
-            f"{__name__}.agents.rsl_rl_vision_ppo_cfg:"
-            "SO101ObjectInCupVisionFixedPPORunnerCfg"
-        ),
     },
 )
 
@@ -24,10 +20,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": (
             f"{__name__}.object_in_cup_env_cfg:SO101ObjectInCupVisionEnvCfg"
-        ),
-        "rsl_rl_cfg_entry_point": (
-            f"{__name__}.agents.rsl_rl_vision_ppo_cfg:"
-            "SO101ObjectInCupVisionPPORunnerCfg"
         ),
     },
 )

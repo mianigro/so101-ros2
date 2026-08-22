@@ -7,12 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
-from isaaclab.managers import ObservationTermCfg
-from so101_rl.tasks.object_in_cup.mdp.critic_observations import (
-    CRITIC_STATE_COMPONENTS,
-    CRITIC_STATE_DIM,
-    critic_task_state,
-)
+from isaaclab.managers import ObservationTermCfg, RewardTermCfg
 from so101_rl.tasks.object_in_cup.mdp.geometry import (
     placement_mask,
     update_settle_counter,
@@ -20,85 +15,6 @@ from so101_rl.tasks.object_in_cup.mdp.geometry import (
 from so101_rl.tasks.object_in_cup.mdp.rewards import transport_object
 from so101_rl.tasks.object_in_cup.mdp.terminations import object_dropped
 from so101_rl.tasks.common.mdp.observations import camera_rgb
-
-
-class CriticObservationTests(unittest.TestCase):
-    def test_critic_task_state_layout(self):
-        joint_position = torch.arange(6, dtype=torch.float32).reshape(1, 6)
-        joint_velocity = joint_position + 10.0
-        last_action = joint_position + 20.0
-        object_position = torch.tensor([[31.0, 32.0, 33.0]])
-        gripper_position = torch.tensor([[1.0, 2.0, 3.0]])
-        cup_position = torch.tensor([[4.0, 5.0, 6.0]])
-        object_quaternion = torch.tensor([[0.1, 0.2, 0.3, 0.4]])
-        linear_velocity = torch.tensor([[41.0, 42.0, 43.0]])
-        angular_velocity = torch.tensor([[51.0, 52.0, 53.0]])
-
-        def tensor(value):
-            return SimpleNamespace(torch=value)
-
-        robot = SimpleNamespace(
-            data=SimpleNamespace(
-                joint_pos=tensor(joint_position),
-                joint_vel=tensor(joint_velocity),
-            )
-        )
-        object_asset = SimpleNamespace(
-            data=SimpleNamespace(
-                root_pos_w=tensor(object_position),
-                root_quat_w=tensor(object_quaternion),
-                root_lin_vel_w=tensor(linear_velocity),
-                root_ang_vel_w=tensor(angular_velocity),
-            )
-        )
-        env = SimpleNamespace(
-            scene={
-                "robot": robot,
-                "object": object_asset,
-                "cup": SimpleNamespace(
-                    data=SimpleNamespace(root_pos_w=tensor(cup_position))
-                ),
-                "ee_frame": SimpleNamespace(
-                    data=SimpleNamespace(
-                        target_pos_w=tensor(gripper_position[:, None, :])
-                    )
-                ),
-            },
-            action_manager=SimpleNamespace(action=last_action),
-        )
-
-        def entity(name):
-            return SimpleNamespace(name=name)
-
-        state = critic_task_state(
-            env,
-            robot_cfg=SimpleNamespace(name="robot", joint_ids=torch.arange(6)),
-            object_cfg=entity("object"),
-            cup_cfg=entity("cup"),
-            ee_frame_cfg=entity("ee_frame"),
-        )
-        expected_components = (
-            joint_position,
-            joint_velocity,
-            last_action,
-            object_position - gripper_position,
-            object_position - cup_position,
-            object_quaternion,
-            linear_velocity,
-            angular_velocity,
-        )
-
-        self.assertEqual(CRITIC_STATE_DIM, 34)
-        self.assertEqual(tuple(state.shape), (1, CRITIC_STATE_DIM))
-        offset = 0
-        for (name, width), expected in zip(
-            CRITIC_STATE_COMPONENTS, expected_components, strict=True
-        ):
-            self.assertTrue(
-                torch.equal(state[:, offset : offset + width], expected), name
-            )
-            offset += width
-        self.assertEqual(offset, CRITIC_STATE_DIM)
 
 
 class PlacementLogicTests(unittest.TestCase):
@@ -155,12 +71,20 @@ class PlacementLogicTests(unittest.TestCase):
             object_dropped(env, minimum_height=-0.02).tolist(), [True, False]
         )
 
-    def test_transport_starts_at_off_ground_threshold(self):
+    def test_transport_credit_scales_with_lift_height(self):
         object_positions = torch.tensor(
-            [[0.0, 0.0, 0.0134], [0.0, 0.0, 0.0135]]
+            [
+                [0.0, 0.0, 0.0134],
+                [0.0, 0.0, 0.0135],
+                [0.0, 0.0, 0.0285],
+                [0.0, 0.0, 0.0435],
+                [0.0, 0.0, 0.0125],
+            ],
+            dtype=torch.float32,
         )
         cup_positions = torch.zeros_like(object_positions)
         env = SimpleNamespace(
+            device="cpu",
             scene={
                 "object": SimpleNamespace(
                     data=SimpleNamespace(
@@ -174,10 +98,24 @@ class PlacementLogicTests(unittest.TestCase):
                 ),
             }
         )
+        term = transport_object(
+            RewardTermCfg(func=transport_object),
+            SimpleNamespace(num_envs=5, device="cpu"),
+        )
 
-        reward = transport_object(env, std=0.08, minimum_height=0.0135)
+        reward = term(
+            env, std=0.08, minimum_height=0.0135, lift_height=0.03
+        ).tolist()
 
-        self.assertEqual(reward.tolist(), [0.0, 1.0])
+        # The cube sits directly above the cup, so the proximity score is 1.0
+        # and the reward isolates the lift conditioning: nothing at or below
+        # the off-table gate (pushing the cube cannot farm the term), half
+        # credit halfway up the ramp, full credit at carry height.
+        self.assertEqual(reward[0], 0.0)
+        self.assertEqual(reward[1], 0.0)
+        self.assertAlmostEqual(reward[2], 0.5, places=5)
+        self.assertAlmostEqual(reward[3], 1.0, places=5)
+        self.assertEqual(reward[4], 0.0)
 
 
 class VisualLatencyResetTests(unittest.TestCase):

@@ -1,14 +1,6 @@
-# so101_teleop
+# SO-101 Teleop
 
-**Video:** https://www.youtube.com/watch?v=wLBEH63x_nA
-
-<p>
-  <a href="https://www.youtube.com/watch?v=wLBEH63x_nA">
-    <img src="../docs/assets/gifs/so101_teleop.gif" alt="SO-101 teleop demo" height="240" />
-  </a>
-</p>
-
-Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends six-joint absolute position commands to the follower at the canonical 30 Hz.
+Leader-to-follower teleoperation package for the SO-101 arm. It subscribes to the leader `/joint_states` topic and sends six-joint absolute position commands to the follower at the canonical 30 Hz. This can be recieved either by the follow robot arm or the Isaac Sim robot arm.
 
 ## Quick start
 

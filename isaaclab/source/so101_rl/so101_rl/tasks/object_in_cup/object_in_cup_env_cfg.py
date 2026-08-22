@@ -5,8 +5,6 @@ from __future__ import annotations
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
@@ -82,20 +80,7 @@ class ObjectInCupSceneCfg(SO101VisualSceneCfg):
 
 @configclass
 class ObjectInCupObservationsCfg(SO101VisualObservationsCfg):
-    """Deployable actor observations plus task-specific training state."""
-
-    @configclass
-    class CriticStateCfg(ObsGroup):
-        task_state = ObsTerm(
-            func=mdp.critic_task_state,
-            params={"robot_cfg": SO101_ROBOT_JOINT_CFG},
-        )
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    critic_state: CriticStateCfg = CriticStateCfg()
+    """Deployable actor observations for the object-in-cup scenario."""
 
 
 @configclass
@@ -115,9 +100,17 @@ class ObjectInCupRewardsCfg:
         func=mdp.approach_progress,
         weight=1.0,
         params={
-            # Usable tanh gradient out to roughly 16 cm from the cube; the
-            # score saturates at 1.0 at the nominal grasp point.
-            "position_scale": 0.08,
+            # Wide tanh so proximity pays across the whole workspace, not just
+            # the last few cm: with scale 0.08 the score at 15 cm was 0.05 and
+            # the policy plateaued out of reach of the cube. The score
+            # saturates at 1.0 at the nominal grasp point.
+            "position_scale": 0.15,
+            # Retrying after a miss pays: withdrawing past 6 cm lowers the
+            # episode-best to the 6 cm score, so a fresh approach earns the
+            # recovery delta again, halved per re-arm so cycling cannot
+            # out-earn genuine progress.
+            "retry_radius": 0.06,
+            "retry_discount": 0.5,
         },
     )
     lift_progress = RewTerm(
@@ -134,6 +127,10 @@ class ObjectInCupRewardsCfg:
         params={
             "std": 0.08,
             "minimum_height": OBJECT_REST_HEIGHT + OBJECT_LIFT_CLEARANCE,
+            # Transport credit scales with lift height: zero at the off-table
+            # gate, full once the cube is ~3 cm above it (just over the cup
+            # rim), so pushing the cube toward the cup earns nothing.
+            "lift_height": 0.03,
             # Full credit for ~0.5 s after lift, then decay to 0.2 over ~2 s so
             # hovering near the cup cannot be farmed indefinitely.
             "grace_steps": 30,
@@ -298,12 +295,8 @@ class SO101ObjectInCupVisionEnvCfg(SO101VisualEnvCfg):
         super().__post_init__()
 
 
-@configclass
-class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
-    """Nominal fixed-pose environment used to prove visual learnability first."""
-
-    def __post_init__(self):
-        super().__post_init__()
+    def _apply_task_fixed_mode(self) -> None:
+        """Disable every randomization source for the fixed-pose variant."""
         self._apply_fixed_mode()
         self.events.object_material = None
         self.events.cup_material = None
@@ -317,3 +310,12 @@ class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
             cup_xy_range_full=(0.0, 0.0),
             object_yaw_range_full=(0.0, 0.0),
         )
+
+
+@configclass
+class SO101ObjectInCupVisionFixedEnvCfg(SO101ObjectInCupVisionEnvCfg):
+    """Nominal fixed-pose environment used to prove visual learnability first."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._apply_task_fixed_mode()

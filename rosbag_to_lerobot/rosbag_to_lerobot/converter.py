@@ -70,9 +70,10 @@ logger = logging.getLogger(__name__)
 POS_KEYS = {"observation.state", "action"}
 REFERENCE_RATE_RELATIVE_TOLERANCE = 0.10
 
-# Provenance tags published with the dataset on the HuggingFace Hub. Both human
-# teleop and PPO rollouts are recorded on the same 30 Hz command topic, so the
-# source is chosen per-run (see --dataset-source), not in the timing YAML.
+# Provenance tags published with the dataset on the HuggingFace Hub. Human
+# teleop and autonomous VLA rollouts are recorded on the same 30 Hz command
+# topic, so the source is chosen per-run (see --dataset-source), not in the
+# timing YAML.
 DEFAULT_DATASET_SOURCE = "teleop"
 DATASET_TAGS_BY_SOURCE: Dict[str, List[str]] = {
     "teleop": [
@@ -82,10 +83,11 @@ DATASET_TAGS_BY_SOURCE: Dict[str, List[str]] = {
         "imitation-learning",
         "so101-ros-physical-ai",
     ],
-    "ppo": [
+    "autonomous": [
         "so101",
         "ros2",
         "reinforcement-learning",
+        "self-improvement",
         "so101-ros-physical-ai",
     ],
 }
@@ -412,8 +414,9 @@ def convert_all_bags(
         collect_p95 (bool, optional): If *True*, collects additional data during episode sync.
         overwrite (bool, optional): If *True*, delete any existing dataset directory before writing
         dataset_source (str, optional): Provenance used to tag the dataset on the Hub.
-            One of "teleop" (human teleoperation / imitation-learning, default) or
-            "ppo" (autonomous rollouts of an exported PPO policy / reinforcement-learning).
+            One of "teleop" (human teleoperation / imitation-learning, default)
+            or "autonomous" (self-improvement rollouts of a VLA policy /
+            reinforcement-learning, self-improvement).
             Only affects ``push_to_hub``.
     """
     if dataset_source not in DATASET_TAGS_BY_SOURCE:
