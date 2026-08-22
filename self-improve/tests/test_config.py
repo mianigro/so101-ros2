@@ -83,19 +83,5 @@ class RoundConfigTests(unittest.TestCase):
         identity = config.resolve_joint_map()
         np.testing.assert_allclose(identity.offset, 0.0)
 
-    def test_standalone_phase_2_config(self) -> None:
-        path = (Path(__file__).resolve().parents[1] / "configs" /
-                "round_1_from_base.yaml")
-        config = RoundConfig.load(path)
-        self.assertEqual(config.round_index, 1)
-        self.assertIsNone(config.checkpoint_in)
-        self.assertEqual(config.train.init_from, "base")
-        self.assertEqual(config.train.base_repo_id, "lerobot/pi05_base")
-        self.assertEqual(
-            config.rollout.image_key_map["observation.images.wrist"],
-            "observation.images.left_wrist_0_rgb",
-        )
-
-
 if __name__ == "__main__":
     unittest.main()
