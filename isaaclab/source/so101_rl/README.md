@@ -1,7 +1,7 @@
 # so101-rl
 
 External Isaac Lab package with the SO-101 visual-manipulation task
-environments consumed by [`pi05-self-improve/`](../../../pi05-self-improve/)
+environments consumed by [`self-improve/`](../../../self-improve/)
 for autonomous VLA rollouts and self-improvement data collection. It contains
 no policy training code: the task's termination terms double as the scripted
 success oracle for recorded rollouts.

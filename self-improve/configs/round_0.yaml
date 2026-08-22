@@ -1,0 +1,35 @@
+# Round 0 — Phase 1 baseline: BC fine-tune of lerobot/pi05_base on the
+# human teleop dataset (pure mimicry, no self-generated data yet).
+# Run: pixi shell -e lerobot
+#      python self-improve/run_round.py --config self-improve/configs/round_0.yaml --stages train,eval
+round_index: 0
+phase: sim
+checkpoint_in: null
+rollout:
+  task_id: SO101-Object-In-Cup-Vision-Fixed-v0
+  task_prompt: pick up the cube and place it in the cup
+  num_envs: 8
+  num_episodes: 48
+  max_episode_steps: 450
+  actions_per_chunk: 16
+  aggregate: weighted_average
+  chunk_size_threshold: 0.3
+  seed: 0
+judge:
+  name: scripted
+  min_successes: 8
+dataset:
+  repo_prefix: local/so101_self_improve_round
+  teleop_repo_ids:
+    - algorithmtheworld/so101-pick-and-place
+train:
+  steps: 20000
+  batch_size: 8
+  save_steps: 5000
+  policy_type: pi05
+  init_from: base
+  base_repo_id: lerobot/pi05_base
+  freeze_vision_encoder: true
+  num_workers: 4
+eval:
+  num_episodes: 24

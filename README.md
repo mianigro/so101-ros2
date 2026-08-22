@@ -6,10 +6,16 @@
 A ROS2 combined with VLA stack for the SO-101 robot arm in a leader/follower configuration using `ros2_control` and LeRobot. This covers leader-follower [teleop](#teleop), [episode collecting](#data-collection), [train](#training), [LeRobot dataset conversion](#lerobot-dataset-conversion) and [policy inference](#inference).
 
 ### Isaac Lab and Isaac Sim
-Isaac Sim and Isaac Lab provide the simulated SO-101 workcell used by both Isaac Sim [teleop](#teleop) data collection and [π0.5 self-improvement`](pi05-self-improve/README.md) to gather self-improvement data, in this case for π0.5 VLA. 
+Isaac Sim and Isaac Lab provide the simulated SO-101 workcell used by both
+Isaac Sim [teleop](#teleop) data collection and
+[VLA self-improvement](self-improve/README.md). The workflow supports the
+configured VLA, with π0.5 as the default.
 
 ### Self-Improvement
-This provides a method to do [self improvement](#policy-self-improvement) by allowing inference to create datasets both in real life and in Isaac Sim, including data labelling using a small VLM. This is setup for [π0.5 self-improvement](pi05-self-improve/README.md)
+This provides a method to do [self improvement](#policy-self-improvement) by
+allowing inference to create datasets both in real life and in Isaac Sim,
+including data labelling using a small VLM. See the
+[VLA self-improvement guide](self-improve/README.md).
 
 ---
 

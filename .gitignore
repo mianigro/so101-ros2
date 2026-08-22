@@ -48,5 +48,5 @@ Thumbs.db
 logs/
 isaaclab/.venv/
 
-# --- pi05-self-improve round artifacts (raw rollouts, datasets, checkpoints) ---
-pi05-self-improve/rounds/
+# --- self-improve round artifacts (raw rollouts, datasets, checkpoints) ---
+self-improve/rounds/

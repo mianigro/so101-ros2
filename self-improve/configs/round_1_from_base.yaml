@@ -1,0 +1,42 @@
+# Round 1 — standalone Phase 2 self-improvement directly from
+# lerobot/pi05_base. This skips the Phase 1 BC checkpoint but still builds a
+# mixed dataset from successful autonomous rollouts plus human teleop data.
+# Run: pixi shell -e lerobot
+#      python self-improve/run_round.py --config self-improve/configs/round_1_from_base.yaml
+round_index: 1
+phase: sim
+checkpoint_in: null
+rollout:
+  task_id: SO101-Object-In-Cup-Vision-Fixed-v0
+  task_prompt: pick up the cube and place it in the cup
+  num_envs: 8
+  num_episodes: 48
+  max_episode_steps: 450
+  actions_per_chunk: 16
+  aggregate: weighted_average
+  chunk_size_threshold: 0.3
+  seed: 1
+  # SO-101 dataset/client keys -> lerobot/pi05_base OpenPI keys. The same map
+  # is passed to lerobot-train so the resulting checkpoint keeps this schema.
+  image_key_map:
+    observation.images.wrist: observation.images.left_wrist_0_rgb
+    observation.images.overhead_1: observation.images.base_0_rgb
+    observation.images.overhead_2: observation.images.right_wrist_0_rgb
+judge:
+  name: scripted
+  min_successes: 8
+dataset:
+  repo_prefix: local/so101_self_improve_round
+  teleop_repo_ids:
+    - algorithmtheworld/so101-pick-and-place
+train:
+  steps: 8000
+  batch_size: 8
+  save_steps: 4000
+  policy_type: pi05
+  init_from: base
+  base_repo_id: lerobot/pi05_base
+  freeze_vision_encoder: true
+  num_workers: 4
+eval:
+  num_episodes: 24

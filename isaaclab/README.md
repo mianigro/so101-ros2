@@ -14,9 +14,11 @@ The fixed task uses nominal geometry, appearance, physics, deterministic resets,
 ## How teleop consumes the environments
 Teleoperation allows for a physical leader to drive a simulationed follower, this can be used for testing and teleoperation data collection in the  sim.
 
-## How pi05-self-improve consumes the environments
+## How self-improve consumes the environments
 
-The pi05 self improve bootstraps Isaac Sim through `so101_rl.runtime`, then builds a task with `parse_env_cfg`/`gym.make` and overrides two things on top of the registered configuration:
+The VLA self-improvement workflow bootstraps Isaac Sim through
+`so101_rl.runtime`, then builds a task with `parse_env_cfg`/`gym.make` and
+overrides two things on top of the registered configuration:
 - cameras render at the dataset resolution (480x640) instead of the default
   120x160 policy resolution;
 - the delta-action term is replaced by an absolute `JointPositionAction` in
@@ -120,7 +122,7 @@ arm target delta      0.033333 rad * action
 gripper target delta  0.10 rad * action
 ```
 
-`pi05-self-improve` replaces this term with absolute joint-position commands
+`self-improve` replaces this term with absolute joint-position commands
 for VLA rollouts; the delta contract above documents the registered default.
 
 The actor observation surface (also overridden/ignored by VLA rollouts, which

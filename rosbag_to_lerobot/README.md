@@ -120,7 +120,7 @@ The Hub dataset is tagged from `--dataset-source` so its provenance is accurate:
 | `--dataset-source` | Recorded from | Hub tags |
 |--------------------|---------------|----------|
 | `teleop` (default) | Human teleoperation | `teleoperation`, `imitation-learning` |
-| `autonomous` | Self-improvement rollouts of a VLA policy (see [`pi05-self-improve/`](../pi05-self-improve/)) | `reinforcement-learning`, `self-improvement` |
+| `autonomous` | Self-improvement rollouts of a VLA policy (see [`self-improve/`](../self-improve/)) | `reinforcement-learning`, `self-improvement` |
 
 Both sources share the same 30 Hz command contract; only the provenance tag set differs. When pushing autonomous VLA rollouts, pass `--dataset-source autonomous` so the dataset is not mislabeled as teleoperation.
 
