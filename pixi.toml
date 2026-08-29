@@ -42,12 +42,24 @@ lerobot = { version = "==0.6.1", extras = ["async", "dataset", "dataset-viz", "p
 imageio = ">=2.34,<3"
 msgpack = ">=1,<2"
 pyzmq = ">=26.2.1,<28"
+# so101_icl: manual LoRA injection on the frozen pi05 base (lerobot's own
+# peft extra is not elected; we call peft directly, see so101_icl/lora.py)
+peft = ">=0.18,<1.0"
+# training dashboards (so101_icl/train_loop.py writes event files)
+tensorboard = ">=2.14,<3"
 
 [feature.lerobot.tasks]
 lerobot-info = "lerobot-info"
 convert = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m rosbag_to_lerobot.cli \"$@\"' --" }
 infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference:${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.lerobot_inference_node \"$@\"' --" }
 async_infer = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_inference:${PIXI_PROJECT_ROOT}/rosbag_to_lerobot${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_inference.async_inference_node \"$@\"' --" }
+# so101_icl: demo-conditioned pi05 policy server (registers "pi05_icl" then
+# runs the standard policy_server ZMQ main; demo side-channel on ICL_DEMO_PORT)
+icl_server = { cmd = "bash -c 'export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_icl:${PIXI_PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}\"; exec python so101_icl/serve_icl.py \"$@\"' --" }
+# so101_icl data tooling (the python package lives under so101_icl/so101_icl,
+# hence the PYTHONPATH; always run from the repo root so the config-relative
+# registry paths resolve)
+icl_data = { cmd = "bash -c 'export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_icl${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_icl.data \"$@\"' --" }
 
 
 # --- Environments ---

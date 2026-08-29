@@ -1,0 +1,34 @@
+# Stage 2 — fine-tune with ICL on own SO-101 data (ICL §7.2).
+# Gated on the curation target (>=20 tasks x >=20 demos); teleop collection
+# campaign runs in parallel with stage 1 (ICL §6.1).
+base_checkpoint: lerobot/pi05_base          # unchanged — the base is never rewritten
+dtype: bfloat16
+output_dir: so101_icl/runs/icl_finetune_so101_v1
+init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/final
+dataset:
+  repo_ids: [local/so101_teleop_v1, local/so101_sim_round2]   # rosbag_to_lerobot + self-improve exports (to be curated)
+  root: ~/.cache/huggingface/lerobot
+  grouping_key: task
+  camera_rename: pi05_base       # wrist->left_wrist_0_rgb, overhead_1->base_0_rgb, overhead_2->right_wrist_0_rgb
+  demo_camera: observation.images.base_0_rgb
+  task_registry: so101_icl/configs/task_registry_so101.json
+  holdout_tasks: {eval: 3, test: 3}
+  camera_keys: [observation.images.wrist, observation.images.overhead_1, observation.images.overhead_2]
+demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
+lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
+train:
+  steps: 2000
+  batch_per_gpu: 8
+  lr: 2.5e-5                     # RICL finetune analog
+  warmup: 100
+  grad_clip: 1.0
+  ckpt_every: 500
+  seed: 43
+  num_workers: 8
+  curriculum: [[100000000, [1, 2, 3, 4]]]   # no curriculum in stage 2
+  demo_zeroed_every: 100
+  val_every: 250
+eval:
+  sim_trials: 20
+  real_trials: 10
+  conditions: [bare_prompt, prompt_enriched, full_icl]

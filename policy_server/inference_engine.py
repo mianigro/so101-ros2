@@ -29,7 +29,10 @@ import torch
 # Policy types this server runs through the async chunking loop. Mirrors
 # lerobot.async_inference.constants.SUPPORTED_POLICIES and adds "xvla",
 # which implements the same predict_action_chunk / select_action / reset
-# contract (see modeling_xvla.py).
+# contract (see modeling_xvla.py). "pi05_icl" is registered at runtime by
+# so101_icl (serve_icl.py imports so101_icl.registration before starting
+# the server); demo keyframes arrive via the side channel, not observation
+# keys, so the feature validation below is unchanged.
 SUPPORTED_POLICIES = [
     "act",
     "smolvla",
@@ -40,6 +43,7 @@ SUPPORTED_POLICIES = [
     "pi05",
     "groot",
     "xvla",
+    "pi05_icl",
 ]
 from lerobot.async_inference.helpers import (
     FPSTracker,

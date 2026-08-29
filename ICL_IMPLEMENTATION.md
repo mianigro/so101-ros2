@@ -321,13 +321,26 @@ disk.
   `exterior_2_left → right_wrist_0_rgb` (the second external occupies the
   right-wrist slot — the same pattern our SO-101 data already uses for
   `overhead_2`).
-- **Subset download strategy**: full set is ~810 GB; v3.0 layout is chunked
-  at 1,000 episodes/chunk (~8.5 GB each incl. video). 10 chunks (~85 GB) recommended
-  for v1**. `data.py` CLI gains a `download-subset` subcommand (hf_hub include patterns over
-  `data/chunk-XXX/`, `videos/*/chunk-XXX/`, plus global `meta/`).
+- **Subset download strategy**: full set is 809.9 GB (980 files) — the
+  actual v3.0 repo is **file-sharded inside a single `chunk-000`** (156
+  `data/chunk-000/file-XXX.parquet`, 812
+  `videos/<cam>/chunk-000/file-XXX.mp4` over 3 cameras, plus
+  `meta/episodes/chunk-000/file-000..006.parquet`); there are no chunk-001+
+  directories, so chunk filtering is meaningless. The unit is the
+  **episode**: `meta/episodes` parquet maps every episode to its data shard
+  (`data/chunk_index` + `data/file_index`) and per-camera video shards
+  (`videos/<cam>/chunk_index` + `file_index`). `data.py`'s `download-subset
+  --start E0 --end E1` subcommand fetches `meta/` first, resolves episodes
+  `E0–E1` to the exact deduped shard file list, shows the exact GiB (via
+  `list_repo_tree` sizes) before downloading, and passes that list as
+  `snapshot_download(allow_patterns=...)`. Shards are size-rolled
+  (~100 MB data / ~1 GB video), so a range boundary pulls a few neighbouring
+  episodes along — unavoidable in the published layout. Budget guideline:
+  ~8.5 MB/episode → ~85 GB holds ~10,000 episodes; size the range to free
+  disk (the full download needs ~810 GB).
 - **Registry must follow the disk**: DROID's global meta covers all 95k
-  episodes, so `task_registry.json` is built by scanning *downloaded* chunk
-  files, never from global `episodes.jsonl`.
+  episodes, so `task_registry.json` is built by scanning *downloaded* shard
+  files, never from global meta.
 - **Stats check**: pi05 normalization is quantile (q01/q99); if the
   downloaded subset ships only min/max/mean/std, recompute with
   `lerobot-edit-dataset --operation.type recompute_stats` before training.

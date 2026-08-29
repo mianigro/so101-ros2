@@ -1,0 +1,34 @@
+# Stage 1 — ICL pre-training on the DROID subset (ICL §7.1).
+# Requires the droid_1.0.1 subset download (DEFERRED — run
+# `python -m so101_icl.data download-subset --start 0 --end 9 --yes`
+# and `build-registry --droid --grouping-key task_category` first).
+base_checkpoint: lerobot/pi05_base
+dtype: bfloat16
+output_dir: so101_icl/runs/icl_pretrain_droid_v1
+dataset:
+  repo_id: lerobot/droid_1.0.1
+  root: ~/.cache/huggingface/lerobot
+  chunks: [0, 9]                 # v3.0 chunk dirs actually downloaded (~10k episodes)
+  grouping_key: task_category    # 86 groups; NOT the 49,630 raw task strings
+  camera_rename: droid           # exterior_1->base_0_rgb, wrist->left_wrist_0_rgb, exterior_2->right_wrist_0_rgb
+  demo_camera: observation.images.base_0_rgb
+  task_registry: so101_icl/configs/task_registry_droid.json
+  holdout_groups: {eval: 3, test: 3}
+  recompute_stats: auto          # recompute quantiles if the subset ships min/max only
+demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
+lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
+train:
+  steps: 10000
+  batch_per_gpu: 8
+  lr: 1.0e-4
+  warmup: 500
+  grad_clip: 1.0
+  ckpt_every: 2000
+  seed: 42
+  num_workers: 8
+  curriculum: [[1000, [1]], [3000, [1, 2]], [100000000, [1, 2, 3, 4]]]
+  demo_zeroed_every: 200
+  val_every: 1000
+eval:
+  offline_trials: 500            # query episodes per held-out group
+  ablations: {k: [1, 2, 4], frames: [4, 6, 8], traj: [on, off]}
