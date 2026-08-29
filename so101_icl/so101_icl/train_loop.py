@@ -223,16 +223,6 @@ def run_training(
             from torch.utils.tensorboard import SummaryWriter
 
             writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"), flush_secs=10)
-            writer.add_hparams(
-                {
-                    "lr": settings.lr,
-                    "steps": settings.steps,
-                    "batch_per_gpu": settings.batch_per_gpu,
-                    "warmup": settings.warmup,
-                    "seed": settings.seed,
-                },
-                {"hparam/placeholder": 0.0},
-            )
         except ImportError:
             logger.warning("tensorboard not installed; falling back to metrics.jsonl only")
 
@@ -252,6 +242,7 @@ def run_training(
 
     metrics_file = output_dir / "metrics.jsonl"
     step = 0
+    micro_step = 0
     best_val = float("inf")
     start = time.time()
     data_iter = None
@@ -283,7 +274,8 @@ def run_training(
         loss, _ = policy.forward(batch)
         accelerator.backward(loss / settings.grad_accum)
 
-        if (step + 1) % settings.grad_accum != 0:
+        micro_step += 1
+        if micro_step % settings.grad_accum != 0:
             continue
         torch.nn.utils.clip_grad_norm_(
             [p for p in policy.parameters() if p.requires_grad], settings.grad_clip
@@ -317,7 +309,7 @@ def run_training(
                 save_icl_adapter(
                     base_policy, output_dir / "best", init_adapter_path=init_adapter_path
                 )
-        logger.info("step %d/%d %s", step, settings.steps, record)
+        print(f"step {step}/{settings.steps} {record}", flush=True)
         if writer is not None:
             for key, value in record.items():
                 if isinstance(value, (int, float)):
@@ -333,6 +325,18 @@ def run_training(
         base_policy, output_dir / "final", init_adapter_path=init_adapter_path
     )
     if writer is not None:
+        if is_main:
+            writer.add_hparams(
+                {
+                    "lr": settings.lr,
+                    "steps": settings.steps,
+                    "batch_per_gpu": settings.batch_per_gpu,
+                    "grad_accum": settings.grad_accum,
+                    "warmup": settings.warmup,
+                    "seed": settings.seed,
+                },
+                {"hparam/final_loss": record["loss"]},
+            )
         writer.close()
     if is_main:
         logger.info("training done in %.0f s; adapter at %s", time.time() - start, final)

@@ -10,7 +10,7 @@ dataset:
   root: ~/.cache/huggingface/lerobot   # whatever download-subset fetched; registry follows the disk
   grouping_key: task_category    # 86 groups
   camera_rename: droid           # exterior_1->base_0_rgb, wrist->left_wrist_0_rgb, exterior_2->right_wrist_0_rgb
-  demo_camera: observation.images.base_0_rgb
+  demo_camera: observation.images.left_wrist_0_rgb   # droid "wrist" cam (see camera_rename)
   task_registry: so101_icl/configs/task_registry_droid.json
   holdout_groups: {eval: 3, test: 3}
   recompute_stats: auto          # recompute quantiles if the subset ships min/max only
