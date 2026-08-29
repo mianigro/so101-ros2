@@ -20,8 +20,16 @@ demo-zeroed (gates forced 0) and bare-prompt — plus k/F ablations; markdown
 report. The M2 gate reads directly off this table: median
 demo-conditioned loss <= 0.9x demo-zeroed AND <= bare-prompt.
 
-``sim``/``real`` (stage 2): thin drivers into the self-improve rollout
-machinery; the actual campaigns run when the stage-2 data exists.
+``sim`` (stage 2, M3): re-executes ``so101_icl/eval_sim_campaign.py``
+(Isaac Sim bootstraps itself), which runs the per-condition campaign
+against ``so101_icl/serve_rollout_icl.py`` — success-rate table, chunk
+latency, M3 gate line.
+
+``real`` (stage 2, M4): supervised per-condition campaign on the robot —
+pushes/clears the demo pack per condition, drives the proven
+``self_improve.real_rollout`` session stack, optionally runs the
+post-session judge, and writes the M4 report (success trend + chunk
+latency via the policy-server probe).
 """
 
 from __future__ import annotations
@@ -114,11 +122,9 @@ def run_offline(
                                  "demo_camera", "observation.images.base_0_rgb"))
     reg = load_task_registry(registry_path)
     primary = reg["datasets"][0]
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from .data import open_local_dataset
 
-    primary_ds = LeRobotDataset(
-        primary["repo_id"], root=str(Path(primary["root"]).expanduser() / primary["repo_id"])
-    )
+    primary_ds = open_local_dataset(primary["repo_id"], primary["root"])
     preprocessor, _ = build_stage_preprocessor(policy.config, primary_ds.meta.stats)
 
     rows = []
@@ -160,6 +166,165 @@ def run_offline(
     return "\n".join(lines)
 
 
+def run_sim(args) -> int:
+    """Delegate to the standalone campaign script (it re-execs into Isaac Sim)."""
+    import os
+    import sys
+
+    script = Path(__file__).resolve().parents[1] / "eval_sim_campaign.py"
+    if not script.is_file():
+        raise SystemExit(f"campaign script missing: {script}")
+    fwd = [
+        "--registry", args.registry, "--trials", str(args.trials),
+        "--conditions", args.conditions,
+    ]
+    for flag, value in (
+        ("--group", getattr(args, "group", None)),
+        ("--stats", getattr(args, "stats", None)),
+        ("--k", getattr(args, "k", None)),
+        ("--frames-per-demo", getattr(args, "frames_per_demo", None)),
+        ("--demo-host", args.demo_host),
+        ("--demo-port", args.demo_port),
+        ("--output", args.output),
+        ("--config", getattr(args, "config", None)),
+    ):
+        if value is not None:
+            fwd += [flag, str(value)]
+    if args.pass_through:
+        fwd += args.pass_through  # AppLauncher flags (--headless, --viz kit, ...)
+    logger.info("re-exec: python %s %s", script, " ".join(fwd))
+    os.execv(sys.executable, [sys.executable, str(script), *fwd])
+    return 0  # unreachable
+
+
+def run_real(args) -> int:
+    """Per-condition supervised campaign on the robot (ICL §8 M4).
+
+    For each condition: push/clear the demo pack, run the proven
+    ``self_improve.real_rollout`` session stack (follower + cameras +
+    async ICL inference + human supervisor r/s/d), optionally convert and
+    judge afterwards. The operator ends a condition's session with Ctrl-C.
+    """
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    sys_path_setup = [str(repo_root / "self-improve"), str(repo_root)]
+    import json
+    import sys
+
+    for p in sys_path_setup:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    from self_improve.config import RoundConfig
+    from self_improve.real_rollout import run_post, run_session
+
+    from .conditions import DemoPackBuilder, apply_condition
+    from .demo_transport import DemoTransportClient
+    from .latency import LatencyRecorder, latency_gate, probe_policy_server
+
+    config = RoundConfig.load(args.round_config) if args.round_config else RoundConfig()
+    config.train.policy_type = "pi05_icl"
+    if args.repo_id:
+        config.train.init_from = "base"
+        config.train.base_repo_id = args.repo_id
+    if args.task_prompt:
+        config.rollout.task_prompt = args.task_prompt
+
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    builder = None
+    if "full_icl" in conditions:
+        builder = DemoPackBuilder(
+            args.registry, k=args.k, frames_per_demo=args.frames_per_demo,
+            k_max=4, stats_path=args.stats,
+        )
+    group = builder.resolve_group(args.group) if builder is not None else None
+
+    verdicts: dict[str, dict] = {}
+    latencies: dict[str, LatencyRecorder] = {}
+    for condition in conditions:
+        print(f"\n=== condition: {condition} ({args.trials} episodes, supervisor r/s/d) ===")
+        transport = DemoTransportClient(args.demo_host, args.demo_port)
+        reply = apply_condition(condition, transport, builder, group=group)
+        print(f"demo side channel: {reply}")
+        if not args.dry_run:
+            run_session(
+                config, setup=args.setup, experiment=f"icl_{condition}",
+                policy_server_address=args.server_address, dry_run=False,
+            )
+            if args.post:
+                run_post(
+                    config, Path(args.rounds_root),
+                    input_dir=Path(args.input_dir),
+                    repo_id=f"{args.repo_id or 'so101_icl_eval'}/{condition}",
+                    vlm_model_id=args.vlm_model_id,
+                    interactive=False, dry_run=False,
+                )
+                verdicts_path = config.round_dir(Path(args.rounds_root)) / "verdicts.jsonl"
+                if verdicts_path.exists():
+                    entries = [json.loads(l) for l in verdicts_path.read_text().splitlines() if l.strip()]
+                    verdicts[condition] = {
+                        "episodes": len(entries),
+                        "approved": sum(1 for e in entries if e.get("approved")),
+                    }
+        transport.clear()
+
+    if not args.skip_probe and not args.dry_run:
+        print("\n=== chunk latency probe (per condition) ===")
+        for condition in conditions:
+            transport = DemoTransportClient(args.demo_host, args.demo_port)
+            apply_condition(condition, transport, builder, group=group)
+            try:
+                latencies[condition] = probe_policy_server(
+                    args.server_address,
+                    repo_id=args.repo_id or config.train.base_repo_id,
+                    n=args.probe_n,
+                    task=config.rollout.task_prompt,
+                )
+                print(latencies[condition].summary_line())
+            except RuntimeError as e:
+                print(f"probe failed for {condition}: {e}")
+            transport.clear()
+
+    report = _real_report(conditions, verdicts, latencies, args)
+    print(report)
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(report + "\n")
+    return 0
+
+
+def _real_report(conditions: list[str], verdicts: dict, latencies: dict, args) -> str:
+    lines = ["# M4 real-robot campaign", ""]
+    if verdicts:
+        lines += [
+            "| condition | episodes | approved | approval rate |",
+            "|---|---|---|---|",
+        ]
+        for condition in conditions:
+            v = verdicts.get(condition)
+            if v is None:
+                lines.append(f"| {condition} | - | - | - |")
+                continue
+            rate = v["approved"] / v["episodes"] if v["episodes"] else 0.0
+            lines.append(f"| {condition} | {v['episodes']} | {v['approved']} | {rate:.1%} |")
+        lines.append("")
+    else:
+        lines.append("_no judge verdicts recorded (run with --post for success counts)_")
+        lines.append("")
+    for condition in conditions:
+        lat = latencies.get(condition)
+        if lat is not None:
+            lines.append(lat.summary_line())
+    if latencies:
+        lines.append("")
+        lines.append(latency_gate(latencies))
+    lines.append("")
+    lines.append(f"M4 gate: full_icl >= prompt_enriched >= bare_prompt success trend "
+                 f"over >= {args.trials} trials/condition, p95 within +20%.")
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -178,10 +343,57 @@ def main(argv=None) -> int:
                    help="k ablations (default: eval.ablations.k from the stage YAML, else 1 2 4)")
     p.add_argument("--output", default=None, help="write the markdown report here")
 
-    p = sub.add_parser("sim", help="stage-2 sim rollout campaign (deferred)")
-    p.add_argument("--trials", type=int, default=20)
-    p = sub.add_parser("real", help="stage-2 real-robot campaign (deferred)")
-    p.add_argument("--trials", type=int, default=10)
+    p = sub.add_parser(
+        "sim", help="stage-2 sim rollout campaign (M3; re-execs eval_sim_campaign.py)"
+    )
+    p.add_argument("--registry", required=True,
+                   help="stage-2 task registry (demo source for full_icl)")
+    p.add_argument("--trials", type=int, default=None,
+                   help="episodes/condition (default: eval.sim_trials from the stage YAML, else 20)")
+    p.add_argument("--conditions", default=None,
+                   help="comma-separated conditions (default: eval.conditions, else all three)")
+    p.add_argument("--group", default=None, help="registry task group")
+    p.add_argument("--stats", default=None, help="stage_stats.json for traj normalization")
+    p.add_argument("--k", type=int, default=None)
+    p.add_argument("--frames-per-demo", type=int, default=None)
+    p.add_argument("--demo-host", default="127.0.0.1")
+    p.add_argument("--demo-port", type=int, default=8661)
+    p.add_argument("--output", default=None, help="write the markdown report here")
+    p.add_argument("--config", default=None,
+                   help="self-improve round YAML for rollout defaults")
+    p.add_argument("pass_through", nargs="*", default=None,
+                   help=argparse.SUPPRESS)  # AppLauncher flags pass through
+
+    p = sub.add_parser("real", help="stage-2 real-robot campaign (M4)")
+    p.add_argument("--trials", type=int, default=10,
+                   help="episodes/condition (M4 gate: >= 10)")
+    p.add_argument("--conditions", default=None,
+                   help="comma-separated conditions (default: eval.conditions, else all three)")
+    p.add_argument("--registry", default=None, help="stage-2 registry (full_icl)")
+    p.add_argument("--group", default=None)
+    p.add_argument("--stats", default=None)
+    p.add_argument("--k", type=int, default=2)
+    p.add_argument("--frames-per-demo", type=int, default=6)
+    p.add_argument("--demo-host", default="127.0.0.1")
+    p.add_argument("--demo-port", type=int, default=8661)
+    p.add_argument("--round-config", default=None, help="self-improve round YAML")
+    p.add_argument("--rounds-root", default="self-improve/rounds")
+    p.add_argument("--input-dir", default=None,
+                   help="kept-episode MCAP dir for --post conversion")
+    p.add_argument("--repo-id", default=None,
+                   help="serving checkpoint served on the policy server")
+    p.add_argument("--task-prompt", default=None)
+    p.add_argument("--setup", default="monomanual_dual_overhead")
+    p.add_argument("--server-address", default="127.0.0.1:8090")
+    p.add_argument("--vlm-model-id", default="Qwen/Qwen3-VL-2B-Instruct")
+    p.add_argument("--post", action="store_true",
+                   help="after each condition's session: convert + judge kept episodes")
+    p.add_argument("--skip-probe", action="store_true",
+                   help="skip the chunk-latency probe against the policy server")
+    p.add_argument("--probe-n", type=int, default=30)
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the plan only; launch nothing")
+    p.add_argument("--output", default=None, help="write the markdown report here")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -205,16 +417,31 @@ def main(argv=None) -> int:
             Path(args.output).write_text(report + "\n")
         return 0
 
-    if args.mode in ("sim", "real"):
-        print(
-            f"stage-2 {args.mode} campaign runs through the self-improve machinery "
-            f"({args.trials} trials/condition); deferred until the stage-2 data "
-            "curation target is met (ICL §6.1). Planned commands:\n"
-            "  python self-improve/rollout_sim.py --config <round.yaml> --eval "
-            "--image-key-map pi05_base   # sim arm\n"
-            "  python self-improve/real_rollout.py session --setup monomanual_dual_overhead"
-        )
-        return 0
+    if args.mode == "sim":
+        eval_cfg = {}
+        if args.config and str(args.config).endswith((".yaml", ".yml")):
+            import yaml
+
+            stage = yaml.safe_load(Path(args.config).read_text())
+            if "rollout" not in stage:  # a stage YAML, not a round YAML
+                eval_cfg = stage.get("eval") or {}
+                args.config = None
+        args.trials = args.trials if args.trials is not None else int(eval_cfg.get("sim_trials", 20))
+        if args.conditions is None:
+            args.conditions = ",".join(eval_cfg.get("conditions") or
+                                       ["full_icl", "prompt_enriched", "bare_prompt"])
+        if args.k is None:
+            args.k = 2
+        if args.frames_per_demo is None:
+            args.frames_per_demo = 6
+        return run_sim(args)
+
+    if args.mode == "real":
+        if args.conditions is None:
+            args.conditions = "full_icl,prompt_enriched,bare_prompt"
+        if "full_icl" in args.conditions and not args.registry:
+            raise SystemExit("real: --registry is required when full_icl is a condition")
+        return run_real(args)
     return 1
 
 

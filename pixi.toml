@@ -60,6 +60,13 @@ icl_server = { cmd = "bash -c 'export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_ic
 # hence the PYTHONPATH; always run from the repo root so the config-relative
 # registry paths resolve)
 icl_data = { cmd = "bash -c 'export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_icl${PYTHONPATH:+:${PYTHONPATH}}\"; if [ \"${1-}\" = \"--\" ]; then shift; fi; exec python -m so101_icl.data \"$@\"' --" }
+# so101_icl: rollout-wire policy server for the M3 sim campaign (registers
+# "pi05_icl" in self_improve.rollout_server's whitelist + demo side channel)
+icl_sim_server = { cmd = "bash -c 'export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_icl:${PIXI_PROJECT_ROOT}:${PIXI_PROJECT_ROOT}/self-improve${PYTHONPATH:+:${PYTHONPATH}}\"; exec python so101_icl/serve_rollout_icl.py \"$@\"' --" }
+# so101_icl: M5 bridge node — rclpy entry point of the so101_icl_bridge
+# package (ros2 launch so101_icl_bridge bridge_icl.launch.py after colcon
+# build; this task runs the same main directly in a ROS shell)
+icl_bridge = { cmd = "bash -c 'source /opt/ros/jazzy/setup.bash && source ${ROS_WS:-$HOME/ros2_ws}/install/setup.bash 2>/dev/null || true; export PYTHONPATH=\"${PIXI_PROJECT_ROOT}/so101_icl:${PIXI_PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}\"; exec python so101_icl/so101_icl_bridge/so101_icl_bridge/bridge.py \"$@\"' --" }
 
 
 # --- Environments ---

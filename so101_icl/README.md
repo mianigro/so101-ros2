@@ -72,10 +72,12 @@ python so101_icl/eval_icl.py offline --adapter <run>/best --registry <reg.json> 
 # PYTHONPATH because the package lives under so101_icl/so101_icl)
 PYTHONPATH=so101_icl python -m so101_icl.bridge_icl_node --api-base ... --workspace ... \
     --mission-id ... --advance-mode terminal --stdin-events
-# live ROS operation: the BridgeICLNode rclpy wrapper (not yet an installable
-# ROS package — no package.xml/setup.py; run the class from a ROS 2 shell.
-# Core logic is unit-tested, the wrapper itself is not yet exercised against
-# a live Bridge Robot)
+# live ROS operation: the so101_icl_bridge package (M5) — installable via
+# colcon (ament_python, package.xml + setup.py under so101_icl_bridge/) or:
+pixi run icl_bridge            # rclpy main in a ROS 2 shell (same entry point)
+ros2 launch so101_icl_bridge bridge_icl.launch.py api_base:=... workspace:=... \
+    mission_id:=... stats_path:=...    # after colcon build
+# (core logic unit-tested; the live-robot bring-up itself is a manual session)
 ```
 
 ## Training
@@ -102,12 +104,45 @@ pixi run -e lerobot python so101_icl/eval_icl.py offline \
   --config so101_icl/configs/icl_pretrain_droid_v1.yaml --k 1 2 4 --output m2_report.md
   ```
 
-## Deferred (planned joint session)
+## Stage-2 campaigns (M3/M4) and bridge (M5) — code complete
 
-- Stage-1 pre-training run (M2), stage-2 data collection + fine-tune (M3),
-  real-robot eval (M4), live bridge integration (M5).
+The sim (M3), real (M4) and bridge-packaging (M5) code is all in place; what
+remains is running the campaigns (which need the stage-2 dataset, GPU, robot):
+
+```bash
+# M3 sim campaign — start the rollout-wire ICL server, then the campaign
+# (eval_sim_campaign.py bootstraps itself into Isaac Sim's Python):
+pixi run -e lerobot icl_sim_server --repo-id so101_icl/runs/icl_finetune_so101_v1/serving \
+    --policy-type pi05_icl --host 0.0.0.0 --port 8660
+PYTHONPATH=so101_icl python so101_icl/eval_sim_campaign.py \
+    --registry so101_icl/configs/task_registry_so101.json \
+    --stats so101_icl/runs/icl_finetune_so101_v1/final/stage_stats.json \
+    --trials 20 --output m3_report.md
+# or through the eval harness (forwards to the campaign script):
+PYTHONPATH=so101_icl python -m so101_icl.eval_icl sim \
+    --registry so101_icl/configs/task_registry_so101.json --trials 20
+
+# M4 real campaign — per-condition supervised sessions on the robot
+# (pushes/clears the demo pack per condition, drives the self-improve
+# session stack; --post converts + judges, latency probe per condition):
+PYTHONPATH=so101_icl python -m so101_icl.eval_icl real \
+    --registry so101_icl/configs/task_registry_so101.json \
+    --stats .../stage_stats.json --repo-id .../serving \
+    --server-address 127.0.0.1:8090 --post --output m4_report.md
+
+# M5 bridge node — pixi run icl_bridge, or colcon-build so101_icl_bridge
+# and ros2 launch so101_icl_bridge bridge_icl.launch.py (see above)
+```
 
 ## Honest deviations from ICL_IMPLEMENTATION.md
+
+- **lerobot hub-completion on partial subsets**: `LeRobotDataset` re-downloads
+  whatever the full `meta/` lists but the disk lacks
+  (`dataset_reader.try_load` -> `_download`) — a `download-subset` range
+  (full meta, partial files) therefore triggered a full-dataset pull.
+  Every dataset open now goes through `data.open_local_dataset`: pinned to
+  `on_disk_episodes` (contiguous-prefix enforced) with `HF_HUB_OFFLINE=1`,
+  so the registry and training only ever see the downloaded range.
 
 - **Bit-identity with a demo pack at gate 0 does not hold.** Present-but-zero
   demo tokens carry attention keys of exactly 0, which after softmax steal a

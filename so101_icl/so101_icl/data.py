@@ -70,9 +70,15 @@ class DatasetSpec:
     grouping_key: str = "task"  # "task" or an episode/data column name
 
 
-def _episode_group_keys(spec: DatasetSpec, meta) -> dict[int, str]:
-    """Map episode_index -> group key, from on-disk metadata only."""
+def _episode_group_keys(spec: DatasetSpec, meta, only: set[int] | None = None) -> dict[int, str]:
+    """Map episode_index -> group key, from on-disk metadata only.
+
+    ``only`` restricts the mapping to those episode indices (the on-disk
+    subset) so the data-parquet fallback never touches missing files.
+    """
     eps = meta.episodes.to_pandas()
+    if only is not None:
+        eps = eps[eps["episode_index"].isin(only)]
     if spec.grouping_key == "task":
         groups = {}
         for _, row in eps.iterrows():
@@ -107,6 +113,99 @@ def _episode_group_keys(spec: DatasetSpec, meta) -> dict[int, str]:
     return keys
 
 
+# ---------------------------------------------------------------------- #
+# On-disk subset resolution (download-subset alignment)                   #
+# ---------------------------------------------------------------------- #
+
+
+def on_disk_episodes(repo_id: str, root: str = "~/.cache/huggingface/lerobot") -> set[int]:
+    """Episode indices whose data files exist locally (and videos, when the
+    episode metadata carries per-camera file indices).
+
+    ``download-subset`` fetches the FULL ``meta/`` but only the shards of an
+    episode range; lerobot's loader treats every episode listed in ``meta/``
+    as required and re-downloads whatever is missing
+    (``dataset_reader.try_load`` -> ``LeRobotDataset._download``). Registry
+    building and dataset loads must therefore be pinned to this set.
+    """
+    import pyarrow.parquet as pq
+
+    base = Path(root).expanduser() / repo_id
+    episodes: set[int] = set()
+    for path in sorted((base / "data").glob("**/*.parquet")):
+        episodes.update(
+            int(e) for e in pq.read_table(path, columns=["episode_index"])["episode_index"].to_pylist()
+        )
+
+    # Video validation only when the episode rows carry per-camera file
+    # indices (hub-published subsets like droid_1.0.1); datasets created
+    # locally by lerobot have videos consistent with their data by
+    # construction.
+    rows: dict[int, dict] = {}
+    for shard in sorted((base / "meta" / "episodes").glob("*/*.parquet")):
+        for row in pq.read_table(shard).to_pylist():
+            rows[int(row["episode_index"])] = row
+    if rows and _video_keys_of(next(iter(rows.values()))):
+        info = json.loads((base / "meta" / "info.json").read_text())
+        video_tpl = info.get("video_path", DEFAULT_VIDEO_PATH)
+        for ep in sorted(episodes):
+            row = rows.get(ep)
+            if row is None:
+                episodes.discard(ep)
+                continue
+            for key in _video_keys_of(row):
+                chunk_idx = row.get(f"videos/{key}/chunk_index")
+                file_idx = row.get(f"videos/{key}/file_index")
+                if chunk_idx is None or file_idx is None or not (
+                    base / video_tpl.format(
+                        video_key=key, chunk_index=chunk_idx, file_index=file_idx
+                    )
+                ).exists():
+                    episodes.discard(ep)
+                    break
+    return episodes
+
+
+def open_local_dataset(repo_id: str, root: str = "~/.cache/huggingface/lerobot"):
+    """Open a LeRobotDataset pinned to the on-disk episodes, hub disabled.
+
+    Pinning ``episodes`` makes lerobot's local-sufficiency check pass
+    without downloading, and ``HF_HUB_OFFLINE=1`` turns any residual hub
+    call into a loud error instead of a multi-GB pull. Frame indexing stays
+    valid only for a CONTIGUOUS PREFIX of episodes (0..N) — which
+    ``download-subset`` ranges always produce — so anything else is
+    rejected up front.
+    """
+    import os
+
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    episodes = sorted(on_disk_episodes(repo_id, root))
+    if not episodes:
+        raise FileNotFoundError(
+            f"no episodes with on-disk data found under "
+            f"{Path(root).expanduser() / repo_id} — run "
+            "`pixi run -e lerobot icl_data download-subset` first"
+        )
+    if episodes != list(range(len(episodes))):
+        raise ValueError(
+            f"on-disk episodes of {repo_id} are not a contiguous prefix "
+            f"(0..{episodes[-1]}); re-download a single episode range to "
+            "restore a consistent subset"
+        )
+    prev = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        return LeRobotDataset(
+            repo_id, root=str(Path(root).expanduser() / repo_id), episodes=episodes
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = prev
+
+
 def build_task_registry(
     specs: list[DatasetSpec],
     *,
@@ -119,9 +218,9 @@ def build_task_registry(
 
     Holdout picks WHOLE groups (eval/test), seeded and frozen by name into
     the registry — the sampler never mixes held-out groups into training.
+    Only episodes whose files are actually on disk are registered (a
+    ``download-subset`` range, not the full episode list in ``meta/``).
     """
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
     alias_map = alias_map or {}
     holdout = holdout or {}
     registry = {
@@ -132,8 +231,8 @@ def build_task_registry(
     }
     for ds_idx, spec in enumerate(specs):
         # NOTE: lerobot's `root` replaces the whole dataset dir (must include repo_id).
-        dataset_root = str(Path(spec.root).expanduser() / spec.repo_id)
-        ds = LeRobotDataset(spec.repo_id, root=dataset_root)
+        ds = open_local_dataset(spec.repo_id, spec.root)
+        on_disk = set(ds.episodes)
         registry["datasets"].append(
             {
                 "repo_id": spec.repo_id,
@@ -143,9 +242,11 @@ def build_task_registry(
             }
         )
         eps = ds.meta.episodes.to_pandas()
-        keys = _episode_group_keys(spec, ds.meta)
+        keys = _episode_group_keys(spec, ds.meta, only=on_disk)
         for _, row in eps.iterrows():
             ep = int(row["episode_index"])
+            if ep not in on_disk:
+                continue
             group = alias_map.get(keys[ep], keys[ep])
             registry["groups"].setdefault(group, []).append(
                 [ds_idx, ep, int(row["length"])]
@@ -430,15 +531,12 @@ class _DatasetBundle:
     """One wrapped LeRobotDataset with its stats, normalizer and episodes."""
 
     def __init__(self, spec_dict: dict, config):
-        from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
         self.repo_id = spec_dict["repo_id"]
         self.camera_rename = dict(spec_dict["camera_rename"])
         self.reverse_rename = {v: k for k, v in self.camera_rename.items()}
-        self.dataset = LeRobotDataset(
-            self.repo_id,
-            root=str(Path(spec_dict["root"]).expanduser() / self.repo_id),  # root includes repo_id
-        )
+        # Pinned to the on-disk episodes, hub disabled: a subset download
+        # must never trigger lerobot's re-download of the missing files.
+        self.dataset = open_local_dataset(self.repo_id, spec_dict["root"])
         info_features = self.dataset.meta.info["features"]
         self.d_state = info_features["observation.state"]["shape"][0]
         self.d_action = info_features["action"]["shape"][0]

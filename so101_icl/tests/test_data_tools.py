@@ -36,6 +36,8 @@ from so101_icl.data import (  # noqa: E402
     check_stats,
     load_stats_json,
     missing_quantiles,
+    on_disk_episodes,
+    open_local_dataset,
     recompute_stats_command,
     specs_from_stage_config,
 )
@@ -343,6 +345,80 @@ class TestLoadEpisodeMapAndSize(unittest.TestCase):
             self.assertEqual(_subset_download_bytes("x/y", wanted), 630)
         finally:
             huggingface_hub.HfApi = original
+
+
+class TestOnDiskEpisodes(unittest.TestCase):
+    """Subset downloads ship FULL meta/ + partial files; everything must be
+    pinned to the episodes whose files actually exist (otherwise lerobot
+    re-downloads the rest of the dataset)."""
+
+    @staticmethod
+    def _synthetic(tmp: Path, data_eps: tuple[int, ...], meta_eps: int = 4) -> Path:
+        """meta/ lists ``meta_eps`` episodes; data shards exist only for
+        ``data_eps`` (2 episodes per data shard)."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        base = tmp / "local/sub"
+        (base / "meta/episodes/chunk-000").mkdir(parents=True)
+        (base / "data/chunk-000").mkdir(parents=True)
+        (base / "meta/info.json").write_text(json.dumps({"total_episodes": meta_eps}))
+        pq.write_table(
+            pa.table({
+                "episode_index": list(range(meta_eps)),
+                "data/chunk_index": [0] * meta_eps,
+                "data/file_index": [i // 2 for i in range(meta_eps)],
+            }),
+            base / "meta/episodes/chunk-000/file-000.parquet",
+        )
+        for file_idx in sorted({e // 2 for e in data_eps}):
+            eps_in_file = [e for e in data_eps if e // 2 == file_idx]
+            pq.write_table(
+                pa.table({"episode_index": eps_in_file}),
+                base / f"data/chunk-000/file-{file_idx:03d}.parquet",
+            )
+        return base
+
+    def test_only_downloaded_episodes_registered(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._synthetic(Path(tmp), data_eps=(0, 1))  # meta says 0..3
+            self.assertEqual(on_disk_episodes("local/sub", tmp), {0, 1})
+
+    def test_empty_subset_raises(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._synthetic(Path(tmp), data_eps=())
+            with self.assertRaises(FileNotFoundError):
+                open_local_dataset("local/sub", tmp)
+
+    def test_non_contiguous_prefix_rejected(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._synthetic(Path(tmp), data_eps=(1, 2))  # episode 0 missing
+            with self.assertRaises(ValueError):
+                open_local_dataset("local/sub", tmp)
+
+
+@unittest.skipUnless(LOCAL_PRESENT, "local so101_test dataset not on disk")
+class TestNoHubDownload(unittest.TestCase):
+    """Opening the local dataset must never reach the hub — any
+    snapshot_download call raises (stricter than HF_HUB_OFFLINE)."""
+
+    def test_open_local_dataset_never_downloads(self):
+        from unittest.mock import patch
+
+        with (
+            patch("lerobot.datasets.lerobot_dataset.snapshot_download",
+                  side_effect=AssertionError("hub download attempted")),
+            patch("lerobot.datasets.dataset_metadata.snapshot_download",
+                  side_effect=AssertionError("hub download attempted")),
+        ):
+            ds = open_local_dataset("local/so101_test", str(LOCAL_ROOT))
+        self.assertGreater(len(ds.episodes), 0)
 
 
 if __name__ == "__main__":

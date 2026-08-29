@@ -453,15 +453,11 @@ def main(argv=None) -> int:
             train_settings.val_batches,
         )
 
-    from .data import load_task_registry
+    from .data import load_task_registry, open_local_dataset
 
     reg = load_task_registry(registry_path)
     primary = reg["datasets"][0]
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-    primary_ds = LeRobotDataset(
-        primary["repo_id"], root=str(Path(primary["root"]).expanduser() / primary["repo_id"])
-    )
+    primary_ds = open_local_dataset(primary["repo_id"], primary["root"])
     preprocessor, _post = build_stage_preprocessor(policy.config, primary_ds.meta.stats)
 
     output_dir = Path(args.output_dir or stage.get("output_dir", "so101_icl/runs/run"))
