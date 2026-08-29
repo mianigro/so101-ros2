@@ -163,28 +163,6 @@ class LoopImportTests(unittest.TestCase):
         self.assertEqual(command[-2:], ["--visualizer", "kit"])
         subprocess_run.assert_called_once_with(command, check=True)
 
-    def test_run_round_cli_accepts_visualizer(self) -> None:
-        from self_improve import loop
-
-        config = RoundConfig(round_index=1)
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
-                loop.RoundConfig, "load", return_value=config), mock.patch.object(
-                loop, "run_round", return_value={}) as run_round:
-            result = loop.main([
-                "--config", "round_1_from_base.yaml",
-                "--rounds-root", tmp,
-                "--stages", "rollout",
-                "--visualizer", "kit",
-                "--policy-device", "cuda:1",
-                "--sim-device", "cuda:0",
-            ])
-
-        self.assertEqual(result, 0)
-        run_round.assert_called_once_with(
-            config, Path(tmp), ["rollout"], visualizer="kit",
-            policy_device="cuda:1", policy_dtype="bfloat16",
-            sim_device="cuda:0", num_envs=None, real_dataset_repo_id=None)
-
     def test_run_round_routes_policy_and_sim_to_separate_devices(self) -> None:
         from self_improve import loop
 

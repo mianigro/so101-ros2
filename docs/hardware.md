@@ -1,12 +1,10 @@
 # Hardware Setup
 
-> **Required before running on real hardware.**
+**Required before running on real hardware.**
 
-This document focuses on **ROS-side hardware integration**:
-
-- stable device naming (serial + cameras),
-- permissions,
-- LeRobot motor setup and calibration as prerequisites.
+- stable device naming
+- permissions
+- LeRobot motor setup and calibration as prerequisites
 
 ---
 
@@ -18,11 +16,9 @@ Follow the official [LeRobot SO-101 guide](https://huggingface.co/docs/lerobot/s
 - **setup motors** (IDs / baudrate)
 - **calibration** (offsets / limits)
 
-> This repo assumes your servos are already configured and responding correctly.
-
 ---
 
-## 2. Identify Devices (Quick)
+## 2. Identify Devices
 
 Plug in the devices and confirm the kernel sees them:
 
@@ -33,7 +29,7 @@ ls -l /dev/video* 2>/dev/null || true
 
 ---
 
-## 3. Udev Rules (Recommended)
+## 3. Udev Rules
 
 This stack assumes stable device symlinks created by udev:
 
@@ -55,22 +51,18 @@ arm device in the selected setup is required.
 ### 3.1 Query Device Properties
 
 ```bash
-# Arms — replace /dev/ttyACM0 with the device you see:
+# Arms
 udevadm info --query=property --name=/dev/ttyACM0 | \
   egrep 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH'
 ```
 
 ```bash
-# Cameras — query each physical camera separately:
+# Cameras
 ls -l /dev/v4l/by-id/
-# pick the node you want, then:
+
 udevadm info --query=property --name=/dev/videoX | \
   egrep 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_PATH'
 ```
-
-> If `ID_SERIAL_SHORT` is missing or identical across cameras, match on
-> `ID_PATH` instead. `ID_PATH` identifies the physical USB port, so reconnect
-> that camera to the same port to retain its stable name.
 
 ### 3.2 Edit the Example Rules File
 
@@ -125,7 +117,7 @@ ls -l /dev/so101_leader_left /dev/so101_leader_right \
 
 ---
 
-## 4. Permissions (dialout + video)
+## 4. Permissions
 
 ```bash
 sudo usermod -aG dialout,video $USER
@@ -136,10 +128,6 @@ Log out / in (or reboot), then verify:
 ```bash
 groups | grep -E 'dialout|video'
 ```
-
-> `dialout` is needed for serial ports (arms), `video` for cameras.
-> With the udev rules above (`GROUP="dialout"` / `GROUP="video"`, `MODE="0660"`),
-> you should not need `sudo` or `chmod` hacks.
 
 ---
 
@@ -227,13 +215,9 @@ cameras:
       device: /dev/cam_wrist
     overhead_1:
       device: /dev/cam_overhead_1
-sim:                        # Isaac Sim geometry (monomanual setups only)
+sim:                        # Isaac Sim geometry
   ...
 ```
-
-Camera calibration is not part of this stack. The rig section does not accept
-intrinsics, CameraInfo URLs, or camera transforms. Overhead cameras publish
-images but are not placed in the robot TF tree.
 
 ### 6.2 Launching a setup
 
@@ -244,21 +228,11 @@ images but are not placed in the robot TF tree.
 ros2 launch so101_bringup teleop.launch.py setup:=monomanual_dual_overhead
 ```
 
-Before any driver starts, launch validates the setup schema and selected
-device nodes. It then requires every selected image stream within 10 seconds and
-keeps checking them with a one-second stale limit. A driver or supervisor exit
-shuts down the whole launch. There is no camera discovery, fallback topic, or
-partial-setup operation.
+Before any driver starts, launch validates the setup schema and selected device nodes. It then requires every selected image stream within 10 seconds and keeps checking them with a one-second stale limit. A driver or supervisor exit shuts down the whole launch. There is no camera discovery, fallback topic, or partial-setup operation.
 
-The standard backend is `gscam`; its pipeline is constructed from each
-camera's `device`. A machine that needs a different backend must declare that
-driver's package, executable, parameters, parameter-name mapping, and remaps in
-the camera's rig entry. There are no built-in alternate-driver presets.
+The standard backend is `gscam`; its pipeline is constructed from each camera's `device`. A machine that needs a different backend must declare that driver's package, executable, parameters, parameter-name mapping, and remaps in the camera's rig entry. There are no built-in alternate-driver presets.
 
-The same `setup` selects the spawned arms, recorder topics, Rerun
-subscriptions, conversion features, and inference inputs. Commands and
-datasets use the fixed 30 Hz contract in `so101_30hz.yaml`
-(`bimanual_30hz.yaml` for bimanual).
+The same `setup` selects the spawned arms, recorder topics, Rerun subscriptions, conversion features, and inference inputs. Commands and datasets use the fixed 30 Hz contract in `so101_30hz.yaml` (`bimanual_30hz.yaml` for bimanual).
 
 ---
 
@@ -266,18 +240,10 @@ datasets use the fixed 30 Hz contract in `so101_30hz.yaml`
 
 Before launching teleop:
 
-- [ ] LeRobot motor setup and calibration were completed for every arm before first ROS use
-- [ ] Leader / follower udev symlinks exist for the selected setup
-- [ ] User is in `dialout` and `video` groups
-- [ ] `/dev/cam_wrist` and `/dev/cam_overhead_1` exist (monomanual setups)
-- [ ] `/dev/cam_overhead_2` exists for `monomanual_dual_overhead`
-- [ ] The bimanual `_left`/`_right` device symlinks exist for `bimanual`
-- [ ] The `setup` argument matches the physically connected rig
-
-Sanity checks:
-
-```bash
-ls -l /dev/so101_leader /dev/so101_follower 2>/dev/null || true
-ls -l /dev/cam_wrist /dev/cam_overhead_1 /dev/cam_overhead_2 2>/dev/null || true
-ls -l /dev/cam_wrist_left /dev/cam_wrist_right 2>/dev/null || true
-```
+- LeRobot motor setup and calibration were completed for every arm before first ROS use
+- Leader / follower udev symlinks exist for the selected setup
+- User is in `dialout` and `video` groups
+- `/dev/cam_wrist` and `/dev/cam_overhead_1` exist
+- `/dev/cam_overhead_2` exists for `monomanual_dual_overhead`
+- The bimanual `_left`/`_right` device symlinks exist for `bimanual`
+- The `setup` argument matches the physically connected rig
