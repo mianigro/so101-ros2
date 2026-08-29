@@ -115,9 +115,11 @@ class TestParseOrderSelect(unittest.TestCase):
 class _StubTransport:
     def __init__(self):
         self.calls = []
+        self.last_pack = None
 
     def set_demo_pack(self, frames, traj=None, traj_ok=None, k_max=4):
         self.calls.append(("set", frames.shape, int(frames.shape[0])))
+        self.last_pack = (traj, None if traj_ok is None else np.asarray(traj_ok))
         return {"status": "ok", "encode_s": 0.01, "k": int(frames.shape[0])}
 
     def clear(self):
@@ -154,6 +156,41 @@ class TestBuildDemoPack(unittest.TestCase):
             self.assertEqual(kind, "set")
             self.assertEqual(shape, (2, 6, 3, 224, 224))
             self.assertEqual(k, 2)
+
+    def test_mixed_trajectory_availability(self):
+        """A demo without a trajectory must not drop the others' trajectories."""
+
+        class _FakeNormalizer:
+            # duck-typed TrajNormalizer: [S, 64] rows (state+action padded
+            # to 32+32), content marked with ones
+            def __call__(self, states, actions):
+                import torch
+
+                return torch.ones(states.shape[0], 64)
+
+        subtasks = parse_dispatch_package(_package())
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_keyframe_png(Path(tmp) / "k4.png", seed=4)
+            _write_keyframe_png(Path(tmp) / "k5.png", seed=5)
+            # prov_id 20 ranks first: the FIRST selected demo lacks a trajectory
+            subtasks[0].demonstrations = [
+                {"episode_id": 4, "outcome": "success", "prov_id": 20,
+                 "keyframes": [f"file://{tmp}/k4.png"]},
+                {"episode_id": 5, "outcome": "success", "prov_id": 10,
+                 "keyframes": [f"file://{tmp}/k5.png"],
+                 "trajectory": {"available": True, "states": [[0.0] * 6] * 40}},
+            ]
+            transport = _StubTransport()
+            reply = build_demo_pack(
+                subtasks[0], transport, k=2, frames_per_demo=6, k_max=4,
+                normalizer=_FakeNormalizer(),
+            )
+            self.assertEqual(reply["status"], "ok")
+            traj, traj_ok = transport.last_pack
+            self.assertEqual(traj.shape, (2, 16, 64))
+            self.assertTrue((traj[0] == 0.0).all())   # missing -> zero rows, masked
+            self.assertTrue((traj[1] == 1.0).all())   # present -> normalized content
+            self.assertEqual(traj_ok.tolist(), [0.0, 1.0])
 
 
 class _SequenceTransport(_StubTransport):

@@ -13,7 +13,6 @@ dataset:
   demo_camera: observation.images.base_0_rgb
   task_registry: so101_icl/configs/task_registry_so101.json
   holdout_tasks: {eval: 3, test: 3}
-  camera_keys: [observation.images.wrist, observation.images.overhead_1, observation.images.overhead_2]
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
 lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
 train:
@@ -28,7 +27,7 @@ train:
   curriculum: [[100000000, [1, 2, 3, 4]]]   # no curriculum in stage 2
   demo_zeroed_every: 100
   val_every: 250
-eval:
-  sim_trials: 20
-  real_trials: 10
+eval:                           # sim/real campaign knobs — consumed by the
+  sim_trials: 20                # deferred M3/M4 drivers (eval_icl.py sim|real),
+  real_trials: 10               # not by the offline harness
   conditions: [bare_prompt, prompt_enriched, full_icl]

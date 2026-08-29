@@ -521,10 +521,17 @@ class ICLDataset(Dataset):
     def __len__(self):
         return len(self._index)
 
-    def _sample_keyframe_indices(self, length: int, f: int) -> np.ndarray:
+    @staticmethod
+    def _sample_keyframe_indices(length: int, f: int) -> np.ndarray:
+        """Exactly ``f`` indices spanning ``[0, length - 1]``, first/last pinned.
+
+        Episodes shorter than ``f`` repeat timesteps instead of shrinking:
+        the traj slot must stay ``[traj_steps, d]`` for the broadcast in
+        ``__getitem__``, and repeated keyframes are harmless.
+        """
         idx = np.linspace(0, length - 1, f).round().astype(int)
         idx[0], idx[-1] = 0, length - 1  # start and goal emphasis (ICL §4.4)
-        return np.unique(idx)
+        return idx
 
     def _load_traj(self, bundle: _DatasetBundle, ep: int) -> tuple[torch.Tensor, bool]:
         start, end, _ = bundle.episodes[ep]
@@ -805,7 +812,7 @@ def _cmd_download_subset(args) -> int:
     _report_stray_files(local_dir, wanted)
     print(
         "done. Now build the registry from the downloaded episodes only:\n"
-        f"  python -m so101_icl.data build-registry --datasets {args.repo_id},{args.root} "
+        f"  pixi run -e lerobot icl_data build-registry --datasets {args.repo_id},{args.root} "
         f"--grouping-key task_category --droid --out so101_icl/configs/task_registry_droid.json"
     )
     return 0

@@ -245,19 +245,27 @@ def run_training(
     step = 0
     best_val = float("inf")
     start = time.time()
-    data_iter = iter(train_loader)
+    data_iter = None
 
     while step < settings.steps:
-        # k-curriculum at epoch granularity (documented in ICL §4.4): the
-        # loader re-forks workers each epoch, picking up k_choices.
+        # k-curriculum applies at epoch granularity: dataloader workers fork
+        # per iter(), so k_choices must be set BEFORE the iterator is created
+        # (mid-epoch mutation never reaches already-forked workers).
+        if data_iter is None:
+            train_loader.dataset.k_choices = k_choices_for_step(settings.curriculum, step)
+            data_iter = iter(train_loader)
         try:
             batch = next(data_iter)
-        except StopIteration:
+        except StopIteration as exc:
+            if len(train_loader) == 0:
+                raise RuntimeError(
+                    "train loader yields no batches — dataset smaller than "
+                    "batch_per_gpu with drop_last=True?"
+                ) from exc
             epoch = getattr(train_loader.dataset, "_epoch", 0) + 1
             train_loader.dataset.set_epoch(epoch)
-            data_iter = iter(train_loader)
-            batch = next(data_iter)
-        train_loader.dataset.k_choices = k_choices_for_step(settings.curriculum, step)
+            data_iter = None
+            continue
 
         rng_state = _capture_rng_state()
         icl_fields, query_batch = _split_icl_fields(batch)
@@ -400,11 +408,11 @@ def main(argv=None) -> int:
     if not registry_path.exists():
         if registry_path.name.endswith("_droid.json"):
             raise FileNotFoundError(
-                f"{registry_path} missing — run `python -m so101_icl.data download-subset` "
+                f"{registry_path} missing — run `pixi run -e lerobot icl_data download-subset` "
                 "and `build-registry` first (the droid download is a separate step)"
             )
         raise FileNotFoundError(
-            f"{registry_path} missing — run `python -m so101_icl.data build-registry ...`"
+            f"{registry_path} missing — run `pixi run -e lerobot icl_data build-registry ...`"
         )
 
     train_ds = ICLDataset(registry_path, policy.config, split="train",

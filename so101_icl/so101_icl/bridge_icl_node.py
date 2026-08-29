@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -262,9 +263,11 @@ def build_demo_pack(
         return {"status": "skipped", "reason": "no resolvable keyframes"}
 
     frames = np.stack([a.frames for a in assets])          # [k, F, 3, 224, 224]
-    traj = (
-        np.stack([a.traj if a.traj is not None else np.zeros((16, 64), np.float32) for a in assets])
-        if assets[0].traj is not None else None
+    # Per-asset stacking: a demo without a trajectory contributes zero rows
+    # with traj_ok=0 (the DemoEncoder masks that slot's traj branch) — never
+    # drop the trajectories of the OTHER selected demos.
+    traj = np.stack(
+        [a.traj if a.traj is not None else np.zeros((16, 64), np.float32) for a in assets]
     )
     traj_ok = np.asarray([a.traj_ok for a in assets], dtype=np.float32)
     return transport.set_demo_pack(frames, traj=traj, traj_ok=traj_ok, k_max=k_max)

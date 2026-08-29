@@ -3,9 +3,10 @@
 In-context demonstration conditioning for π0.5 (`VLA_PLAN.md` Path 2,
 built per `ICL_IMPLEMENTATION.md` Rev 2): frozen `lerobot/pi05_base` +
 DemoEncoder + LoRA adapters on the VLM attention. Integration is
-subclassing + runtime registration only — the single repo edit outside this
-package is `"pi05_icl"` in `policy_server/inference_engine.py`
-(`SUPPORTED_POLICIES`) plus the `peft` dependency in `pixi.toml`.
+subclassing + runtime registration only — the only repo edits outside this
+package are `"pi05_icl"` in `policy_server/inference_engine.py`
+(`SUPPORTED_POLICIES`) and `pixi.toml` (the `peft`/`tensorboard` deps and
+the `icl_data`/`icl_server` tasks).
 
 ## Layout
 
@@ -13,7 +14,8 @@ package is `"pi05_icl"` in `policy_server/inference_engine.py`
 so101_icl/
 ├── train_icl.py / serve_icl.py / eval_icl.py   # entry wrappers (pixi lerobot env)
 ├── configs/          # stage 1 (droid), stage 2 (so101), local smoke + registries
-├── tests/            # M0 zero-init gate, prefix shapes, sampler, bridge, transport
+├── tests/            # package, zero-init gate, prefix shapes, sampler,
+│                     # data tools, bridge, transport, serving e2e
 └── so101_icl/
     ├── configuration_pi05_icl.py  # ICLConfig(PI05Config), registered "pi05_icl"
     ├── modeling_pi05_icl.py       # PI05ICLCore (embed_prefix splice) + PI05ICLPolicy
@@ -36,13 +38,13 @@ pixi run -e lerobot python so101_icl/tests/test_zero_init.py
 pixi run -e lerobot python -m unittest discover -s so101_icl/tests -p "test_*.py"  # or per-file
 
 # registry from on-disk datasets (never downloads)
-python -m so101_icl.data smoke-local                       # local SO-101 datasets
-python -m so101_icl.data build-registry --from-config so101_icl/configs/icl_smoke_local_v1.yaml
-python -m so101_icl.data build-registry --datasets <repo[,root]> --grouping-key task --out ...
+pixi run -e lerobot icl_data smoke-local                       # local SO-101 datasets
+pixi run -e lerobot icl_data build-registry --from-config so101_icl/configs/icl_smoke_local_v1.yaml
+pixi run -e lerobot icl_data build-registry --datasets <repo[,root]> --grouping-key task --out ...
 
 # stats preflight for pi05 quantile normalization (q01/q99)
-python -m so101_icl.data check-stats --datasets <repo[,root]>
-python -m so101_icl.data check-stats --datasets <repo[,root]> --fix --yes   # in-place recompute
+pixi run -e lerobot icl_data check-stats --datasets <repo[,root]>
+pixi run -e lerobot icl_data check-stats --datasets <repo[,root]> --fix --yes   # in-place recompute
 
 # training (single GPU; 2x4080: accelerate launch --num_processes 2 --multi_gpu ...)
 python so101_icl/train_icl.py --config so101_icl/configs/icl_smoke_local_v1.yaml
@@ -62,15 +64,18 @@ pixi run -e lerobot icl_data check-stats --datasets lerobot/droid_1.0.1 --fix --
 pixi run -e lerobot icl_server --host 0.0.0.0 --port 8090
 
 # offline eval (stage 1): demo vs demo-zeroed vs bare-prompt query loss
+# (--trials/--k default from the stage YAML `eval:` block; CLI flags override)
 python so101_icl/eval_icl.py offline --adapter <run>/best --registry <reg.json> \
     --config <stage.yaml> --k 1 2 4 --output report.md
 
-# bridge (ROS-free CLI; --stdin-events feeds terminal topics for smoke runs)
-python -m so101_icl.bridge_icl_node --api-base ... --workspace ... --mission-id ... \
-    --advance-mode terminal --stdin-events
-# live ROS operation: ros2 run via BridgeICLNode (rclpy wrapper; core logic
-# is unit-tested, the wrapper itself is not yet exercised against a live
-# Bridge Robot)
+# bridge (ROS-free CLI; --stdin-events feeds terminal topics for smoke runs;
+# PYTHONPATH because the package lives under so101_icl/so101_icl)
+PYTHONPATH=so101_icl python -m so101_icl.bridge_icl_node --api-base ... --workspace ... \
+    --mission-id ... --advance-mode terminal --stdin-events
+# live ROS operation: the BridgeICLNode rclpy wrapper (not yet an installable
+# ROS package — no package.xml/setup.py; run the class from a ROS 2 shell.
+# Core logic is unit-tested, the wrapper itself is not yet exercised against
+# a live Bridge Robot)
 ```
 
 ## Training
@@ -78,12 +83,13 @@ python -m so101_icl.bridge_icl_node --api-base ... --workspace ... --mission-id 
 # 1. smoke on the 464 MB dataset first (recommended before the big download)
 pixi run -e lerobot python -c "from huggingface_hub import snapshot_download; snapshot_download('lerobot/droid_100', repo_type='dataset')"
 
-# 2. the ~85 GB subset (chunk-filtered, confirmation prompt)
-pixi run -e lerobot python -m so101_icl.data download-subset --start 0 --end 9 --yes
+# 2. download an episode range (--start/--end are inclusive EPISODE indices;
+#    the exact shard file list is derived from meta/episodes)
+pixi run -e lerobot icl_data download-subset --start 0 --end 1000   # , 1k episodes ~85 GB
 
-# 3. registry from the downloaded chunks only + stats check
-pixi run -e lerobot python -m so101_icl.data build-registry --from-config so101_icl/configs/icl_pretrain_droid_v1.yaml
-pixi run -e lerobot python -m so101_icl.data check-stats --datasets lerobot/droid_1.0.1 --fix --yes
+# 3. registry from the downloaded shards only + stats check
+pixi run -e lerobot icl_data build-registry --from-config so101_icl/configs/icl_pretrain_droid_v1.yaml
+pixi run -e lerobot icl_data check-stats --datasets lerobot/droid_1.0.1 --fix --yes
 
 # 4. stage-1 training on both 4080s (~half a day for 10k steps)
 pixi run -e lerobot accelerate launch --num_processes 2 --multi_gpu \
@@ -98,10 +104,6 @@ pixi run -e lerobot python so101_icl/eval_icl.py offline \
 
 ## Deferred (planned joint session)
 
-- DROID downloads: `python -m so101_icl.data download-subset --start 0 --end 9 --yes`
-  then `build-registry --datasets lerobot/droid_1.0.1,<root> --grouping-key
-  task_category --droid --out so101_icl/configs/task_registry_droid.json`
-  (implemented, deliberately not executed in the initial build).
 - Stage-1 pre-training run (M2), stage-2 data collection + fine-tune (M3),
   real-robot eval (M4), live bridge integration (M5).
 

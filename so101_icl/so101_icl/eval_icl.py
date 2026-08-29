@@ -49,8 +49,19 @@ logger = logging.getLogger(__name__)
 
 
 def load_eval_policy(adapter_dir: Path | str, base_checkpoint: str = "lerobot/pi05_base",
-                     device: str = "cuda"):
-    policy = PI05ICLPolicy.from_base(base_checkpoint, device=device, dtype="bfloat16")
+                     device: str = "cuda", *, demo_encoder=None, lora=None):
+    """Build the policy FROM the stage config so module shapes match it.
+
+    Replacing ``policy.config.demo_encoder`` after construction would leave
+    the built DemoEncoder at the default shapes — a latent crash whenever a
+    stage YAML deviates from the defaults.
+    """
+    from .configuration_pi05_icl import DemoEncoderConfig, LoRAConfig
+
+    policy = PI05ICLPolicy.from_base(
+        base_checkpoint, device=device, dtype="bfloat16",
+        demo_encoder=demo_encoder or DemoEncoderConfig(), lora=lora or LoRAConfig(),
+    )
     setup_trainable_policy(policy, policy.config)
     adapter_dir = Path(adapter_dir)
     if (adapter_dir / "icl_adapter.safetensors").exists():
@@ -83,11 +94,13 @@ def run_offline(
 ) -> str:
     """Three-condition query-loss table over held-out groups (markdown)."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    policy = load_eval_policy(adapter_dir, stage_config["base_checkpoint"], device)
     from .configuration_pi05_icl import DemoEncoderConfig, LoRAConfig
 
-    policy.config.demo_encoder = DemoEncoderConfig(**stage_config.get("demo_encoder", {}))
-    policy.config.lora = LoRAConfig(**stage_config.get("lora", {}))
+    policy = load_eval_policy(
+        adapter_dir, stage_config["base_checkpoint"], device,
+        demo_encoder=DemoEncoderConfig(**stage_config.get("demo_encoder", {})),
+        lora=LoRAConfig(**stage_config.get("lora", {})),
+    )
 
     try:
         dataset = ICLDataset(registry_path, policy.config, split=split,
@@ -158,9 +171,11 @@ def main(argv=None) -> int:
     p.add_argument("--registry", required=True)
     p.add_argument("--config", required=True, help="stage YAML")
     p.add_argument("--split", default="test", choices=["eval", "test"])
-    p.add_argument("--trials", type=int, default=8)
+    p.add_argument("--trials", type=int, default=None,
+                   help="query samples (default: eval.offline_trials from the stage YAML, else 8)")
     p.add_argument("--batch-size", type=int, default=4)
-    p.add_argument("--k", type=int, nargs="+", default=[1, 2, 4])
+    p.add_argument("--k", type=int, nargs="+", default=None,
+                   help="k ablations (default: eval.ablations.k from the stage YAML, else 1 2 4)")
     p.add_argument("--output", default=None, help="write the markdown report here")
 
     p = sub.add_parser("sim", help="stage-2 sim rollout campaign (deferred)")
@@ -175,9 +190,15 @@ def main(argv=None) -> int:
         import yaml
 
         stage = yaml.safe_load(Path(args.config).read_text())
+        eval_cfg = stage.get("eval") or {}
+        trials = args.trials if args.trials is not None else int(eval_cfg.get("offline_trials", 8))
+        if args.k is not None:
+            ablate_k = tuple(args.k)
+        else:
+            ablate_k = tuple(eval_cfg.get("ablations", {}).get("k", [1, 2, 4]))
         report = run_offline(
             args.adapter, args.registry, stage, split=args.split,
-            trials=args.trials, batch_size=args.batch_size, ablate_k=tuple(args.k),
+            trials=trials, batch_size=args.batch_size, ablate_k=ablate_k,
         )
         print(report)
         if args.output:

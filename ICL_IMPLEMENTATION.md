@@ -119,17 +119,23 @@ exactly as `sample_actions` does today.
 
 ```
 so101_icl/
-├── train_icl.py                  # entry script, --stage {pretrain,finetune} (mirrors self-improve/train_bc.py pattern)
+├── train_icl.py                  # entry wrapper --config <stage.yaml> → train_loop.main (mirrors self-improve/train_bc.py pattern)
 ├── serve_icl.py                  # entry script: policy_server main + our registration
-├── eval_icl.py                   # entry script: offline (stage 1) + sim/real (stage 2) eval harness
+├── eval_icl.py                   # entry wrapper: offline (stage 1) + sim/real (stage 2) eval harness
 ├── configs/
 │   ├── icl_pretrain_droid_v1.yaml   # stage 1 (see §7)
 │   ├── icl_finetune_so101_v1.yaml   # stage 2 (see §7)
-│   └── task_registry.json           # built by data.py CLI, per stage
+│   ├── icl_smoke_local_v1.yaml      # M1 local smoke run
+│   └── task_registry_*.json         # built by data.py CLI, per stage (droid / so101 / smoke_local)
 ├── tests/
+│   ├── test_package.py           # config registration, adapter save/load round-trip
 │   ├── test_zero_init.py         # M0 gate (incl. weights-actually-loaded assertion, §4.0)
 │   ├── test_prefix_shapes.py     # mask/position-id correctness with demo tokens
-│   └── test_sampler.py           # support/query sampler invariants
+│   ├── test_sampler.py           # support/query sampler invariants
+│   ├── test_data_tools.py        # registry building, stats checks, subset file lists
+│   ├── test_bridge.py            # dispatch parsing, ordering, state machine, demo packs
+│   ├── test_serve.py             # demo transport wire format
+│   └── test_serving_e2e.py       # serving checkpoint end-to-end
 └── so101_icl/
     ├── __init__.py
     ├── configuration_pi05_icl.py # ICLConfig(PI05Config): encoder + LoRA knobs; registered as "pi05_icl"
@@ -139,6 +145,7 @@ so101_icl/
     ├── lora.py                   # peft setup, target regex, zero-init check, save/load
     ├── data.py                   # ICLDataset: task-grouped support/query sampling + registry/subset CLI
     ├── train_loop.py             # Accelerate DDP training loop
+    ├── eval_icl.py               # offline 3-condition eval harness (M2 gate table)
     ├── registration.py           # runtime policy-registry insertion ("pi05_icl")
     ├── demo_transport.py         # ZMQ side-channel: set_demo_pack / clear_demo_pack
     └── bridge_icl_node.py        # ROS 2 node: dispatch pack → top-k → transport
@@ -202,8 +209,9 @@ class PI05ICLCore(PI05Pytorch):
         self.demo_encoder = DemoEncoder(config)          # new module
         self._demo_cache = None                          # (embs, pad_masks) or None
 
-    def set_demo_pack(self, keyframes, trajectory=None, traj_mask=0): ...
-        # runs DemoEncoder under no_grad, stores (embs [1,T,D], pad_masks [1,T])
+    def set_demo_pack(self, frames, demo_mask, traj, traj_ok): ...
+        # implemented signature; runs DemoEncoder under no_grad,
+        # stores (embs [1,T,D], pad_masks [1,T])
 
     def clear_demo_pack(self): self._demo_cache = None
 
@@ -219,6 +227,11 @@ class PI05ICLCore(PI05Pytorch):
         att_masks = insert_zeros(att_masks, n_demo)       # demo tokens are prefix (0) tokens
         return embs, pad_masks, att_masks
 ```
+
+(The pseudocode above sketches the shape contract; the implementation is
+`splice_demo_tokens` — a pure, unit-tested function in
+`modeling_pi05_icl.py` that also handles batch expansion and the
+`pad_masks`-driven position-id/KV-cache offsets.)
 
 - Ordering: `[cameras | demo | language]` keeps language last (matches
   PaliGemma pretraining habit of images-then-text) and keeps demo tokens
@@ -293,7 +306,7 @@ class DemoEncoder(nn.Module):
 - Optional knob (config): additionally adapt the expert attention
   (`gemma_expert.*.self_attn.(q|v)_proj`) — off in v1.
 - Save/load: `save_icl_adapter(dir)` writes `icl_adapter.safetensors`
-  (LoRA + DemoEncoder + gates, <100 MB) + `icl_config.json`;
+  (LoRA + DemoEncoder + gates, <100 MB) + `icl_adapter_config.json`;
   `load_icl_adapter(policy, dir)` restores. Stage 2 initializes from the
   stage-1 artifact via the same loader.
 
@@ -578,8 +591,8 @@ differ.
 base_checkpoint: lerobot/pi05_base          # FOUNDATION model (openpi), cached locally; load bf16
 dataset:
   repo_id: lerobot/droid_1.0.1
-  root: ~/.cache/huggingface/lerobot        # subset lives here, chunk-filtered
-  chunks: [0, 9]                            # v3.0 chunk dirs actually downloaded (~10k episodes)
+  root: ~/.cache/huggingface/lerobot        # subset lives here, episode-range filtered
+                                             # (range = whatever download-subset fetched)
   grouping_key: task_category               # 86 groups; NOT the 49,630 raw task strings
   camera_rename: {exterior_1_left: base_0_rgb, wrist_left: left_wrist_0_rgb, exterior_2_left: right_wrist_0_rgb}
   task_registry: so101_icl/configs/task_registry_droid.json   # built from downloaded chunks only
@@ -665,7 +678,7 @@ collection can run in parallel with M2.
 | Train/serve skew in demo-frame preprocessing | Single shared path: `PI05Policy._preprocess_images` reused by `data.py`, `demo_transport.py`, `bridge_icl_node.py` (§4.2) |
 | VRAM overshoot on 16 GB | Knobs: batch 8→4/GPU (+grad accum 2), F 6→4, tokens 96→64/demo; activation memory is the only variable term |
 | LeRobot version drift (installed 0.6.1 pinned in pixi) | Anchors in §1 are line-checked against 0.6.1; `so101_icl` imports only public API (`PI05Policy`, `PI05Pytorch`, registry) + one internal path constant (`paligemma_with_expert...`) asserted at import with a clear error message |
-| Adapter checkpoint vs base mismatch | `icl_config.json` stores base checkpoint hash **and** (stage 2) init-adapter hash; loader refuses mismatched pairs |
+| Adapter checkpoint vs base mismatch | `icl_adapter_config.json` stores base checkpoint hash **and** (stage 2) init-adapter hash; loader refuses mismatched pairs |
 
 ---
 

@@ -141,5 +141,31 @@ class TestSampler(unittest.TestCase):
         self.assertEqual(normalize_task("  Pick   Up "), "pick up")
 
 
+class TestKeyframeIndices(unittest.TestCase):
+    """Pure indexing invariants — no datasets needed."""
+
+    def test_long_episode_strictly_increasing(self):
+        idx = ICLDataset._sample_keyframe_indices(805, 6)
+        self.assertEqual(len(idx), 6)
+        self.assertEqual(idx[0], 0)
+        self.assertEqual(idx[-1], 804)
+        self.assertTrue((np.diff(idx) > 0).all())
+
+    def test_short_episode_returns_exact_count(self):
+        # Fewer frames than requested: timesteps repeat instead of shrinking
+        # (the traj slot must stay [traj_steps, d] for the broadcast in
+        # __getitem__).
+        idx = ICLDataset._sample_keyframe_indices(5, 6)
+        self.assertEqual(len(idx), 6)
+        self.assertEqual(idx[0], 0)
+        self.assertEqual(idx[-1], 4)
+        self.assertTrue(((idx >= 0) & (idx <= 4)).all())
+
+    def test_single_frame_episode(self):
+        idx = ICLDataset._sample_keyframe_indices(1, 16)
+        self.assertEqual(len(idx), 16)
+        self.assertTrue((idx == 0).all())
+
+
 if __name__ == "__main__":
     unittest.main()
