@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,7 @@ class CurriculumPhase:
 class TrainSettings:
     steps: int = 10_000
     batch_per_gpu: int = 8
+    grad_accum: int = 1  # micro-batches per optimizer step; effective batch = batch_per_gpu * grad_accum * n_gpus
     lr: float = 1e-4
     warmup: int = 500
     grad_clip: float = 1.0
@@ -199,9 +201,15 @@ def run_training(
 ) -> Path:
     """Main loop; called by train_icl.py on each accelerate process."""
     from accelerate import Accelerator
+    from accelerate.utils import DistributedDataParallelKwargs
 
     if accelerator is None:
-        accelerator = Accelerator(mixed_precision="bf16")
+        # find_unused_parameters: the demo encoder gates/queries may not all
+        # participate in the loss on every step (e.g. bare-prompt batches).
+        accelerator = Accelerator(
+            mixed_precision="bf16",
+            kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
+        )
     output_dir = Path(output_dir)
     is_main = accelerator.is_main_process
     if is_main:
@@ -214,7 +222,7 @@ def run_training(
         try:
             from torch.utils.tensorboard import SummaryWriter
 
-            writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
+            writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"), flush_secs=10)
             writer.add_hparams(
                 {
                     "lr": settings.lr,
@@ -239,6 +247,7 @@ def run_training(
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lambda step: _lr_lambda(step, settings)
     )
+    base_policy = policy  # unwrapped reference; `policy` becomes a DDP module below
     policy, optimizer, train_loader = accelerator.prepare(policy, optimizer, train_loader)
 
     metrics_file = output_dir / "metrics.jsonl"
@@ -272,7 +281,10 @@ def run_training(
         query_batch = preprocessor(query_batch)
         batch = {**query_batch, **_move_icl_fields(icl_fields, device)}
         loss, _ = policy.forward(batch)
-        accelerator.backward(loss)
+        accelerator.backward(loss / settings.grad_accum)
+
+        if (step + 1) % settings.grad_accum != 0:
+            continue
         torch.nn.utils.clip_grad_norm_(
             [p for p in policy.parameters() if p.requires_grad], settings.grad_clip
         )
@@ -288,13 +300,13 @@ def run_training(
             "step": step,
             "loss": loss.item(),
             "lr": scheduler.get_last_lr()[0],
-            "gate_vis": policy.model.demo_encoder.gate_vis.item(),
-            "gate_traj": policy.model.demo_encoder.gate_traj.item(),
+            "gate_vis": base_policy.model.demo_encoder.gate_vis.item(),
+            "gate_traj": base_policy.model.demo_encoder.gate_traj.item(),
             "sec_per_step": (time.time() - start) / step,
         }
         if step % settings.demo_zeroed_every == 0 or step == 1:
             policy.eval()
-            record["loss_demo_zeroed"] = _demo_zeroed_loss(policy, batch, rng_state)
+            record["loss_demo_zeroed"] = _demo_zeroed_loss(base_policy, batch, rng_state)
             policy.train()
         if val_batches and (step % settings.val_every == 0 or step == settings.steps):
             record["val/loss"] = evaluate_loss(
@@ -303,10 +315,9 @@ def run_training(
             if record["val/loss"] < best_val:
                 best_val = record["val/loss"]
                 save_icl_adapter(
-                    policy, output_dir / "best", init_adapter_path=init_adapter_path
+                    base_policy, output_dir / "best", init_adapter_path=init_adapter_path
                 )
-        if step % settings.log_every == 0 or step == 1:
-            logger.info("step %d/%d %s", step, settings.steps, record)
+        logger.info("step %d/%d %s", step, settings.steps, record)
         if writer is not None:
             for key, value in record.items():
                 if isinstance(value, (int, float)):
@@ -315,11 +326,11 @@ def run_training(
             f.write(json.dumps(record) + "\n")
         if step % settings.ckpt_every == 0 or step == settings.steps:
             save_icl_adapter(
-                policy, output_dir / f"step_{step}", init_adapter_path=init_adapter_path
+                base_policy, output_dir / f"step_{step}", init_adapter_path=init_adapter_path
             )
 
     final = save_icl_adapter(
-        policy, output_dir / "final", init_adapter_path=init_adapter_path
+        base_policy, output_dir / "final", init_adapter_path=init_adapter_path
     )
     if writer is not None:
         writer.close()
@@ -377,8 +388,12 @@ def main(argv=None) -> int:
 
     demo_cfg = DemoEncoderConfig(**stage.get("demo_encoder", {}))
     lora_cfg = LoRAConfig(**stage.get("lora", {}))
+    # The policy is built before Accelerator exists, so honor LOCAL_RANK here;
+    # otherwise every rank puts its copy on cuda:0 and multi-GPU runs OOM.
+    device = f"cuda:{os.environ.get('LOCAL_RANK', '0')}" if torch.cuda.is_available() else "cpu"
     policy = PI05ICLPolicy.from_base(
         stage["base_checkpoint"], dtype=stage.get("dtype", "bfloat16"),
+        device=device,
         demo_encoder=demo_cfg, lora=lora_cfg,
         gradient_checkpointing=True,
     )
@@ -421,7 +436,7 @@ def main(argv=None) -> int:
     train_settings = TrainSettings(
         gate_lr_mult=lora_cfg.gate_lr_mult, **{
             k: v for k, v in stage["train"].items()
-            if k in ("steps", "batch_per_gpu", "lr", "warmup", "grad_clip",
+            if k in ("steps", "batch_per_gpu", "grad_accum", "lr", "warmup", "grad_clip",
                      "ckpt_every", "seed", "num_workers", "log_every",
                      "demo_zeroed_every", "val_every", "val_batches", "tensorboard")
         }
