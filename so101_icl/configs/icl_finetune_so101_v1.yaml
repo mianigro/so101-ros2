@@ -10,7 +10,10 @@ dataset:
   root: ~/.cache/huggingface/lerobot
   grouping_key: task
   camera_rename: pi05_base       # wrist->left_wrist_0_rgb, overhead_1->base_0_rgb, overhead_2->right_wrist_0_rgb
-  demo_camera: observation.images.base_0_rgb
+  demo_camera: observation.images.base_0_rgb   # overhead_1 view — the demo keyframe source.
+                                  # base_0_rgb/overhead_1 is the right default for SO-101 teleop
+                                  # demos (scene-wide, task-informative keyframes); the wrist view
+                                  # is often motion-blurred and self-occluded during teleop.
   task_registry: so101_icl/configs/task_registry_so101.json
   holdout_tasks: {eval: 3, test: 3}
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}

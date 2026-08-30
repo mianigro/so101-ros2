@@ -14,11 +14,11 @@
 
 """In-context demonstration conditioning for pi0.5 on SO-101 (``pi05_icl``).
 
-Implements ``ICL_IMPLEMENTATION.md`` (VLA_PLAN.md Path 2): frozen
+Implements ``ICL_IMPLEMENTATION.md`` (demo tokens in the prefix): frozen
 ``lerobot/pi05_base`` + DemoEncoder + LoRA adapters on the VLM attention.
-Integration is subclassing + runtime registration only; the single repo edit
-outside this package is ``"pi05_icl"`` in ``policy_server/inference_engine.py``
-``SUPPORTED_POLICIES``.
+Integration is subclassing + runtime registration only; the only repo edits
+outside this package are ``"pi05_icl"`` in ``policy_server/inference_engine.py``
+``SUPPORTED_POLICIES`` and pixi tasks/deps.
 
 Import :mod:`so101_icl.registration` (or this package) before resolving the
 ``"pi05_icl"`` policy type through the lerobot registry.

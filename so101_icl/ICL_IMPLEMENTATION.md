@@ -1,27 +1,31 @@
 # ICL Implementation Plan — demo-conditioned π0.5 on SO-101
 
 Build plan for `so101_icl`: in-context demonstration conditioning for π0.5
-(frozen base + demo encoder + LoRA adapters), per `VLA_PLAN.md` Path 2.
-Integration happens through subclassing, runtime registration, and
-composition — the only repo edit outside the new package is **one line** in
-`policy_server` (§1, §10).
+(frozen base + demo encoder + LoRA adapters) — the "demo tokens in the
+prefix" path (in-context conditioning proper, as opposed to
+language-enrichment-only prompting). Integration happens through
+subclassing, runtime registration, and composition — the only repo edits
+outside the new package are `"pi05_icl"` in `policy_server`'s
+`SUPPORTED_POLICIES` and pixi tasks/deps (§1, §10).
 
-**Rev 2 (2026-08-29).** Two changes from rev 1:
+**Rev 3 (2026-08-30).** This revision documents the implementation **as
+built**: the design below now matches the code in `so101_icl/`, with the
+deviations discovered during implementation folded in (zero-init recipe,
+checkpoint layout, serving/campaign machinery) and remaining gaps collected
+in §11. Rev 2 (2026-08-29) introduced the foundational base
+(`lerobot/pi05_base`) and two-stage training:
 
-1. **Foundational base, two-stage training.** The frozen base is
-   **`lerobot/pi05_base`**. Training is now two stages:
-   - **Stage 1 — ICL pre-training** on the open-source DROID dataset
-     (`lerobot/droid_1.0.1`), teaching the adapter *how to use demos*
-     in-context across many tasks.
-   - **Stage 2 — fine-tuning with ICL** on our own SO-101 data: the *same*
-     LoRA + DemoEncoder + gates continue training at lower LR on robot
-     exports, adapting the in-context mechanism to our embodiment and tasks.
-2. **Verification pass.** Every §1 anchor re-checked against installed
-   LeRobot 0.6.1 and this repo. Corrected: the "zero edits to policy_server"
-   claim (false — one line needed), a critical `from_pretrained` strict-load
-   trap (new §4.0), the `so101_30hz.yaml` data-features attribution, PEFT
-   anchor line numbers, and registry mechanics. All other anchors verified
-   exact.
+- **Stage 1 — ICL pre-training** on the open-source DROID dataset
+  (`lerobot/droid_1.0.1`), teaching the adapter *how to use demos*
+  in-context across many tasks.
+- **Stage 2 — fine-tuning with ICL** on our own SO-101 data: the *same*
+  LoRA + DemoEncoder + gates continue training at lower LR on robot
+  exports, adapting the in-context mechanism to our embodiment and tasks.
+
+Its verification pass re-checked every §1 anchor against installed
+LeRobot 0.6.1 (correcting the strict-load trap of §4.0, the
+`so101_30hz.yaml` data-features attribution, PEFT anchor line numbers and
+registry mechanics).
 
 ---
 
@@ -60,14 +64,48 @@ composition — the only repo edit outside the new package is **one line** in
 | SigLIP vision tower (inside above) | ~0.4 B | **Frozen** (reused by demo encoder, features detached) |
 | Action expert (`gemma_expert`, ~311 M) + `action_in/out_proj`, `time_mlp` | ~320 M | **Frozen** |
 | LoRA on VLM attention (`q,k,v,o_proj`, r=32) | ~10 M | **Trained**, zero-init |
-| `DemoEncoder` (pool + trajectory MLP) | ~2 M | **Trained**, pool out-proj zero-init |
-| Demo gate `g` (scalar per demo-token block) | 1 | **Trained**, init 0 |
+| `DemoEncoder` (pool + trajectory MLP) | ~2 M | **Trained**, out-projections at default init |
+| Demo gates `g` (scalar per token block) + order embedding | 3 | **Trained**, init 0 |
 
-Zero-init property: LoRA `B` matrices are 0 by construction (peft default),
-demo pool out-projection is zero-initialized, and the demo gate starts at 0 —
-so at initialization the modified model is functionally identical to
-`lerobot/pi05_base`. This is the M0 gate and it falls out of the
-construction.
+Zero-init property, **as built** (rev 3 — differs from the original recipe):
+LoRA `B` matrices are 0 by construction (peft default), and only the
+**gates and the per-slot order embedding** start at zero
+(`DemoEncoder.reset_icl_parameters`). The demo out-projections keep their
+default init. The original plan also zeroed the out-projections, but
+`gate * proj(x)` with **both** factors zero is a dead saddle — the gradient
+is zero w.r.t. both, and the demo branch can never leave zero (observed:
+gates pinned at 0.0 for 200 steps before the fix). With default-init
+projections the gate receives gradient immediately while the model output
+at init is still gated off.
+
+Consequences for the M0 gate: with **no demo pack** the modified model is
+bit-identical to `lerobot/pi05_base` (asserted, `tests/test_zero_init.py`).
+With a pack, present-but-gated-off demo tokens carry attention keys of
+exactly 0, which after softmax still perturb every query's attention
+(~0.8 loss delta at init) — exact base parity with a pack does **not**
+hold; training must learn to down-weight the demo keys via their
+embeddings, and `loss_demo_zeroed` tracks that progress.
+
+**Null-out failure mode + gate floor (run 3, stage 1).** With descriptive
+task prompts (DROID `task_category`), language+observation suffice for
+most batches, so the cheapest loss minimum is "make the demos irrelevant":
+the optimizer drives the single scalar gates toward zero (observed:
+`gate_vis` 0.05 → 0.027 with `demo_zeroed_ratio` climbing back above 1.1).
+Two mitigations, both config knobs:
+
+- `demo_encoder.gate_floor` (e.g. 0.1): the gates are initialized AT the
+  floor and clamped below it (`clamp(gate, min=floor)` in `forward`) — the
+  demo branch cannot be silenced through one scalar, while the gate still
+  grows freely upward. `gate_scale=0` (the `loss_demo_zeroed` replay)
+  multiplies AFTER the clamp, so the metric keeps working. With
+  `gate_floor > 0` the zero-token-at-init property is intentionally
+  given up; no-pack parity still holds (no pack → no demo tokens).
+- `train.language_dropout` (e.g. 0.3): on that fraction of micro-batches
+  the task prompt is replaced by a vague stand-in (`"do the task."`),
+  making the demo pack the only task signal — direct gradient demand for
+  the demo path. Whole-batch granularity, a dedicated RNG (the
+  flow-matching noise stream is untouched), and the running application
+  rate is logged as `lang_dropout_rate`.
 
 ### 2.2 Token flow
 
@@ -120,45 +158,59 @@ exactly as `sample_actions` does today.
 ```
 so101_icl/
 ├── train_icl.py                  # entry wrapper --config <stage.yaml> → train_loop.main (mirrors self-improve/train_bc.py pattern)
-├── serve_icl.py                  # entry script: policy_server main + our registration
+├── serve_icl.py                  # policy-server wire: registers pi05_icl, demo side channel, ZMQ main
+├── serve_rollout_icl.py          # rollout wire (self-improve rollout server, port 8660) variant for M3/M4
 ├── eval_icl.py                   # entry wrapper: offline (stage 1) + sim/real (stage 2) eval harness
+├── eval_sim_campaign.py          # M3 Isaac Sim campaign (bootstraps itself into Isaac Sim's Python)
 ├── configs/
 │   ├── icl_pretrain_droid_v1.yaml   # stage 1 (see §7)
 │   ├── icl_finetune_so101_v1.yaml   # stage 2 (see §7)
 │   ├── icl_smoke_local_v1.yaml      # M1 local smoke run
-│   └── task_registry_*.json         # built by data.py CLI, per stage (droid / so101 / smoke_local)
+│   └── task_registry_*.json         # built by data.py CLI, per stage (droid / smoke_local; so101 pending)
+├── runs/<run>/                   # metrics.jsonl + tensorboard events + adapter ckpts (best/final/step)
+├── so101_icl_bridge/             # M5: ament_python ROS 2 package wrapping the bridge node
+│   ├── launch/bridge_icl.launch.py
+│   └── so101_icl_bridge/bridge.py # rclpy main; resolves so101_icl via PYTHONPATH/env/sibling
 ├── tests/
 │   ├── test_package.py           # config registration, adapter save/load round-trip
 │   ├── test_zero_init.py         # M0 gate (incl. weights-actually-loaded assertion, §4.0)
 │   ├── test_prefix_shapes.py     # mask/position-id correctness with demo tokens
 │   ├── test_sampler.py           # support/query sampler invariants
 │   ├── test_data_tools.py        # registry building, stats checks, subset file lists
+│   ├── test_conditions.py        # the three campaign arms + DemoPackBuilder
+│   ├── test_latency.py           # latency recorder + gate + policy-server probe plumbing
+│   ├── test_eval_offline.py      # offline report rendering + ablation-flag plumbing
 │   ├── test_bridge.py            # dispatch parsing, ordering, state machine, demo packs
-│   ├── test_serve.py             # demo transport wire format
+│   ├── test_bridge_package.py    # the ament package wiring
+│   ├── test_serve.py             # demo transport wire format + SUPPORTED_POLICIES gate
 │   └── test_serving_e2e.py       # serving checkpoint end-to-end
 └── so101_icl/
-    ├── __init__.py
+    ├── __init__.py               # BASE_CHECKPOINT + camera-rename maps (PI05_BASE / DROID)
     ├── configuration_pi05_icl.py # ICLConfig(PI05Config): encoder + LoRA knobs; registered as "pi05_icl"
-    ├── modeling_pi05_icl.py      # PI05ICLCore(PI05Pytorch), PI05ICLPolicy(PI05Policy)
+    ├── modeling_pi05_icl.py      # PI05ICLCore(PI05Pytorch), PI05ICLPolicy(PI05Policy),
+    │                             #   splice_demo_tokens, merged-LoRA serving checkpoints (§4.1)
     ├── processor_pi05_icl.py     # make_pi05_icl_pre_post_processors → delegates to pi05's (registry requirement, §1)
-    ├── demo_encoder.py           # DemoEncoder (attention pool + traj MLP + mask)
-    ├── lora.py                   # peft setup, target regex, zero-init check, save/load
-    ├── data.py                   # ICLDataset: task-grouped support/query sampling + registry/subset CLI
-    ├── train_loop.py             # Accelerate DDP training loop
-    ├── eval_icl.py               # offline 3-condition eval harness (M2 gate table)
+    ├── demo_encoder.py           # DemoEncoder (attention pool + traj MLP + mask + gate_scale hook)
+    ├── lora.py                   # manual peft injection, adapter save/load, setup_trainable_policy
+    ├── data.py                   # ICLDataset, on-disk registry building, stats tools, download-subset CLI
+    ├── train_loop.py             # Accelerate DDP training loop + CLI main
+    ├── conditions.py             # full_icl / prompt_enriched / bare_prompt arms + DemoPackBuilder
+    ├── latency.py                # LatencyRecorder, p95 latency gate, policy-server probe
+    ├── eval_icl.py               # offline 3-condition eval (M2 gate, k/F/traj ablations) + sim/real drivers
     ├── registration.py           # runtime policy-registry insertion ("pi05_icl")
-    ├── demo_transport.py         # ZMQ side-channel: set_demo_pack / clear_demo_pack
-    └── bridge_icl_node.py        # ROS 2 node: dispatch pack → top-k → transport
+    ├── demo_transport.py         # ZMQ side channel: set/clear/status + engine monkey-patch + stage-stats I/O
+    └── bridge_icl_node.py        # ROS-free core + optional rclpy shell: dispatch pack → top-k → transport
 ```
 
-Plus: `policy_server/inference_engine.py` — add `"pi05_icl"` to
-`SUPPORTED_POLICIES`.
+Plus: `policy_server/inference_engine.py` — `"pi05_icl"` added to
+`SUPPORTED_POLICIES` — and `pixi.toml` (`peft`/`tensorboard` deps, the
+`icl_data`/`icl_server`/`icl_sim_server`/`icl_bridge` tasks).
 
 ---
 
 ## 4. Module designs
 
-### 4.0 Load-bearing gotchas (from the verification pass)
+### 4.0 Load-bearing gotchas (verified in the code, several found the hard way)
 
 1. **`from_pretrained` swallows load failures.** `PI05Policy.from_pretrained`
    defaults `strict=True` (:759) and wraps `load_state_dict` in a broad
@@ -182,7 +234,10 @@ Plus: `policy_server/inference_engine.py` — add `"pi05_icl"` to
    don't exist (`state_proj`, `action_time_mlp_*`). We therefore inject
    adapters manually with `inject_adapter_in_model` and an explicit target
    regex (§4.3), keeping the `PreTrainedPolicy` outer type intact for the
-   server.
+   server. Additionally — found during implementation — **peft's tuner
+   re-freezes everything except adapters at injection time**
+   (`peft/tuners/tuners_utils.py:1057`), so `lora.inject_lora` must
+   re-enable `demo_encoder.*` **after** `inject_adapter_in_model` returns.
 4. **State is not projected.** π0.5 has no `state_proj`; state is
    discretized into the PaliGemma prompt (`max_state_dim=32` is prompt
    padding). The demo trajectory branch is therefore the *only* new consumer
@@ -198,6 +253,19 @@ Plus: `policy_server/inference_engine.py` — add `"pi05_icl"` to
    are inserted before the suffix. Camera order is
    `config.image_features` order (`_preprocess_images` fills missing
    cameras with −1 images + zero masks).
+6. **The lerobot processor pipeline drops unknown batch keys.** The `icl.*`
+   demo-pack fields must bypass the pre/post processor and be re-merged
+   after preprocessing (`train_loop._split_icl_fields` /
+   `_move_icl_fields`); otherwise training **silently runs bare-prompt** —
+   no error, the keys are simply gone.
+7. **LeRobot hub-completion on partial subsets.** `LeRobotDataset` treats
+   every episode listed in `meta/` as required and re-downloads whatever
+   the disk lacks (`dataset_reader.try_load` → `_download`) — a
+   `download-subset` range (full meta, partial files) therefore triggers a
+   full-dataset pull. Every dataset open goes through
+   `data.open_local_dataset`: pinned to `on_disk_episodes` (with
+   contiguous-prefix enforcement, the only layout frame indexing supports)
+   and `HF_HUB_OFFLINE=1`, so residual hub calls fail loudly instead.
 
 ### 4.1 `modeling_pi05_icl.py`
 
@@ -249,12 +317,23 @@ class PI05ICLCore(PI05Pytorch):
   config explicitly matters because the checkpoint's `config.json` has
   `type: "pi05"` and would resolve a plain `PI05Config`; `strict=False` per
   §4.0.1.
-- `from_pretrained` checkpoint layout: base weights come from
+- `from_pretrained` checkpoint layout (as built): base weights come from
   `lerobot/pi05_base` (stage 1) or the stage-1 serving dir (stage 2, base
   unchanged either way); adapter + encoder weights are a separate
-  `icl_adapter.safetensors` in the same dir, loaded by
-  `serve_icl`/`train_icl` resume. **The base checkpoint is never
-  rewritten.**
+  `icl_adapter.safetensors` in the same dir (plus
+  `icl_adapter_config.json` with base/init fingerprints — the loader
+  refuses mismatched pairs), loaded by `serve_icl`/`train_icl` resume.
+  **The base checkpoint is never rewritten.**
+- **Serving artifacts ship LoRA merged into the base weights**
+  (`modeling_pi05_icl._merge_lora_state_dict` +
+  `save_serving_checkpoint` + `so101_serving_config`): a LoRA-injected
+  state dict has `q_proj.base_layer.*` key names that a freshly constructed
+  policy cannot strict-load on the server, so serving dirs contain a merged
+  `W + (α/r)·BA` checkpoint under plain key names, along with a config
+  whose image keys are renamed to the ROS camera names
+  (`wrist`/`overhead_1`/`overhead_2`) and state-dim set to 6 — the
+  policy-server feature validation then passes without edits.
+  Adapter-only artifacts keep the unmerged LoRA for training.
 
 ### 4.2 `demo_encoder.py`
 
@@ -269,10 +348,11 @@ class DemoEncoder(nn.Module):
     # vision branch:
     #   frame_embs = paligemma.embed_image(frames).detach()        # [F, 256, D], frozen
     #   pooled = MultiHeadAttention(q=T learned queries, k=v=frame_embs)  # [T, D], T=64
-    #   out_vis = LayerNorm(zero_init_linear(pooled)) * gate       # gate init 0
+    #   out_vis = LayerNorm(vis_proj(pooled)) * gate              # default-init proj, gate init 0
     # trajectory branch:
-    #   out_traj = LayerNorm(zero_init_linear(MLP(traj))) * traj_ok * gate2   # [32, D]
-    # outputs: concat over demos + order embedding (learned, k≤4) + pad mask
+    #   out_traj = LayerNorm(traj_proj(MLP(traj))) * traj_ok * gate2  # [32, D]
+    # outputs: concat over demos + order embedding (learned, k≤4, init 0) + pad mask
+    # reset_icl_parameters(): zeroes ONLY gates + order embedding (§2.1 dead-saddle fix)
 ```
 
 - Image transform reuse: demo frames go through the same code path as
@@ -299,10 +379,12 @@ class DemoEncoder(nn.Module):
   not lerobot's `wrap_with_peft`, which freezes everything including the
   DemoEncoder (§4.0.3) — keeping the `PreTrainedPolicy` outer type intact
   for the server.
-- Zero-init check: peft initializes LoRA `B=0`; utility asserts
-  `(model(x) - base_model(x)).abs().max() < 1e-5` on a fixed batch with
-  demo gate 0 (this is `tests/test_zero_init.py`, the M0 gate) — after
-  first asserting base weights actually loaded (§4.0.1).
+- Zero-init checks: peft initializes LoRA `B=0` and
+  `lora.assert_zero_init` verifies the structure (LoRA `B` zeros, gates
+  zero); `tests/test_zero_init.py` then asserts the modified model is
+  **bit-identical to pi05_base on a fixed no-pack batch** — after first
+  asserting base weights actually loaded (§4.0.1). Parity with a demo pack
+  deliberately does not hold (§2.1).
 - Optional knob (config): additionally adapt the expert attention
   (`gemma_expert.*.self_attn.(q|v)_proj`) — off in v1.
 - Save/load: `save_icl_adapter(dir)` writes `icl_adapter.safetensors`
@@ -420,13 +502,25 @@ disk.
 - Stages share the loop; they differ only in config: stage 2 sets
   `init_adapter_from:` (loads the stage-1 `icl_adapter.safetensors` before
   training) and a lower LR / shorter schedule (§6.3).
-- Logged metrics:
+- Gradient accumulation knob (`train.grad_accum`) keeps the effective batch
+  at 16 when per-GPU batches must shrink for VRAM (§6.3); the k-curriculum
+  is applied at **epoch granularity** via `CurriculumPhase`.
+- Logged metrics (per step, to `metrics.jsonl` AND tensorboard events under
+  `<output_dir>/tensorboard`):
   - `loss` (query action loss), `val/loss` on fixed support/query sets;
-  - `loss_demo_zeroed`: same query batch, demo gate forced 0 — the
-    in-training ICL signal (gap between the two = how much demos are used);
-  - `gate_value` per demo block, LoRA-norm, tokens/dropout stats.
-- Checkpointing: every 2k steps + best val; adapter-only artifacts; resume
-  flag.
+  - `loss_demo_zeroed`: same query batch replayed under the *same RNG
+    state* with the demo gate forced 0 (`demo_zeroed_every` knob) — the
+    in-training ICL signal — together with
+    `demo_zeroed_ratio = loss / loss_demo_zeroed` (< 1 means the demos are
+    helping; hovering at 1.0 means the demos are being nulled, §2.1/§6.4);
+  - `lang_dropout_rate`: running fraction of batches that received the
+    vague prompt (sanity check on `train.language_dropout`);
+  - `lr`, gate values, `sec_per_step`.
+  - (LoRA-norm and token/dropout stats from the original plan are **not**
+    implemented — deferred, §11.)
+- Param groups: the demo gates get `gate_lr_mult` (default 10×) the base LR.
+- Checkpointing: `ckpt_every` steps + best-val + final; adapter-only
+  artifacts; resume flag.
 - Determinism/seed in config; `WANDB_MODE=offline` default.
 
 ### 4.6 `registration.py` + `serve_icl.py` — serving with one server edit
@@ -448,44 +542,82 @@ disk.
      (`async_client.py:141-147`), camera/state schema validation unchanged
      (demo keyframes are not observation keys).
 - Demo transport (`demo_transport.py`): a small ZMQ REP socket on the
-  server host (`set_demo_pack` / `clear` / `status`), calling the loaded
-  policy's cache API. The async inference client and the 30 Hz contract are
-  untouched; the **bridge node** drives the side channel.
+  server host (port 8661, msgpack header + raw f32 frames;
+  `set_demo_pack` / `clear` / `status`, with shape validation and encode
+  timing), calling the loaded policy's cache API — installed into the
+  engine by monkey-patching `InferenceEngine.load_policy`/`unload_policy`
+  (`install_into_engine`). It also carries `save_stage_stats` /
+  `load_stage_stats` for the stage-2 trajectory normalizer. The async
+  inference client and the 30 Hz contract are untouched; the **bridge
+  node** drives the side channel.
+- Rollout wire (M3/M4): `serve_rollout_icl.py` extends the self-improve
+  rollout server's `SUPPORTED_POLICIES` at runtime, defaults to
+  `--policy-type pi05_icl`, and publishes the loaded policy into the demo
+  transport so `set_demo_pack` reaches the rollout-serving model.
 - Latency: `set_demo_pack` ≈ k×F ≤ 24 SigLIP forwards + pool ≪ 1 s on the
   GPU server; per-tick inference adds only the extra prefix attention
   columns (≤384 tok) in the already-cached prefix pass.
 
-### 4.7 `bridge_icl_node.py` — ROS 2 node (Path 1 → 2 consumer)
+### 4.7 `bridge_icl_node.py` — ROS 2 node (dispatch-package consumer)
+
+The core (parsing, ordering, selection, state machine, terminal monitor,
+asset resolution) is ROS-free and unit-tested; the optional rclpy shell
+wires parameters, a dispatch-poll timer, and dynamic terminal-topic
+subscriptions. The ament packaging lives in `so101_icl_bridge/`
+(colcon-buildable, `ros2 launch so101_icl_bridge bridge_icl.launch.py`).
+A ROS-free CLI (`--stdin-events`, `--once`) drives the same core for
+smoke runs. **Not yet exercised against a live Bridge Robot.**
 
 - Inputs: mission id; polls `GET /api/mission/<ws>/<id>/dispatch-package`
   (`ros2_action_goal:v1`).
-- State machine: subtasks ordered by `depends_on` edges; one active
-  subtask; only its conditioning pack is in context.
-- Demo selection: top-k (k ≤ 4) from `conditioning_pack.demonstrations`,
-  ranked success-first, then recency (`prov_id`), then ranker score.
-- Asset resolution: keyframes via presigned URL → decode → policy image
-  transform (`_preprocess_images` path, §4.2) → transport `set_demo_pack`;
-  trajectory slice when `trajectory.available`, else `traj_ok=0`.
-- Subtask terminal condition (action-spec terminal predicate or operator
-  topic) → `clear_demo_pack()` → advance.
-- Fallback mode `conditioning: prompt` (Path 1: language enrichment only,
-  no demo tokens) — same node, config flag; this produces the baseline arm
-  of every comparison.
+- State machine: subtasks ordered topologically over `depends_on` edges
+  (cycles rejected); one active subtask; only its conditioning pack is in
+  context. Terminal predicates (`action_spec.terminal.topic`) gate
+  advancement via `TerminalMonitor`; `--advance-mode auto` skips the gate.
+- Demo selection: top-k from `conditioning_pack.demonstrations`, ranked
+  success-first, then recency (`prov_id`), then ranker score. `k`,
+  `frames_per_demo` and `k_max` are CLI flags / ROS parameters (rev 3 —
+  previously hardcoded).
+- Asset resolution: keyframes via presigned URL or `file://` → decode →
+  resample to exactly `frames_per_demo` → shared policy image transform
+  (§4.2) → transport `set_demo_pack`; trajectory slice when
+  `trajectory.available`, else `traj_ok=0` (a trajectory-less demo never
+  masks the trajectories of the other selected demos).
+- Subtask terminal condition → `clear_demo_pack()` → advance.
+- Fallback mode `conditioning: prompt`: the node **clears the pack** —
+  no demo tokens. There is deliberately no language-enrichment logic here
+  (§10); the enriched-prompt arm of the campaigns is produced by
+  `conditions.py` on the eval side, not by the bridge.
 
-### 4.8 `eval_icl.py`
+### 4.8 `eval_icl.py` + the campaign machinery (as built)
 
 - **Stage 1 (offline, no robot)**: held-out DROID `task_category` groups —
   demo-conditioned vs demo-zeroed vs bare-prompt query loss on fixed
-  support/query sets; k/F ablations run here cheaply.
-- **Stage 2 (sim first, then real)**: sim via `self-improve/rollout_sim.py`
-  machinery on the SO-101 workcell, then real (`real_rollout.py` + judge).
-- Conditions per task: (a) bare prompt, (b) prompt-enriched (Path 1),
-  (c) full ICL (demo tokens). Tasks: seen-train held-out episodes + fully
-  held-out tasks.
+  support/query sets; ablations `k ∈ {1,2,4}`, `F ∈ {4,6,8}` (evaluated at
+  the anchor k), trajectory on/off, driven by CLI flags or the stage YAML
+  `eval.ablations` block. Output: aggregate settings table + **per-group
+  table** (the M2 gate reads per held-out group) + median demo/zeroed
+  ratio. If the requested split is empty the harness falls back to train
+  groups **and stamps a WARNING into the report** — the gate does not
+  apply to such a run.
+- **Stage 2 sim (M3)**: `eval_sim_campaign.py` bootstraps itself into
+  Isaac Sim's Python (`launch_isaac_sim_before_task_imports`), runs
+  `sim_rollout.run_rollouts` per condition against the rollout-wire ICL
+  server (`serve_rollout_icl.py`, port 8660), and writes a markdown report
+  with the M3 gate line (≥ +10 pts, ≥ 20 trials). `eval_icl.py sim`
+  re-execs it.
+- **Stage 2 real (M4)**: `eval_icl.py real` drives the proven
+  `self_improve.real_rollout` session stack per condition
+  (`run_session`/`run_post` with the VLM judge), pushes/clears the demo
+  pack per condition via the side channel, probes chunk latency per
+  condition (`latency.probe_policy_server`), and applies the latency gate
+  (p95 ≤ +20 % of the unconditioned arm).
+- **Conditions** (`conditions.py`): `full_icl` (demo pack),
+  `prompt_enriched` (pack cleared, full prompt), `bare_prompt` (first
+  sentence only). `DemoPackBuilder` deterministically picks the first k
+  episodes of a registry group, mirroring the training sampler.
 - Protocol: ≥20 sim trials / ≥10 real trials per condition per task;
-  metrics: success@1, time-to-success, chunk latency p50/p95, per-condition
-  delta. Output: markdown table per task + aggregate.
-- Ablations (config-driven): k ∈ {1,2,4}, F ∈ {4,6,8}, trajectory on/off.
+  metrics: success@1, chunk latency p50/p95, per-condition delta.
 
 ---
 
@@ -551,7 +683,7 @@ differ.
 | k (support demos) | curriculum: 1k steps @ k=1 → k ~ U{1,2} → k ~ U{1,4} | k ~ U{1,4} (no curriculum) |
 | Frames per demo F | 6 (ablate 4/8) | 6 |
 | Trajectory branch | on when available, `traj_ok` mask | on when available |
-| Batch | 8/GPU × 2 (DDP) | 8/GPU × 2 |
+| Batch | 4/GPU × grad_accum 2 × 2 (DDP) — 16 GB 4080s OOM at 8 during backward | 8/GPU × 2 |
 | Optimizer | AdamW, lr 1e-4, wd 0.01, betas default | AdamW, lr 2.5e-5 (RICL finetune analog) |
 | Schedule | cosine, warmup 500 steps | cosine, warmup 100 steps |
 | Steps | 10k; extend to 20k if val still falling | 1k–3k; early-stop on val |
@@ -589,39 +721,37 @@ differ.
 
 ```yaml
 base_checkpoint: lerobot/pi05_base          # FOUNDATION model (openpi), cached locally; load bf16
+dtype: bfloat16
+output_dir: so101_icl/runs/icl_pretrain_droid_v1
 dataset:
   repo_id: lerobot/droid_1.0.1
   root: ~/.cache/huggingface/lerobot        # subset lives here, episode-range filtered
                                              # (range = whatever download-subset fetched)
   grouping_key: task_category               # 86 groups; NOT the 49,630 raw task strings
-  camera_rename: {exterior_1_left: base_0_rgb, wrist_left: left_wrist_0_rgb, exterior_2_left: right_wrist_0_rgb}
+  camera_rename: droid                      # PRESET name (exterior_1->base_0_rgb, wrist->left_wrist_0_rgb,
+                                             # exterior_2->right_wrist_0_rgb); explicit maps also accepted
+  demo_camera: observation.images.left_wrist_0_rgb   # which camera feeds demo keyframes
   task_registry: so101_icl/configs/task_registry_droid.json   # built from downloaded chunks only
   holdout_groups: {eval: 3, test: 3}        # whole task_category values, names frozen in registry
   recompute_stats: auto                     # recompute quantiles if subset ships min/max only
-demo_encoder:
-  k_max: 4
-  frames_per_demo: 6
-  tokens_vis: 64
-  tokens_traj: 32
-  traj_steps: 16
-  n_heads: 8
-lora:
-  rank: 32
-  alpha: 64
-  dropout: 0.05
-  targets: vlm_attention          # vlm_attention | vlm_attention+expert
-  gate_lr_mult: 10.0
+demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
+               gate_floor: 0.1}    # null-out mitigation (§2.1); 0.0 = original zero-init
+lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention, gate_lr_mult: 50.0}
 train:
   steps: 10000
-  batch_per_gpu: 8
+  batch_per_gpu: 4                # 16 GB 4080s OOM at 8 during backward
+  grad_accum: 2                   # effective batch 4*2*2 GPUs = 16
   lr: 1.0e-4
   warmup: 500
   grad_clip: 1.0
-  curriculum: {k: [1000, 3000], schedule: "1->U{1,2}->U{1,4}"}
+  curriculum: [[1000, [1]], [3000, [1, 2]], [100000000, [1, 2, 3, 4]]]   # epoch-granular k phases
   ckpt_every: 2000
   seed: 42
-eval:
-  offline_trials: 500            # query episodes per held-out group
+  demo_zeroed_every: 100
+  language_dropout: 0.3           # vague-prompt batches: demos become the only task signal (§2.1)
+  val_every: 1000
+eval:                             # offline defaults for `eval_icl.py offline`
+  offline_trials: 500             # query samples (CLI flags override)
   ablations: {k: [1, 2, 4], frames: [4, 6, 8], traj: [on, off]}
 ```
 
@@ -629,18 +759,21 @@ eval:
 
 ```yaml
 base_checkpoint: lerobot/pi05_base            # unchanged — the base is never rewritten
-init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/best/icl_adapter.safetensors
+dtype: bfloat16
+output_dir: so101_icl/runs/icl_finetune_so101_v1
+init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/final
 dataset:
   repo_ids: [local/so101_teleop_v1, local/so101_sim_round2]   # rosbag_to_lerobot + self-improve exports (to be curated; §6.1)
   grouping_key: task
-  camera_rename: {wrist: left_wrist_0_rgb, overhead_1: base_0_rgb, overhead_2: right_wrist_0_rgb}  # PI05_BASE_IMAGE_KEY_MAP
+  camera_rename: pi05_base       # PRESET (wrist->left_wrist_0_rgb, overhead_1->base_0_rgb, overhead_2->right_wrist_0_rgb)
+  demo_camera: observation.images.base_0_rgb
   task_registry: so101_icl/configs/task_registry_so101.json
   holdout_tasks: {eval: 3, test: 3}
-  camera_keys: [observation.images.wrist, observation.images.overhead_1, observation.images.overhead_2]
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
 lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
-train: {steps: 2000, batch_per_gpu: 8, lr: 2.5e-5, warmup: 100, grad_clip: 1.0, ckpt_every: 500, seed: 43}
-eval:
+train: {steps: 2000, batch_per_gpu: 8, lr: 2.5e-5, warmup: 100, grad_clip: 1.0, ckpt_every: 500, seed: 43,
+        curriculum: [[100000000, [1, 2, 3, 4]]], demo_zeroed_every: 100, val_every: 250}
+eval:                           # sim/real campaign knobs — consumed by eval_icl.py sim|real
   sim_trials: 20
   real_trials: 10
   conditions: [bare_prompt, prompt_enriched, full_icl]
@@ -648,19 +781,19 @@ eval:
 
 ---
 
-## 8. Milestones and gates
+## 8. Milestones and gates — with as-built status (rev 3)
 
-| M | Scope | Gate (objective, binary) | Est. |
+| M | Scope | Gate (objective, binary) | Status |
 |---|---|---|---|
-| **M0** | `PI05ICLCore` + DemoEncoder skeleton + LoRA + zero-init test; no training | Loaded model (pi05_base, `strict=False`, weights-load assertion per §4.0.1) with adapters+gate at init produces **bit-identical** action chunks to `lerobot/pi05_base` on a fixed obs batch (max abs diff < 1e-5 fp32 compare; `tests/test_zero_init.py`) | 2–4 days |
-| **M1** | `data.py` sampler + overfit run on `lerobot/droid_100` (464 MB) | Overfit **one** task (support/query from its episodes): query loss ↓ ≥80 % vs step-0, and demo-zeroed loss stays high → demo tokens steer actions (`tests/test_sampler.py` invariants pass) | 3–5 days |
-| **M2** | **Stage 1**: DROID subset download (10 chunks) + full ICL pre-training + offline eval | On ≥6 held-out `task_category` groups (≥500 query episodes each): median demo-conditioned query loss ≤ 0.9× demo-zeroed loss **and** ≤ bare-prompt loss; seen-group bare-prompt regression <10 % | 1–2 weeks (incl. download) |
-| **M3** | **Stage 2**: fine-tune with ICL on own data (after curation target met) + sim eval | In sim on the SO-101 workcell: full_icl success > bare_prompt success (≥10 pts absolute, ≥20 trials each) on held-out tasks; seen-task bare-prompt regression <10 % | 1–2 weeks (incl. data curation/collection) |
-| **M4** | `serve_icl` + real-robot eval | Real arm, ≥10 trials/condition: full_icl ≥ prompt_enriched ≥ bare_prompt trend on instruction-following details; p95 chunk latency within +20 % of unconditioned | 3–5 days |
-| **M5** | `bridge_icl_node` on dispatch packages | End-to-end: objective → dispatch pack → bridge → conditioned rollouts; subtask switch demo-encode ≤1 s; same `ros2_action_goal:v1` contract | 1 week |
+| **M0** | `PI05ICLCore` + DemoEncoder skeleton + LoRA + zero-init test; no training | Loaded model (pi05_base, `strict=False`, weights-load assertion per §4.0.1) with adapters+gate at init produces **bit-identical** action chunks to `lerobot/pi05_base` on a fixed **no-pack** obs batch (`tests/test_zero_init.py`; pack parity deliberately not asserted, §2.1) | **Done** |
+| **M1** | `data.py` sampler + overfit smoke run | Overfit **one** task (support/query from its episodes): query loss ↓ ≥80 % vs step-0, and demo-zeroed loss stays high → demo tokens steer actions (`tests/test_sampler.py` invariants pass) | **Done** — on the local SO-101 datasets, not `droid_100` (§11) |
+| **M2** | **Stage 1**: DROID subset download + full ICL pre-training + offline eval | On held-out `task_category` groups: median demo-conditioned query loss ≤ 0.9× demo-zeroed loss **and** ≤ bare-prompt loss; seen-group bare-prompt regression <10 % | **Partial**: a stage-1 training run happened (`runs/icl_pretrain_droid_v1/` metrics + tensorboard) but the DROID subset download is deferred and no `final/` adapter artifact exists on disk — the gate has **not** been formally evaluated (§11) |
+| **M3** | **Stage 2**: fine-tune with ICL on own data (after curation target met) + sim eval | In sim on the SO-101 workcell: full_icl success > bare_prompt success (≥10 pts absolute, ≥20 trials each) on held-out tasks; seen-task bare-prompt regression <10 % | **Code complete, not run** (`eval_sim_campaign.py`, `serve_rollout_icl.py`); blocked on stage-2 data + stage-1 final adapter |
+| **M4** | `serve_icl` + real-robot eval | Real arm, ≥10 trials/condition: full_icl ≥ prompt_enriched ≥ bare_prompt trend on instruction-following details; p95 chunk latency within +20 % of unconditioned | **Code complete, not run** (`eval_icl.py real`, `latency.py`) |
+| **M5** | `bridge_icl_node` on dispatch packages | End-to-end: objective → dispatch pack → bridge → conditioned rollouts; subtask switch demo-encode ≤1 S; same `ros2_action_goal:v1` contract | **Core unit-tested + ament-packaged; live-robot bring-up pending** |
 
-M0 and M1 need no large downloads (droid_100 is 464 MB). Stage-2 data
-collection can run in parallel with M2.
+M0 and M1 needed no large downloads. Stage-2 data collection runs in
+parallel with stage 1 (§11).
 
 ---
 
@@ -684,15 +817,49 @@ collection can run in parallel with M2.
 
 ## 10. What is deliberately NOT built here
 
-- **One** edit outside the new package: `"pi05_icl"` added to
+- Edits outside the new package: `"pi05_icl"` added to
   `SUPPORTED_POLICIES` in `policy_server/inference_engine.py` (required —
   the name is gate-checked before the registry is consulted; precedent
-  `"xvla"`). No other changes to `policy_server`, `so101_inference`,
-  `rosbag_to_lerobot`, `self-improve`, or lerobot source. Registration and
-  subclassing only.
-- No Path 1 language-enrichment logic beyond the bridge's `prompt_enriched`
-  mode flag (it reuses the same node).
+  `"xvla"`), plus `pixi.toml` deps/tasks. No other changes to
+  `policy_server`, `so101_inference`, `rosbag_to_lerobot`, `self-improve`,
+  or lerobot source. Registration and subclassing only.
+- No language-enrichment (Path 1) logic: the bridge's prompt mode simply
+  clears the demo pack; the `prompt_enriched` campaign arm reuses the
+  dispatch prompt verbatim. Enriching prompts from demo metadata was
+  considered and dropped.
 - No upstream Bridge Robot changes: the node consumes the documented
   `ros2_action_goal:v1` dispatch-package contract as-is.
 - No full-DROID download and no dataset re-encoding: the subset strategy
   and collation-time renames (§4.4) avoid touching the published dataset.
+
+---
+
+## 11. Known gaps and deferred work (rev 3)
+
+Everything below is honestly open; nothing here is silently missing from
+the code — if it isn't listed as done in §8, it isn't done.
+
+1. **Stage-1 completion**: the DROID subset download is deferred (config
+   comment); `runs/icl_pretrain_droid_v1/` holds metrics/tensorboard but
+   **no `final/` or `best/` adapter directories**, while the stage-2
+   config's `init_adapter_from` points at `.../final`. Stage 2 cannot run
+   end-to-end from what is on disk until stage 1 is re-run/finished.
+2. **Stage-2 dataset**: on-disk own data is ~1 task × 4 episodes (the
+   smoke registry lists the same episodes under both datasets). The ≥20
+   tasks × ≥20 demos curation target requires the teleop collection
+   campaign — the blocking prerequisite for M3/M4.
+3. **M3/M4/M5 execution**: campaigns and bridge are code-complete but
+   unrun (§8); the bridge has never talked to a live Bridge Robot.
+4. **Deferred loss-metric logging**: LoRA-norm and token/dropout stats
+   from the original §4.5 plan are not implemented (loss, lr, gates,
+   sec_per_step, loss_demo_zeroed, val/loss are).
+5. **M1 smoke ran on local SO-101 data**, not `lerobot/droid_100` as
+   originally planned (no droid download at the time). Same gate
+   semantics, different data.
+6. **Offline eval granularity**: the per-group table attributes
+   batch-level means to each group a batch touches (a group's rows are
+   its batches); the original plan's "500 query episodes per group"
+   budget is approximated by `offline_trials` over the whole split.
+   Successive-batch sampling within a group would tighten this.
+7. **`droid_100` v2.0 vs v3.0**: if the droid smoke is ever run, it loads
+   with a version notice; only the local smoke is exercised.

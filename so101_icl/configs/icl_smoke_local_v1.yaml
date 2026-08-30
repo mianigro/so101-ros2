@@ -28,3 +28,6 @@ train:
   val_every: 50
   val_batches: 2
   log_every: 5
+eval:                            # offline defaults for `eval_icl.py offline`
+  offline_trials: 8              # 1 group x 8 episodes — smoke only
+  ablations: {k: [1, 2], frames: [4, 6], traj: [on, off]}

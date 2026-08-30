@@ -99,8 +99,17 @@ def run_offline(
     trials: int = 8,
     batch_size: int = 4,
     ablate_k: tuple[int, ...] = (1, 2, 4),
+    ablate_frames: tuple[int, ...] = (),
+    ablate_traj: tuple[bool, ...] = (),
 ) -> str:
-    """Three-condition query-loss table over held-out groups (markdown)."""
+    """Three-condition query-loss table over held-out groups (markdown).
+
+    Ablation dimensions (ICL §4.8): ``ablate_k`` (support size), ``ablate_frames``
+    (keyframes per demo, evaluated at the largest k) and ``ablate_traj``
+    (trajectory branch on/off, same anchor setting). The per-group table uses
+    the largest-k run — the M2 gate reads per held-out group, not just the
+    aggregate.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     from .configuration_pi05_icl import DemoEncoderConfig, LoRAConfig
 
@@ -110,13 +119,17 @@ def run_offline(
         lora=LoRAConfig(**stage_config.get("lora", {})),
     )
 
+    split_note = None
     try:
         dataset = ICLDataset(registry_path, policy.config, split=split,
                              demo_camera=stage_config["dataset"].get(
                                  "demo_camera", "observation.images.base_0_rgb"))
     except ValueError:
-        logger.warning("split '%s' is empty; falling back to train (smoke registries "
-                       "hold out no groups)", split)
+        # Loud in the log AND in the report: the M2 gate is only meaningful
+        # on held-out groups (smoke registries hold out none).
+        split_note = (f"WARNING: split '{split}' is empty — evaluated on TRAIN "
+                      f"groups; the M2 gate does not apply to this report.")
+        logger.warning(split_note)
         dataset = ICLDataset(registry_path, policy.config, split="train",
                              demo_camera=stage_config["dataset"].get(
                                  "demo_camera", "observation.images.base_0_rgb"))
@@ -127,42 +140,84 @@ def run_offline(
     primary_ds = open_local_dataset(primary["repo_id"], primary["root"])
     preprocessor, _ = build_stage_preprocessor(policy.config, primary_ds.meta.stats)
 
-    rows = []
-    for k in ablate_k:
+    default_frames = dataset.frames_per_demo
+
+    def _run(label: str, *, k: int, frames: int, traj_ok: bool):
         dataset.k_choices = [k]
+        dataset.frames_per_demo = frames
         dataset.set_epoch(0)  # fixed support/query sets across runs
         batches = _fixed_batches(dataset, batch_size, max(1, trials // batch_size), device)
-        processed = []
-        for raw in batches:
-            icl, rest = _split_icl_fields(raw)
-            rest = preprocessor(rest)
-            processed.append({**rest, **_move_icl_fields(icl, device)})
-
+        per_group: dict[str, dict[str, list[float]]] = {}
         losses_demo, losses_zeroed, losses_bare = [], [], []
-        for batch in processed:
+        for j, raw in enumerate(batches):
+            # shuffle=False: batch j covers index j*batch_size .. — group per row
+            groups = [dataset._index[i][1]
+                      for i in range(j * batch_size, min((j + 1) * batch_size, len(dataset)))]
+            icl, rest = _split_icl_fields(raw)
+            if not traj_ok:
+                icl["icl.demo_traj_ok"] = torch.zeros_like(icl["icl.demo_traj_ok"])
+            rest = preprocessor(rest)
+            batch = {**rest, **_move_icl_fields(icl, device)}
             with torch.no_grad():
                 loss, _ = policy.forward(batch)
-                losses_demo.append(loss.item())
-                losses_zeroed.append(_demo_zeroed_loss(policy, batch))
-                bare = _strip_icl_fields(batch)
-                loss_bare, _ = policy.forward(bare)
-                losses_bare.append(loss_bare.item())
-        rows.append(
-            (k, float(np.mean(losses_demo)), float(np.mean(losses_zeroed)),
-             float(np.mean(losses_bare)))
-        )
-        logger.info("k=%d demo=%.4f zeroed=%.4f bare=%.4f", *rows[-1])
+                zeroed = _demo_zeroed_loss(policy, batch)
+                loss_bare, _ = policy.forward(_strip_icl_fields(batch))
+            losses_demo.append(loss.item())
+            losses_zeroed.append(zeroed)
+            losses_bare.append(loss_bare.item())
+            # attribute the batch means to every group it touches (batches can
+            # mix groups at boundaries; per-batch granularity is what we have)
+            for g in set(groups):
+                entry = per_group.setdefault(g, {"demo": [], "zeroed": []})
+                entry["demo"].append(loss.item())
+                entry["zeroed"].append(zeroed)
+        dataset.frames_per_demo = default_frames
+        row = (label, float(np.mean(losses_demo)), float(np.mean(losses_zeroed)),
+               float(np.mean(losses_bare)))
+        logger.info("%s demo=%.4f zeroed=%.4f bare=%.4f", *row)
+        return row, per_group
 
+    k_anchor = max(ablate_k)
+    runs: list[tuple[tuple, dict]] = []
+    for k in ablate_k:
+        runs.append(_run(f"k={k}", k=k, frames=default_frames, traj_ok=True))
+    for f in ablate_frames:
+        runs.append(_run(f"F={f}", k=k_anchor, frames=f, traj_ok=True))
+    for traj in ablate_traj:
+        runs.append(_run(f"traj={'on' if traj else 'off'}",
+                         k=k_anchor, frames=default_frames, traj_ok=traj))
+
+    return _offline_report(
+        [r[0] for r in runs], n_k_runs=len(ablate_k), per_group=runs[min(len(ablate_k), len(runs)) - 1][1],
+        split_note=split_note,
+    )
+
+
+def _offline_report(rows, *, n_k_runs: int, per_group: dict, split_note: str | None) -> str:
+    """Assemble the offline markdown report (pure — unit-tested)."""
     lines = [
-        "| k | loss (demo) | loss (demo-zeroed) | loss (bare) | demo/zeroed |",
+        "| setting | loss (demo) | loss (demo-zeroed) | loss (bare) | demo/zeroed |",
         "|---|---|---|---|---|",
     ]
-    for k, d, z, b in rows:
-        lines.append(f"| {k} | {d:.4f} | {z:.4f} | {b:.4f} | {d / z:.2f} |")
-    med = np.median([r[1] / r[2] for r in rows])
+    for label, d, z, b in rows:
+        lines.append(f"| {label} | {d:.4f} | {z:.4f} | {b:.4f} | {d / z:.2f} |")
+    med = np.median([r[1] / r[2] for r in rows[:n_k_runs]])
     lines.append("")
-    lines.append(f"median demo/zeroed ratio: {med:.2f} "
+    lines.append(f"median demo/zeroed ratio (k ablation): {med:.2f} "
                  f"(M2 gate: <= 0.90 on held-out groups)")
+
+    # per held-out group at the anchor k — the gate is per group, not aggregate
+    if len(per_group) > 1:
+        lines += ["", f"### per-group ({rows[min(n_k_runs, len(rows)) - 1][0]})", "",
+                  "| group | loss (demo) | loss (zeroed) | demo/zeroed |",
+                  "|---|---|---|---|"]
+        for g in sorted(per_group):
+            d = float(np.mean(per_group[g]["demo"]))
+            z = float(np.mean(per_group[g]["zeroed"]))
+            lines.append(f"| {g} | {d:.4f} | {z:.4f} | {d / z:.2f} |")
+
+    if split_note:
+        lines += ["", split_note]
     return "\n".join(lines)
 
 
@@ -236,7 +291,7 @@ def run_real(args) -> int:
     if "full_icl" in conditions:
         builder = DemoPackBuilder(
             args.registry, k=args.k, frames_per_demo=args.frames_per_demo,
-            k_max=4, stats_path=args.stats,
+            k_max=args.k_max, stats_path=args.stats,
         )
     group = builder.resolve_group(args.group) if builder is not None else None
 
@@ -341,6 +396,10 @@ def main(argv=None) -> int:
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--k", type=int, nargs="+", default=None,
                    help="k ablations (default: eval.ablations.k from the stage YAML, else 1 2 4)")
+    p.add_argument("--frames", type=int, nargs="+", default=None,
+                   help="frames-per-demo ablations (default: eval.ablations.frames, else none)")
+    p.add_argument("--traj", nargs="+", default=None, choices=["on", "off"],
+                   help="trajectory-branch ablations (default: eval.ablations.traj, else none)")
     p.add_argument("--output", default=None, help="write the markdown report here")
 
     p = sub.add_parser(
@@ -374,6 +433,8 @@ def main(argv=None) -> int:
     p.add_argument("--stats", default=None)
     p.add_argument("--k", type=int, default=2)
     p.add_argument("--frames-per-demo", type=int, default=6)
+    p.add_argument("--k-max", type=int, default=4,
+                   help="DemoEncoder slot count (config.demo_encoder.k_max)")
     p.add_argument("--demo-host", default="127.0.0.1")
     p.add_argument("--demo-port", type=int, default=8661)
     p.add_argument("--round-config", default=None, help="self-improve round YAML")
@@ -408,9 +469,20 @@ def main(argv=None) -> int:
             ablate_k = tuple(args.k)
         else:
             ablate_k = tuple(eval_cfg.get("ablations", {}).get("k", [1, 2, 4]))
+        abl = eval_cfg.get("ablations", {})
+
+        def _traj_flag(t) -> bool:
+            # YAML 1.1 parses bare on/off as booleans; argparse gives strings
+            return t if isinstance(t, bool) else str(t).strip().lower() == "on"
+
+        ablate_frames = (tuple(args.frames) if args.frames is not None
+                         else tuple(abl.get("frames", [])))
+        ablate_traj = (tuple(_traj_flag(t) for t in args.traj) if args.traj is not None
+                       else tuple(_traj_flag(t) for t in abl.get("traj", [])))
         report = run_offline(
             args.adapter, args.registry, stage, split=args.split,
             trials=trials, batch_size=args.batch_size, ablate_k=ablate_k,
+            ablate_frames=ablate_frames, ablate_traj=ablate_traj,
         )
         print(report)
         if args.output:

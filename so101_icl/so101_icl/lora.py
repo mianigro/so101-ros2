@@ -99,22 +99,28 @@ def trainable_parameters(policy: PI05ICLPolicy):
 
 
 def assert_zero_init(policy: PI05ICLPolicy) -> None:
-    """Structural M0 assertions: every demo-token pathway starts at zero.
+    """Structural M0 assertions: every demo-token pathway starts neutral.
 
-    The gates and the order embedding are exactly zero (so demo tokens embed
-    to the zero vector at init); LoRA ``B`` matrices are zero (peft default).
+    The gates start AT ``demo_encoder.gate_floor`` (0.0 by default; a
+    positive floor is the null-out mitigation, ICL §2.1) and the order
+    embedding is exactly zero; LoRA ``B`` matrices are zero (peft default).
     The pool/traj out-projections are deliberately NOT zero — see
     ``DemoEncoder.reset_icl_parameters`` (dead-saddle fix).
     """
     enc = policy.model.demo_encoder
-    zeros = [
+    floor = enc.config.gate_floor
+    for label, tensor in [
         ("gate_vis", enc.gate_vis),
         ("gate_traj", enc.gate_traj),
-        ("order_emb.weight", enc.order_emb.weight),
-    ]
-    for label, tensor in zeros:
-        if tensor.abs().max().item() != 0.0:
-            raise AssertionError(f"zero-init violated: demo_encoder.{label}")
+    ]:
+        # tolerance: the floor is a python float, the gate is fp32
+        if abs(tensor.item() - floor) > 1e-6:
+            raise AssertionError(
+                f"zero-init violated: demo_encoder.{label} is {tensor.item()}, "
+                f"expected gate_floor={floor}"
+            )
+    if enc.order_emb.weight.abs().max().item() != 0.0:
+        raise AssertionError("zero-init violated: demo_encoder.order_emb.weight")
     for name, param in policy.model.named_parameters():
         if name.endswith("lora_B.default.weight") and param.abs().max().item() != 0.0:
             raise AssertionError(f"zero-init violated: LoRA B not zero at {name}")

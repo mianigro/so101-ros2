@@ -328,6 +328,8 @@ def main(argv=None) -> int:
     parser.add_argument("--demo-host", default="127.0.0.1")
     parser.add_argument("--demo-port", type=int, default=8661)
     parser.add_argument("--k", type=int, default=4)
+    parser.add_argument("--k-max", type=int, default=4,
+                        help="DemoEncoder slot count (config.demo_encoder.k_max)")
     parser.add_argument("--frames-per-demo", type=int, default=6)
     parser.add_argument("--stats", default=None, help="stage_stats.json for traj normalization")
     parser.add_argument("--poll-s", type=float, default=5.0, help="dispatch poll period")
@@ -370,7 +372,7 @@ def main(argv=None) -> int:
             monitor_holder["monitor"] = TerminalMonitor(state)
         completed = run_mission(
             state, transport, k=args.k, frames_per_demo=args.frames_per_demo,
-            k_max=4, normalizer=normalizer, advance_mode=args.advance_mode,
+            k_max=args.k_max, normalizer=normalizer, advance_mode=args.advance_mode,
             should_advance=should_advance,
         )
         logger.info("mission %s completed subtasks: %s", args.mission_id, completed)
@@ -408,6 +410,7 @@ if _RCLPY_AVAILABLE:
             self.declare_parameter("demo_host", "127.0.0.1")
             self.declare_parameter("demo_port", 8661)
             self.declare_parameter("k", 4)
+            self.declare_parameter("k_max", 4)
             self.declare_parameter("frames_per_demo", 6)
             self.declare_parameter("stats_path", "")
             self.declare_parameter("poll_period_s", 5.0)
@@ -458,7 +461,8 @@ if _RCLPY_AVAILABLE:
                 active, self.transport,
                 k=int(self.get_parameter("k").value),
                 frames_per_demo=int(self.get_parameter("frames_per_demo").value),
-                k_max=4, normalizer=self.normalizer,
+                k_max=int(self.get_parameter("k_max").value),
+                normalizer=self.normalizer,
             )
             self.get_logger().info(f"subtask {active.subtask_id}: {reply}")
             self._subscribe_terminal(active)

@@ -23,7 +23,8 @@ Both stages share this loop; they differ only in config. Each step:
 3. inherited flow-matching loss -> backward -> grads reach only LoRA +
    DemoEncoder + gates -> clip 1.0 -> AdamW (gates get ``gate_lr_mult``).
 
-Logged: ``loss``, ``val/loss`` (bare-prompt), ``loss_demo_zeroed`` (same
+Logged: ``loss``, ``val/loss`` (bare-prompt), ``loss_demo_zeroed`` and
+``demo_zeroed_ratio = loss / loss_demo_zeroed`` (same
 batch with gates forced to 0 — the in-training ICL signal), gate values and
 LoRA norms. Artifacts are adapter-only (``icl_adapter.safetensors``); the
 base checkpoint is never rewritten.
@@ -35,6 +36,7 @@ import json
 import logging
 import math
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +79,10 @@ class TrainSettings:
     val_every: int = 1_000
     val_batches: int = 8
     gate_lr_mult: float = 10.0
+    # Language dropout (null-out mitigation, ICL §4.5): on this fraction of
+    # micro-batches the task prompt is replaced by a vague stand-in, making
+    # the demo pack the only task signal — gradient pressure to USE demos.
+    language_dropout: float = 0.0
     tensorboard: bool = True  # event files under <output_dir>/tensorboard (needs the tensorboard package)
 
 
@@ -85,6 +91,27 @@ def k_choices_for_step(phases: list[CurriculumPhase], step: int) -> list[int]:
         if step < phase.until_step:
             return phase.k
     return phases[-1].k
+
+
+# Vague stand-in prompt used by language dropout: carries no task information,
+# so the demo pack is the only task signal on dropped batches.
+LANGUAGE_DROPOUT_PROMPT = "do the task."
+
+
+def _apply_language_dropout(batch: dict, rng: random.Random, p: float) -> bool:
+    """Replace the task prompt of a whole micro-batch in place.
+
+    Whole-batch granularity (not per-sample) on purpose: the processor
+    tokenizes one prompt list per batch and partial drops would blur the
+    signal. Uses a dedicated RNG so the torch noise stream (flow-matching
+    noise/time replay in ``_demo_zeroed_loss``) is untouched.
+    Returns whether the drop was applied (for the logged rate).
+    """
+    if p <= 0 or "task" not in batch or rng.random() >= p:
+        return False
+    tasks = batch["task"]
+    batch["task"] = [LANGUAGE_DROPOUT_PROMPT] * len(tasks)
+    return True
 
 
 def build_stage_preprocessor(config, stats: dict):
@@ -246,6 +273,8 @@ def run_training(
     best_val = float("inf")
     start = time.time()
     data_iter = None
+    lang_rng = random.Random(settings.seed + 1)
+    dropped = seen = 0  # language-dropout application counters
 
     while step < settings.steps:
         # k-curriculum applies at epoch granularity: dataloader workers fork
@@ -269,6 +298,9 @@ def run_training(
 
         rng_state = _capture_rng_state()
         icl_fields, query_batch = _split_icl_fields(batch)
+        seen += 1
+        if _apply_language_dropout(query_batch, lang_rng, settings.language_dropout):
+            dropped += 1
         query_batch = preprocessor(query_batch)
         batch = {**query_batch, **_move_icl_fields(icl_fields, device)}
         loss, _ = policy.forward(batch)
@@ -296,9 +328,12 @@ def run_training(
             "gate_traj": base_policy.model.demo_encoder.gate_traj.item(),
             "sec_per_step": (time.time() - start) / step,
         }
+        if settings.language_dropout > 0:
+            record["lang_dropout_rate"] = dropped / max(1, seen)
         if step % settings.demo_zeroed_every == 0 or step == 1:
             policy.eval()
             record["loss_demo_zeroed"] = _demo_zeroed_loss(base_policy, batch, rng_state)
+            record["demo_zeroed_ratio"] = record["loss"] / record["loss_demo_zeroed"]
             policy.train()
         if val_batches and (step % settings.val_every == 0 or step == settings.steps):
             record["val/loss"] = evaluate_loss(
@@ -442,7 +477,8 @@ def main(argv=None) -> int:
             k: v for k, v in stage["train"].items()
             if k in ("steps", "batch_per_gpu", "grad_accum", "lr", "warmup", "grad_clip",
                      "ckpt_every", "seed", "num_workers", "log_every",
-                     "demo_zeroed_every", "val_every", "val_batches", "tensorboard")
+                     "demo_zeroed_every", "val_every", "val_batches", "tensorboard",
+                     "language_dropout")
         }
     )
     if "curriculum" in stage["train"]:

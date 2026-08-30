@@ -49,6 +49,12 @@ class DemoEncoderConfig:
     traj_steps: int = 16           # downsampled state/action steps per demo (S)
     n_heads: int = 8               # attention-pool heads
     hidden_dim: int = 512          # trajectory MLP hidden width
+    # One-sided barrier on the gates: effective gate = clamp(gate, min=gate_floor),
+    # initialized AT the floor. 0.0 keeps the original zero-init; a positive
+    # floor (e.g. 0.1) prevents the optimizer from nulling the whole demo
+    # branch through a single scalar (the "null-out" failure mode observed in
+    # stage-1 run 2) — the gate can still grow freely.
+    gate_floor: float = 0.0
 
 
 @dataclass
@@ -82,6 +88,8 @@ class ICLConfig(PI05Config):
             )
         if not 1 <= de.k_max <= 8:
             raise ValueError(f"k_max must be in [1, 8], got {de.k_max}")
+        if de.gate_floor < 0:
+            raise ValueError(f"gate_floor must be >= 0, got {de.gate_floor}")
         if self.lora.targets not in ("vlm_attention", "vlm_attention+expert"):
             raise ValueError(f"Unknown lora.targets: {self.lora.targets!r}")
         super().__post_init__()

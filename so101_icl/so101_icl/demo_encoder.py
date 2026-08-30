@@ -31,14 +31,16 @@ Branches:
   - trajectory: per-step state MLP + action MLP -> ``2 * S`` tokens
     (one state and one action token per step) -> x traj_ok x gate.
 
-Zero-init property: the gates (and the order embedding) start at exactly
-zero, so at initialization every demo token embedding is the zero vector.
-The out-projections keep their default init — zeroing them TOO would create
-a dead saddle (``gate * proj(x)`` with both factors zero has zero gradient
-w.r.t. both). Note that present-but-zero tokens still perturb attention
-softmax normalization (they are attended with a zero key), so exact base
-parity holds for the no-pack path and the structural zeros are asserted
-separately (tests/test_zero_init.py).
+Zero-init property: by default the gates (and the order embedding) start at
+exactly zero, so at initialization every demo token embedding is the zero
+vector. The out-projections keep their default init — zeroing them TOO would
+create a dead saddle (``gate * proj(x)`` with both factors zero has zero
+gradient w.r.t. both). A positive ``gate_floor`` instead starts the gates AT
+the floor and clamps them below it (null-out mitigation, see
+``reset_icl_parameters``). Note that present-but-zero tokens still perturb
+attention softmax normalization (they are attended with a zero key), so
+exact base parity holds for the no-pack path and the structural zeros are
+asserted separately (tests/test_zero_init.py, default config).
 """
 
 from __future__ import annotations
@@ -91,20 +93,26 @@ class DemoEncoder(nn.Module):
         return self.tokens_vis + self.tokens_traj
 
     def reset_icl_parameters(self) -> None:
-        """Zero-init the gate / order-embedding; keep out-projections live.
+        """Init the gates (at ``gate_floor``) / zero the order embedding.
 
-        With the gate at zero, every demo token embedding is exactly the
-        zero vector at initialization (the M0 property). The out-projections
-        keep their DEFAULT init on purpose: zeroing them as well would make
-        ``out = gate * proj(x)`` a dead saddle (both factors zero -> zero
-        gradient to both -> the demo branch can never leave zero; observed
-        empirically in the first smoke run: gates pinned at 0.0 for 200
-        steps). With proj != 0 the gate gets a nonzero gradient immediately.
+        With the default ``gate_floor=0`` every demo token embedding is
+        exactly the zero vector at initialization (the M0 property). The
+        out-projections keep their DEFAULT init on purpose: zeroing them as
+        well would make ``out = gate * proj(x)`` a dead saddle (both factors
+        zero -> zero gradient to both -> the demo branch can never leave
+        zero; observed empirically in the first smoke run: gates pinned at
+        0.0 for 200 steps). With proj != 0 the gate gets a nonzero gradient
+        immediately.
+
+        With a positive ``gate_floor`` (null-out mitigation, Rev 3 §2.1) the
+        gates START at the floor and are clamped below it in ``forward`` —
+        the demo branch cannot be silenced through a single scalar, and
+        no-pack parity still holds (no pack -> no demo tokens at all).
         """
         nn.init.zeros_(self.order_emb.weight)
         with torch.no_grad():
-            self.gate_vis.zero_()
-            self.gate_traj.zero_()
+            self.gate_vis.fill_(self.config.gate_floor)
+            self.gate_traj.fill_(self.config.gate_floor)
 
     def _embed_frames(self, frames: Tensor, embed_fn) -> Tensor:
         """SigLIP-embed demo frames, detached, chunked to bound peak memory.
@@ -160,7 +168,8 @@ class DemoEncoder(nn.Module):
         kv = frame_embs.reshape(B * K, F * n_tok, D)
         q = self.queries[None].expand(B * K, -1, -1)
         pooled, _ = self.pool(q, kv, kv, need_weights=False)  # [B*K, T, D]
-        vis_tokens = self.vis_norm(self.vis_proj(pooled)) * self.gate_vis * gate_scale
+        gate_vis = self.gate_vis.clamp(min=self.config.gate_floor)
+        vis_tokens = self.vis_norm(self.vis_proj(pooled)) * gate_vis * gate_scale
 
         # Trajectory branch: one state + one action token per step -> [B, K, 2S, D].
         state_part = traj[..., : self._demo_dim // 2]
@@ -168,7 +177,8 @@ class DemoEncoder(nn.Module):
         state_tokens = self.state_mlp(state_part)  # [B, K, S, D]
         action_tokens = self.action_mlp(action_part)
         traj_tokens = torch.cat([state_tokens, action_tokens], dim=2)  # [B, K, 2S, D]
-        traj_tokens = self.traj_norm(traj_tokens) * self.gate_traj * gate_scale
+        gate_traj = self.gate_traj.clamp(min=self.config.gate_floor)
+        traj_tokens = self.traj_norm(traj_tokens) * gate_traj * gate_scale
         traj_tokens = traj_tokens * traj_ok[..., None, None].to(traj_tokens.dtype)
 
         tokens = torch.cat(
