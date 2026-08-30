@@ -94,22 +94,31 @@ def _episode_group_keys(spec: DatasetSpec, meta, only: set[int] | None = None) -
 
     # Fall back to a per-frame column in the data parquet (e.g. DROID's
     # task_category may live there): first frame of each episode decides.
+    # Episodes are grouped by shard first so every parquet file is read
+    # ONCE — the on-disk subset can be a single multi-GB shard, and a
+    # per-episode re-read of it multiplies the whole file by the episode
+    # count (the registry build "hangs" for hours).
+    import pyarrow.parquet as pq
+
     root = Path(spec.root).expanduser() / spec.repo_id
-    keys: dict[int, str] = {}
+    by_path: dict[Path, list[int]] = {}
     for _, row in eps.iterrows():
         chunk = int(row["data/chunk_index"])
         file_idx = int(row["data/file_index"])
-        path = root / "data" / f"chunk-{chunk:03d}" / f"file-{file_idx:03d}.parquet"
-        import pyarrow.parquet as pq
-
+        by_path.setdefault(
+            root / "data" / f"chunk-{chunk:03d}" / f"file-{file_idx:03d}.parquet",
+            [],
+        ).append(int(row["episode_index"]))
+    keys: dict[int, str] = {}
+    for path, ep_list in by_path.items():
+        wanted = set(ep_list)
         table = pq.read_table(
             path, columns=["episode_index", spec.grouping_key]
         ).to_pydict()
-        ep = int(row["episode_index"])
         for e, g in zip(table["episode_index"], table[spec.grouping_key]):
-            if int(e) == ep:
-                keys[ep] = str(g)
-                break
+            ep = int(e)
+            if ep in wanted and ep not in keys:
+                keys[ep] = str(g)  # first frame decides
     return keys
 
 
@@ -581,6 +590,7 @@ class ICLDataset(Dataset):
         split: str = "train",
         demo_camera: str = "observation.images.base_0_rgb",
         seed: int = 0,
+        keypoint_cache: Path | str | None = None,
     ):
         self.registry = load_task_registry(registry_path)
         self.config = config
@@ -594,6 +604,22 @@ class ICLDataset(Dataset):
         # Allowed support sizes for the current curriculum phase; the train
         # loop updates this per epoch (ICL §6.3 k-curriculum).
         self.k_choices: list[int] = list(range(1, self.k_max + 1))
+
+        # Keypoint features (rev 5): required when the encoder's keypoint
+        # branch is enabled; optional (unused) otherwise.
+        kp_cfg = config.demo_encoder.keypoints
+        self._kp_cache = None
+        self._kp_cache_keys: frozenset = frozenset()
+        if kp_cfg.enabled:
+            if keypoint_cache is None:
+                raise ValueError(
+                    "demo_encoder.keypoints.enabled=true but no keypoint_cache given "
+                    "— run `pixi run icl_data precompute-keypoints --registry ...` "
+                    "and pass dataset.keypoint_cache in the stage YAML."
+                )
+            cache = np.load(Path(keypoint_cache).expanduser())
+            self._kp_cache = {k: cache[k] for k in cache.files}
+            self._kp_cache_keys = frozenset(self._kp_cache.keys())
 
         self.bundles = [ _DatasetBundle(d, config) for d in self.registry["datasets"] ]
         group_eps = self.registry["splits"][split]
@@ -660,6 +686,14 @@ class ICLDataset(Dataset):
             dtype=torch.float32,
         )
         demo_traj_ok = torch.zeros(self.k_max, dtype=torch.float32)
+        kp_cfg = self.config.demo_encoder.keypoints
+        emit_kp = kp_cfg.enabled
+        if emit_kp:
+            demo_kp = torch.zeros(
+                self.k_max, self.frames_per_demo, kp_cfg.n_kp, kp_cfg.kp_dim,
+                dtype=torch.float32,
+            )
+            demo_kp_ok = torch.zeros(self.k_max, dtype=torch.float32)
         for slot, (ds_idx, ep) in enumerate(members[: self.k_max]):
             bundle = self.bundles[ds_idx]
             start, _end, length = bundle.episodes[ep]
@@ -672,6 +706,10 @@ class ICLDataset(Dataset):
             traj, ok = self._load_traj(bundle, ep)
             demo_traj[slot] = traj
             demo_traj_ok[slot] = float(ok)
+            if emit_kp:
+                kp, kp_ok = self._load_demo_keypoints(ds_idx, ep)
+                demo_kp[slot] = kp
+                demo_kp_ok[slot] = kp_ok
 
         qbundle = self.bundles[q_ds]
         start, _end, length = qbundle.episodes[q_ep]
@@ -695,6 +733,9 @@ class ICLDataset(Dataset):
         batch["icl.demo_mask"] = demo_mask
         batch["icl.demo_traj"] = demo_traj
         batch["icl.demo_traj_ok"] = demo_traj_ok
+        if emit_kp:
+            batch["icl.demo_kp"] = demo_kp
+            batch["icl.demo_kp_ok"] = demo_kp_ok
         return batch
 
     _epoch: int = 0
@@ -702,6 +743,149 @@ class ICLDataset(Dataset):
     def set_epoch(self, epoch: int) -> None:
         """Refreshes per-item RNG streams (call from the train loop)."""
         self._epoch = int(epoch)
+
+    # ------------------------------------------------------------------ #
+    # Keypoint demo features (rev 5, Keypoint Action Tokens style)        #
+    # ------------------------------------------------------------------ #
+
+    def _load_demo_keypoints(self, ds_idx: int, ep: int) -> tuple[torch.Tensor, float]:
+        """Cached SIFT keypoints for one demo episode: ``[F, K, kp_dim]``.
+
+        Returns zeros + ok=0 when the episode is absent from the cache —
+        the DemoEncoder masks that slot's keypoint branch; other demos in
+        the pack are unaffected.
+        """
+        kp_cfg = self.config.demo_encoder.keypoints
+        key = f"{ds_idx}/{ep}"
+        if self._kp_cache is None or key not in self._kp_cache_keys:
+            return (
+                torch.zeros(
+                    self.frames_per_demo, kp_cfg.n_kp, kp_cfg.kp_dim,
+                    dtype=torch.float32,
+                ),
+                0.0,
+            )
+        arr = torch.from_numpy(self._kp_cache[key].astype(np.float32, copy=False))
+        return arr, 1.0
+
+
+def extract_keypoints(frames_chw: torch.Tensor, max_kp: int = 16) -> np.ndarray:
+    """SIFT keypoints for demo keyframes -> ``[F, max_kp, 2 + 128 + 1]``.
+
+    Per frame: up to ``max_kp`` keypoints by response, features = (x/w, y/h
+    normalized coords, L2-normalized 128-d descriptor, 1.0 valid flag);
+    absent slots are zeros (flag 0). Shared by the offline cache CLI and the
+    bridge's live pack builder — one extraction path, no drift.
+    """
+    import cv2
+
+    sift = cv2.SIFT_create(nfeatures=max_kp)
+    f_total = frames_chw.shape[0]
+    out = np.zeros((f_total, max_kp, 131), dtype=np.float32)
+    for f in range(f_total):
+        rgb = (frames_chw[f].permute(1, 2, 0).numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        kps, desc = sift.detectAndCompute(gray, None)
+        if not kps or desc is None:
+            continue
+        order = np.argsort([-k.response for k in kps])[:max_kp]
+        n = len(order)
+        h, w = gray.shape
+        coords = np.empty((n, 2), np.float32)
+        for j, i in enumerate(order):
+            px, py = kps[i].pt
+            coords[j] = (px / max(1, w), py / max(1, h))
+        d = desc[order].astype(np.float32)
+        d /= np.linalg.norm(d, axis=1, keepdims=True) + 1e-8
+        out[f, :n, 0:2] = coords
+        out[f, :n, 2:130] = d
+        out[f, :n, 130] = 1.0
+    return out
+
+
+class BurstyGroupBatchSampler:
+    """Group-structured batch sampler: tasks arrive in bursts (rev 5).
+
+    GEN-1.5 / Chan et al. 2022: in-context learning emerges when the
+    training distribution is "bursty" — a few tasks dominate and recur in
+    contiguous runs — rather than uniformly shuffled. Each epoch this
+    sampler draws task groups with Zipfian popularity weights and emits
+    ``burst_length`` consecutive query episodes of the drawn group before
+    switching. Batches are group-coherent when ``burst_length == batch_size``
+    (the default pairing).
+
+    Regenerates on every ``__iter__`` from ``dataset._epoch`` so the train
+    loop's existing ``set_epoch`` call drives re-randomization; the
+    per-item support/query RNG inside :class:`ICLDataset` is untouched.
+    """
+
+    def __init__(
+        self,
+        dataset: ICLDataset,
+        batch_size: int,
+        *,
+        burst_length: int = 4,
+        seed: int = 0,
+        drop_last: bool = True,
+        zipf_exponent: float = 1.0,
+    ):
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.burst_length = max(1, int(burst_length))
+        self.seed = int(seed)
+        self.drop_last = bool(drop_last)
+        self.groups: dict[str, list[int]] = {}
+        for i, (_ds_idx, group, _ep) in enumerate(dataset._index):
+            self.groups.setdefault(group, []).append(i)
+        names = sorted(self.groups)
+        ranks = np.arange(1, len(names) + 1, dtype=np.float64)
+        weights = 1.0 / np.power(ranks, float(zipf_exponent))
+        self._group_names = names
+        self._group_probs = weights / weights.sum()
+
+    def _epoch_order(self, epoch: int) -> list[int]:
+        rng = np.random.default_rng([self.seed, epoch])
+        pools = {
+            g: list(rng.permutation(indices))
+            for g, indices in self.groups.items()
+        }
+        cursors = {g: 0 for g in pools}
+        order: list[int] = []
+        emitted: set[int] = set()
+        target = len(self.dataset)
+        guard = 0
+        while len(emitted) < target:
+            guard += 1
+            if guard > 100 * target + 10_000:  # pragma: no cover - safety net
+                raise RuntimeError("bursty sampler failed to cover the dataset")
+            group = self._group_names[rng.choice(len(self._group_names), p=self._group_probs)]
+            pool, cur = pools[group], cursors[group]
+            if cur >= len(pool):
+                # group exhausted this epoch: refill from its not-yet-emitted
+                # members only (never re-emit an index within an epoch)
+                remaining = [i for i in self.groups[group] if i not in emitted]
+                if not remaining:
+                    continue
+                pool = list(rng.permutation(remaining))
+                pools[group], cur = pool, 0
+            take = min(self.burst_length, len(pool) - cur, target - len(emitted))
+            chunk = pool[cur : cur + take]
+            order.extend(chunk)
+            emitted.update(chunk)
+            cursors[group] = cur + take
+        return order
+
+    def __iter__(self):
+        order = self._epoch_order(getattr(self.dataset, "_epoch", 0))
+        for start in range(0, len(order), self.batch_size):
+            chunk = order[start : start + self.batch_size]
+            if len(chunk) < self.batch_size and self.drop_last:
+                break
+            yield chunk
+
+    def __len__(self) -> int:
+        n = len(self.dataset)
+        return n // self.batch_size if self.drop_last else -(-n // self.batch_size)
 
 
 # ---------------------------------------------------------------------- #
@@ -916,6 +1100,55 @@ def _cmd_download_subset(args) -> int:
     return 0
 
 
+def _cmd_precompute_keypoints(args) -> int:
+    """SIFT keypoint cache for every registered episode (rev 5).
+
+    Extracts keypoints for the SAME uniform-stride demo keyframes
+    :class:`ICLDataset` samples, per episode, into one compressed npz keyed
+    ``<ds_idx>/<episode>``. ``--frames-per-demo`` must match the stage
+    config's ``demo_encoder.frames_per_demo``.
+    """
+    registry = load_task_registry(args.registry)
+    frames_per_demo = int(args.frames_per_demo)
+    max_kp = int(args.max_kp)
+
+    datasets: dict[int, dict] = {}
+    out: dict[str, np.ndarray] = {}
+    for group, members in registry["groups"].items():
+        for ds_idx, ep, _length in members:
+            if ds_idx not in datasets:
+                spec = registry["datasets"][ds_idx]
+                ds = open_local_dataset(spec["repo_id"], spec["root"])
+                rename = {v: k for k, v in dict(spec.get("camera_rename") or {}).items()}
+                camera = rename.get(args.demo_camera, args.demo_camera)
+                eps = ds.meta.episodes.to_pandas()
+                bounds = {
+                    int(row["episode_index"]): (
+                        int(row["dataset_from_index"]), int(row["dataset_to_index"]),
+                    )
+                    for _, row in eps.iterrows()
+                }
+                datasets[ds_idx] = {"ds": ds, "camera": camera, "bounds": bounds}
+            entry = datasets[ds_idx]
+            key = f"{ds_idx}/{ep}"
+            if key in out:
+                continue
+            start, _end = entry["bounds"][ep]
+            length = entry["bounds"][ep][1] - start
+            kf = ICLDataset._sample_keyframe_indices(length, frames_per_demo)
+            frames = torch.stack(
+                [entry["ds"][start + int(j)][entry["camera"]] for j in kf]
+            )
+            out[key] = extract_keypoints(preprocess_demo_frames(frames), max_kp=max_kp)
+    out_path = Path(args.out or str(args.registry).rsplit(".", 1)[0] + "_kp.npz")
+    np.savez_compressed(out_path, **out)
+    logger.info(
+        "keypoint cache: %d episodes x %d frames x %d kp -> %s",
+        len(out), frames_per_demo, max_kp, out_path,
+    )
+    return 0
+
+
 def _cmd_smoke_local(args) -> int:
     reg = build_task_registry(
         [
@@ -973,6 +1206,20 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default="so101_icl/configs/task_registry_smoke_local.json")
     p.set_defaults(func=_cmd_smoke_local)
+
+    p = sub.add_parser(
+        "precompute-keypoints",
+        help="SIFT keypoint cache for registered demo episodes (keypoint branch, rev 5)",
+    )
+    p.add_argument("--registry", required=True, help="task registry JSON")
+    p.add_argument("--out", default=None,
+                   help="output npz (default: <registry stem>_kp.npz)")
+    p.add_argument("--frames-per-demo", type=int, default=6,
+                   help="must match demo_encoder.frames_per_demo of the stage config")
+    p.add_argument("--max-kp", type=int, default=16, help="keypoints per frame")
+    p.add_argument("--demo-camera", default="observation.images.base_0_rgb",
+                   help="policy-side camera key (renamed back to the dataset key)")
+    p.set_defaults(func=_cmd_precompute_keypoints)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

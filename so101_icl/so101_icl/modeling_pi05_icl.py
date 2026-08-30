@@ -51,6 +51,8 @@ DEMO_FRAMES = "icl.demo_frames"        # [B, k_max, F, 3, H, W] preprocessed
 DEMO_MASK = "icl.demo_mask"            # [B, k_max] bool
 DEMO_TRAJ = "icl.demo_traj"            # [B, k_max, S, d_state + d_action] normalized
 DEMO_TRAJ_OK = "icl.demo_traj_ok"      # [B, k_max] float 0/1
+DEMO_KP = "icl.demo_kp"                # [B, k_max, F, K, kp_dim] SIFT keypoints (rev 5)
+DEMO_KP_OK = "icl.demo_kp_ok"          # [B, k_max] float 0/1
 
 
 class PI05ICLCore(PI05Pytorch):
@@ -91,6 +93,8 @@ class PI05ICLCore(PI05Pytorch):
         demo_mask: torch.Tensor,
         traj: torch.Tensor,
         traj_ok: torch.Tensor,
+        kp: torch.Tensor | None = None,
+        kp_ok: torch.Tensor | None = None,
     ) -> None:
         """Encode a demo pack ONCE (no grad) and cache it for inference.
 
@@ -99,7 +103,8 @@ class PI05ICLCore(PI05Pytorch):
         per chunk query (KV cache is rebuilt per query either way).
         """
         embs, pad = self.demo_encoder.encode_pack(
-            frames, demo_mask, traj, traj_ok, self._embed_demo_frames
+            frames, demo_mask, traj, traj_ok, self._embed_demo_frames,
+            kp=kp, kp_ok=kp_ok,
         )
         self._demo_cache = (embs, pad)
 
@@ -109,6 +114,8 @@ class PI05ICLCore(PI05Pytorch):
         demo_mask: torch.Tensor,
         traj: torch.Tensor,
         traj_ok: torch.Tensor,
+        kp: torch.Tensor | None = None,
+        kp_ok: torch.Tensor | None = None,
     ) -> None:
         """Training path: run the encoder inside the autograd graph.
 
@@ -118,7 +125,7 @@ class PI05ICLCore(PI05Pytorch):
         """
         embs, pad = self.demo_encoder(
             frames, demo_mask, traj, traj_ok, self._embed_demo_frames,
-            gate_scale=self._demo_gate_scale,
+            gate_scale=self._demo_gate_scale, kp=kp, kp_ok=kp_ok,
         )
         self._demo_cache = (embs, pad)
 
@@ -218,7 +225,8 @@ class PI05ICLPolicy(PI05Policy):
         model: PI05ICLCore = self.model
         if DEMO_FRAMES in batch:
             model.set_demo_pack_train(
-                batch[DEMO_FRAMES], batch[DEMO_MASK], batch[DEMO_TRAJ], batch[DEMO_TRAJ_OK]
+                batch[DEMO_FRAMES], batch[DEMO_MASK], batch[DEMO_TRAJ], batch[DEMO_TRAJ_OK],
+                kp=batch.get(DEMO_KP), kp_ok=batch.get(DEMO_KP_OK),
             )
         else:
             model.clear_demo_pack()

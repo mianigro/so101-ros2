@@ -25,6 +25,7 @@ targets reference modules that do not exist in pi05, e.g. ``state_proj``).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -182,7 +183,7 @@ def save_icl_adapter(
             "dropout": policy.config.lora.dropout,
             "targets": policy.config.lora.targets,
         },
-        "demo_encoder": vars(policy.config.demo_encoder),
+        "demo_encoder": dataclasses.asdict(policy.config.demo_encoder),
     }
     if init_adapter_path is not None:
         meta["init_adapter_fingerprint"] = _file_fingerprint(Path(init_adapter_path))

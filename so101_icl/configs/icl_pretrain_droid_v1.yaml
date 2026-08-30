@@ -1,7 +1,4 @@
-# Stage 1 — ICL pre-training on the DROID subset (ICL §7.1).
-# Requires the droid_1.0.1 subset download (DEFERRED — run
-# `pixi run -e lerobot icl_data download-subset --start 0 --end 9999 --yes`
-# (~10k episodes, ~85 GB) and `build-registry --droid --grouping-key task_category` first).
+# Stage 1 — ICL pre-training on the DROID subset
 base_checkpoint: lerobot/pi05_base
 dtype: bfloat16
 output_dir: so101_icl/runs/icl_pretrain_droid_v1
@@ -15,24 +12,38 @@ dataset:
                                   # requires a restart). Revisit only if the F-ablation shows weak
                                   # demo signal — exterior_1 (base_0_rgb) is the alternative.
   task_registry: so101_icl/configs/task_registry_droid.json
+  keypoint_cache: so101_icl/configs/task_registry_droid_kp.npz   # rev 5: run
+                                 # `pixi run icl_data precompute-keypoints --registry
+                                 # so101_icl/configs/task_registry_droid.json
+                                 # --demo-camera observation.images.left_wrist_0_rgb` first
   holdout_groups: {eval: 3, test: 3}
   recompute_stats: auto          # recompute quantiles if the subset ships min/max only
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
-               gate_floor: 0.1}          # gates start AT 0.1 and cannot drop below it (null-out mitigation)
+               gate_floor: 0.8,          # CALIBRATED (so101_icl/calibrate_gate_floor.py): camera
+                                 # prefix tokens measure RMS ~4.0, language ~10; LayerNorm pins
+                                 # demo token RMS at the gate value, so 0.8 puts demos at ~20%
+                                 # of camera loudness (0.1 was 2.5% — near-inaudible).
+               keypoints: {enabled: true, n_kp: 16, kp_dim: 131, tokens_kp: 32}}   # rev 5 branch
 lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention, gate_lr_mult: 50.0}
 train:
   steps: 10000
   batch_per_gpu: 4      # 16 GB 4080s OOM at 8 during backward; accumulate instead
   grad_accum: 2         # effective batch = 4 * 2 * 2 GPUs = 16 (as before)
   lr: 1.0e-4
-  warmup: 500
+  warmup: 100
   grad_clip: 1.0
   ckpt_every: 2000
   seed: 42
   num_workers: 8
   curriculum: [[1000, [1]], [3000, [1, 2]], [100000000, [1, 2, 3, 4]]]
   demo_zeroed_every: 100
-  language_dropout: 0.3         # % of batches get a vague prompt -> demos are the only task signal
+  language_dropout: 0.5         # % of batches get a vague prompt -> demos are the only task signal
+  demo_usage_weight: 2.0        # rev 5 RoboTTT-style hinge: every step, penalize unless the
+  demo_usage_margin: 0.02       # demo-conditioned loss beats the demo-zeroed replay by margin.
+                                # Structural fix for the dead-saddle (gates nulling out) —
+                                # ~1.4x step time (one extra no-grad forward).
+  group_sampling: bursty        # rev 5 GEN-1.5/Chan et al.: Zipf-popularity task bursts
+  burst_length: 4               # instead of uniform shuffle — the regime where ICL emerges
   val_every: 1000
 eval:                            # offline defaults for `eval_icl.py offline`
   offline_trials: 500            # (CLI flags override)

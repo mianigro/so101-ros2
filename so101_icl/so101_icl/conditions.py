@@ -98,6 +98,9 @@ class DemoPackBuilder:
         max_action_dim: int = 32,
         stats_path: Path | str | None = None,
         demo_camera: str | None = None,
+        keypoint_cache: Path | str | None = None,
+        n_kp: int = 16,
+        kp_dim: int = 131,
     ):
         self.registry = load_task_registry(registry_path)
         self.k = int(k)
@@ -106,6 +109,16 @@ class DemoPackBuilder:
         self.traj_steps = int(traj_steps)
         self.k = min(self.k, self.k_max)
         self._bundles: dict[int, dict] = {}
+        self._kp_cache = None
+        self._kp_keys = frozenset()
+        if keypoint_cache is not None:
+            import numpy as np
+
+            cache = np.load(Path(keypoint_cache).expanduser())
+            self._kp_cache = {name: cache[name] for name in cache.files}
+            self._kp_keys = frozenset(self._kp_cache.keys())
+        self._n_kp = int(n_kp)
+        self._kp_dim = int(kp_dim)
 
         self._stats_override = None
         if stats_path is not None:
@@ -185,6 +198,11 @@ class DemoPackBuilder:
             dtype=np.float32,
         )
         traj_ok = np.zeros(self.k_max, dtype=np.float32)
+        kp = np.zeros(
+            (self.k_max, self.frames_per_demo, self._n_kp, self._kp_dim),
+            dtype=np.float32,
+        )
+        kp_ok = np.zeros(self.k_max, dtype=np.float32)
         used = []
         for slot, (ds_idx, ep, _length) in enumerate(selected[: self.k_max]):
             bundle = self._bundle(ds_idx)
@@ -201,10 +219,16 @@ class DemoPackBuilder:
             s_idx = ICLDataset._sample_keyframe_indices(states.shape[0], self.traj_steps)
             traj[slot] = bundle["normalizer"](states[s_idx], actions[s_idx]).numpy()
             traj_ok[slot] = 1.0
+            if self._kp_cache is not None:
+                key = f"{int(ds_idx)}/{int(ep)}"
+                if key in self._kp_cache:
+                    kp[slot] = self._kp_cache[key].astype(np.float32, copy=False)
+                    kp_ok[slot] = 1.0
             used.append({"ds": int(ds_idx), "episode": int(ep)})
 
         logger.info("demo pack for %r: %d demo(s) %s", group, len(used), used)
         return {"frames": frames, "traj": traj, "traj_ok": traj_ok,
+                "kp": kp, "kp_ok": kp_ok, "kp_enabled": self._kp_cache is not None,
                 "episodes": used, "group": group}
 
 
@@ -228,6 +252,8 @@ def apply_condition(
         return transport.set_demo_pack(
             pack["frames"][: builder.k], traj=pack["traj"][: builder.k],
             traj_ok=pack["traj_ok"][: builder.k], k_max=builder.k_max,
+            **({"kp": pack["kp"][: builder.k], "kp_ok": pack["kp_ok"][: builder.k]}
+               if pack.get("kp_enabled") else {}),
         )
     transport.clear()
     return {"status": "ok", "cleared": True, "condition": condition}

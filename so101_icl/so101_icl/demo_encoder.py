@@ -70,6 +70,24 @@ class DemoEncoder(nn.Module):
         self.vis_norm = nn.LayerNorm(vlm_width)
         self.gate_vis = nn.Parameter(torch.zeros(()))
 
+        # --- keypoint branch (rev 5, Keypoint Action Tokens style) ---
+        # per-keypoint MLP over (coords + SIFT descriptor + valid flag), then
+        # attention-pool over F*K keypoints/demo -> tokens_kp gated tokens.
+        # Disabled by default (config.demo_encoder.keypoints.enabled=false):
+        # token layout and checkpoints are then bit-identical to rev 4.
+        kp = de.keypoints
+        self.keypoints_enabled = bool(kp.enabled)
+        if self.keypoints_enabled:
+            self.kp_mlp = nn.Sequential(
+                nn.Linear(kp.kp_dim, de.hidden_dim), nn.GELU(),
+                nn.Linear(de.hidden_dim, vlm_width),
+            )
+            self.kp_queries = nn.Parameter(torch.randn(kp.tokens_kp, vlm_width) * 0.02)
+            self.kp_pool = nn.MultiheadAttention(vlm_width, de.n_heads, batch_first=True)
+            self.kp_norm = nn.LayerNorm(vlm_width)
+            self.gate_kp = nn.Parameter(torch.zeros(()))
+            self._kp_shape = (de.frames_per_demo, kp.n_kp, kp.kp_dim)
+
         # --- trajectory branch: per-step state/action tokens ---
         d_state, d_action = config.max_state_dim, config.max_action_dim
         hidden = de.hidden_dim
@@ -90,7 +108,10 @@ class DemoEncoder(nn.Module):
 
     @property
     def tokens_per_demo(self) -> int:
-        return self.tokens_vis + self.tokens_traj
+        per_demo = self.tokens_vis + self.tokens_traj
+        if self.keypoints_enabled:
+            per_demo += self.config.keypoints.tokens_kp
+        return per_demo
 
     def reset_icl_parameters(self) -> None:
         """Init the gates (at ``gate_floor``) / zero the order embedding.
@@ -113,6 +134,8 @@ class DemoEncoder(nn.Module):
         with torch.no_grad():
             self.gate_vis.fill_(self.config.gate_floor)
             self.gate_traj.fill_(self.config.gate_floor)
+            if self.keypoints_enabled:
+                self.gate_kp.fill_(self.config.gate_floor)
 
     def _embed_frames(self, frames: Tensor, embed_fn) -> Tensor:
         """SigLIP-embed demo frames, detached, chunked to bound peak memory.
@@ -139,6 +162,8 @@ class DemoEncoder(nn.Module):
         traj_ok: Tensor,
         embed_fn,
         gate_scale: float | Tensor = 1.0,
+        kp: Tensor | None = None,
+        kp_ok: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Encode a batched demo pack.
 
@@ -153,6 +178,9 @@ class DemoEncoder(nn.Module):
             embed_fn: frozen SigLIP embed function (see :meth:`_embed_frames`).
             gate_scale: extra multiplicative factor on the gates; the training
                 loop sets 0.0 to compute ``loss_demo_zeroed``.
+            kp: ``[B, k_max, F, K, kp_dim]`` cached keypoint features
+                (required when the keypoint branch is enabled).
+            kp_ok: ``[B, k_max]`` 0/1 keypoint availability.
         Returns:
             ``(embs, pad)`` — ``[B, k_max * tokens_per_demo, D]`` token
             embeddings and ``[B, k_max * tokens_per_demo]`` bool pad mask.
@@ -160,6 +188,11 @@ class DemoEncoder(nn.Module):
         B, K, F = frames.shape[:3]
         if K != self.k_max:
             raise ValueError(f"expected k_max={self.k_max} demo slots, got K={K}")
+        if self.keypoints_enabled and kp is None:
+            raise ValueError(
+                "demo_encoder.keypoints.enabled=true but no kp tensor given — "
+                "the batch/pack must carry icl.demo_kp (see data.ICLDataset)."
+            )
 
         # Vision branch: [B*K, F*256, D] keys/values, T learned queries.
         flat_frames = frames.reshape(B * K * F, *frames.shape[3:])
@@ -170,6 +203,21 @@ class DemoEncoder(nn.Module):
         pooled, _ = self.pool(q, kv, kv, need_weights=False)  # [B*K, T, D]
         gate_vis = self.gate_vis.clamp(min=self.config.gate_floor)
         vis_tokens = self.vis_norm(self.vis_proj(pooled)) * gate_vis * gate_scale
+        branch_tokens = [vis_tokens.reshape(B, K, self.tokens_vis, D)]
+
+        # Keypoint branch: [B*K, F*K_kp, D] keys/values, learned queries.
+        if self.keypoints_enabled:
+            kp_emb = self.kp_mlp(kp)                            # [B, K, F, K_kp, D]
+            kp_kv = kp_emb.reshape(B * K, F * kp.shape[3], D)
+            kp_q = self.kp_queries[None].expand(B * K, -1, -1)
+            kp_pooled, _ = self.kp_pool(kp_q, kp_kv, kp_kv, need_weights=False)
+            gate_kp = self.gate_kp.clamp(min=self.config.gate_floor)
+            kp_tokens = (self.kp_norm(kp_pooled) * gate_kp * gate_scale).reshape(
+                B, K, self.config.keypoints.tokens_kp, D
+            )
+            if kp_ok is not None:
+                kp_tokens = kp_tokens * kp_ok[..., None, None].to(kp_tokens.dtype)
+            branch_tokens.append(kp_tokens)
 
         # Trajectory branch: one state + one action token per step -> [B, K, 2S, D].
         state_part = traj[..., : self._demo_dim // 2]
@@ -180,10 +228,9 @@ class DemoEncoder(nn.Module):
         gate_traj = self.gate_traj.clamp(min=self.config.gate_floor)
         traj_tokens = self.traj_norm(traj_tokens) * gate_traj * gate_scale
         traj_tokens = traj_tokens * traj_ok[..., None, None].to(traj_tokens.dtype)
+        branch_tokens.append(traj_tokens)
 
-        tokens = torch.cat(
-            [vis_tokens.reshape(B, K, self.tokens_vis, D), traj_tokens], dim=2
-        )  # [B, K, T_vis + 2S, D]
+        tokens = torch.cat(branch_tokens, dim=2)  # [B, K, T_vis + T_kp + 2S, D]
         tokens = tokens + self.order_emb.weight[None, :, None, :]  # order per demo slot
 
         per_demo = tokens.shape[2]
@@ -199,7 +246,10 @@ class DemoEncoder(nn.Module):
         traj: Tensor,
         traj_ok: Tensor,
         embed_fn,
+        kp: Tensor | None = None,
+        kp_ok: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Inference-side encoding of a single pack (batch dim 1, no grad)."""
-        embs, pad = self.forward(frames, demo_mask, traj, traj_ok, embed_fn)
+        embs, pad = self.forward(frames, demo_mask, traj, traj_ok, embed_fn,
+                                 kp=kp, kp_ok=kp_ok)
         return embs.detach(), pad

@@ -59,6 +59,8 @@ class DemoAsset:
     frames: np.ndarray | None = None       # [F, 3, 224, 224] preprocessed, or None until resolved
     traj: np.ndarray | None = None         # [S, d] normalized, or None
     traj_ok: float = 0.0
+    kp: np.ndarray | None = None           # [F, K, kp_dim] SIFT features (rev 5), or None
+    kp_ok: float = 0.0
 
 
 @dataclass
@@ -156,7 +158,14 @@ def fetch_keyframes(demo: dict, frames_per_demo: int) -> np.ndarray | None:
     return preprocess_demo_frames(stacked).numpy()
 
 
-def resolve_demo(demo: dict, normalizer: TrajNormalizer | None, frames_per_demo: int) -> DemoAsset:
+def resolve_demo(
+    demo: dict,
+    normalizer: TrajNormalizer | None,
+    frames_per_demo: int,
+    *,
+    keypoints: bool = False,
+    max_kp: int = 16,
+) -> DemoAsset:
     asset = DemoAsset(demonstration=demo)
     asset.frames = fetch_keyframes(demo, frames_per_demo)
     trajectory = demo.get("trajectory", {}) or {}
@@ -168,6 +177,13 @@ def resolve_demo(demo: dict, normalizer: TrajNormalizer | None, frames_per_demo:
         s_idx = np.linspace(0, max(1, states.shape[0] - 1), 16).round().astype(int)
         asset.traj = normalizer(states[s_idx], actions[s_idx]).numpy()
         asset.traj_ok = 1.0
+    if keypoints and asset.frames is not None:
+        # SIFT features over the SAME preprocessed keyframes (rev 5 keypoint
+        # branch) — same extraction path as the training-side cache.
+        from .data import extract_keypoints
+
+        asset.kp = extract_keypoints(torch.from_numpy(asset.frames), max_kp=max_kp)
+        asset.kp_ok = 1.0
     return asset
 
 
@@ -244,19 +260,25 @@ def build_demo_pack(
     frames_per_demo: int,
     k_max: int,
     normalizer: TrajNormalizer | None = None,
+    keypoints: bool = False,
+    max_kp: int = 16,
 ) -> dict:
     """Select, resolve and push the active subtask's demo pack.
 
     Returns the transport reply ({"status": "ok", "encode_s": ...}) or a
     {"status": "skipped"} marker for prompt-conditioned subtasks (the
-    baseline arm clears any previous pack).
+    baseline arm clears any previous pack). ``keypoints=True`` extracts
+    SIFT features for the rev-5 keypoint branch and ships them on the wire.
     """
     if active.conditioning_mode != "demo" or not active.demonstrations:
         transport.clear()
         return {"status": "skipped", "reason": f"conditioning={active.conditioning_mode}"}
 
     selected = select_top_k(active.demonstrations, k)
-    assets = [resolve_demo(d, normalizer, frames_per_demo) for d in selected]
+    assets = [
+        resolve_demo(d, normalizer, frames_per_demo, keypoints=keypoints, max_kp=max_kp)
+        for d in selected
+    ]
     assets = [a for a in assets if a.frames is not None][:k_max]
     if not assets:
         transport.clear()
@@ -270,7 +292,15 @@ def build_demo_pack(
         [a.traj if a.traj is not None else np.zeros((16, 64), np.float32) for a in assets]
     )
     traj_ok = np.asarray([a.traj_ok for a in assets], dtype=np.float32)
-    return transport.set_demo_pack(frames, traj=traj, traj_ok=traj_ok, k_max=k_max)
+    kwargs = {}
+    if keypoints:
+        kp = np.stack(
+            [a.kp if a.kp is not None else np.zeros((frames_per_demo, max_kp, 131), np.float32)
+             for a in assets]
+        )
+        kp_ok = np.asarray([a.kp_ok for a in assets], dtype=np.float32)
+        kwargs = {"kp": kp, "kp_ok": kp_ok}
+    return transport.set_demo_pack(frames, traj=traj, traj_ok=traj_ok, k_max=k_max, **kwargs)
 
 
 def run_mission(
@@ -284,6 +314,7 @@ def run_mission(
     advance_mode: str = "terminal",
     should_advance=None,
     clear_on_advance=True,
+    keypoints: bool = False,
 ) -> list[str]:
     """Drive one dispatch mission: pack per active subtask, wait, advance.
 
@@ -300,7 +331,7 @@ def run_mission(
         monitor.set_active(active)
         reply = build_demo_pack(
             active, transport, k=k, frames_per_demo=frames_per_demo,
-            k_max=k_max, normalizer=normalizer,
+            k_max=k_max, normalizer=normalizer, keypoints=keypoints,
         )
         logger.info("subtask %s: %s", active.subtask_id, reply)
         if advance_mode == "terminal":
@@ -332,6 +363,8 @@ def main(argv=None) -> int:
                         help="DemoEncoder slot count (config.demo_encoder.k_max)")
     parser.add_argument("--frames-per-demo", type=int, default=6)
     parser.add_argument("--stats", default=None, help="stage_stats.json for traj normalization")
+    parser.add_argument("--keypoints", action="store_true",
+                        help="extract SIFT keypoint features for the rev-5 DemoEncoder branch")
     parser.add_argument("--poll-s", type=float, default=5.0, help="dispatch poll period")
     parser.add_argument("--advance-mode", default="terminal", choices=["terminal", "auto"],
                         help="terminal: wait for terminal events; auto: advance immediately")
@@ -373,7 +406,7 @@ def main(argv=None) -> int:
         completed = run_mission(
             state, transport, k=args.k, frames_per_demo=args.frames_per_demo,
             k_max=args.k_max, normalizer=normalizer, advance_mode=args.advance_mode,
-            should_advance=should_advance,
+            should_advance=should_advance, keypoints=args.keypoints,
         )
         logger.info("mission %s completed subtasks: %s", args.mission_id, completed)
         if args.once:
@@ -413,6 +446,7 @@ if _RCLPY_AVAILABLE:
             self.declare_parameter("k_max", 4)
             self.declare_parameter("frames_per_demo", 6)
             self.declare_parameter("stats_path", "")
+            self.declare_parameter("keypoints", False)  # rev-5 keypoint branch
             self.declare_parameter("poll_period_s", 5.0)
             self.declare_parameter("terminal_msg_type", "std_msgs/msg/Empty")
 
@@ -463,6 +497,7 @@ if _RCLPY_AVAILABLE:
                 frames_per_demo=int(self.get_parameter("frames_per_demo").value),
                 k_max=int(self.get_parameter("k_max").value),
                 normalizer=self.normalizer,
+                keypoints=bool(self.get_parameter("keypoints").value),
             )
             self.get_logger().info(f"subtask {active.subtask_id}: {reply}")
             self._subscribe_terminal(active)

@@ -123,7 +123,8 @@ def run_offline(
     try:
         dataset = ICLDataset(registry_path, policy.config, split=split,
                              demo_camera=stage_config["dataset"].get(
-                                 "demo_camera", "observation.images.base_0_rgb"))
+                                 "demo_camera", "observation.images.base_0_rgb"),
+                             keypoint_cache=stage_config["dataset"].get("keypoint_cache"))
     except ValueError:
         # Loud in the log AND in the report: the M2 gate is only meaningful
         # on held-out groups (smoke registries hold out none).
@@ -132,7 +133,8 @@ def run_offline(
         logger.warning(split_note)
         dataset = ICLDataset(registry_path, policy.config, split="train",
                              demo_camera=stage_config["dataset"].get(
-                                 "demo_camera", "observation.images.base_0_rgb"))
+                                 "demo_camera", "observation.images.base_0_rgb"),
+                             keypoint_cache=stage_config["dataset"].get("keypoint_cache"))
     reg = load_task_registry(registry_path)
     primary = reg["datasets"][0]
     from .data import open_local_dataset

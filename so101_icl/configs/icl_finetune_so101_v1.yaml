@@ -4,7 +4,9 @@
 base_checkpoint: lerobot/pi05_base          # unchanged — the base is never rewritten
 dtype: bfloat16
 output_dir: so101_icl/runs/icl_finetune_so101_v1
-init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/final
+init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/best   # stage 1 stopped at
+                                 # ~1827/10000 steps: only best/ exists, no final/.
+                                 # DO NOT point this at final/ — stage 2 would not run.
 dataset:
   repo_ids: [local/so101_teleop_v1, local/so101_sim_round2]   # rosbag_to_lerobot + self-improve exports (to be curated)
   root: ~/.cache/huggingface/lerobot
@@ -15,21 +17,31 @@ dataset:
                                   # demos (scene-wide, task-informative keyframes); the wrist view
                                   # is often motion-blurred and self-occluded during teleop.
   task_registry: so101_icl/configs/task_registry_so101.json
+  keypoint_cache: so101_icl/configs/task_registry_so101_kp.npz   # rev 5: precompute-keypoints first
   holdout_tasks: {eval: 3, test: 3}
-demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
+demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
+               gate_floor: 0.8,          # match stage 1 (calibrated there); stage 2 loads gates
+                                 # trained at this floor and must not be allowed to sink below it
+               keypoints: {enabled: true, n_kp: 16, kp_dim: 131, tokens_kp: 32}}   # rev 5 branch
 lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
 train:
-  steps: 2000
+  steps: 500                      # rev 5 short-hot stage 2 (GEN-1.5: 10 gradient steps at
+  lr: 1.0e-4                      # pretraining-like LR gave +24% over one-shot; most value
+  warmup: 20                      # is in the first ~50 steps). ckpt/val every 50 so the
+  ckpt_every: 50                  # best/ checkpoint tracks the fast adaptation; extend only
+  val_every: 50                   # if the val curve is still falling at step 500.
   batch_per_gpu: 8
-  lr: 2.5e-5                     # RICL finetune analog
-  warmup: 100
   grad_clip: 1.0
-  ckpt_every: 500
   seed: 43
   num_workers: 8
   curriculum: [[100000000, [1, 2, 3, 4]]]   # no curriculum in stage 2
-  demo_zeroed_every: 100
-  val_every: 250
+  demo_zeroed_every: 50
+  demo_usage_weight: 0.5          # same usage hinge as stage 1 (rev 5)
+  demo_usage_margin: 0.02
+  language_dropout: 0.3           # stage-2 data is one-task-heavy; keep language from
+                                  # shortcutting task identification
+  group_sampling: bursty          # bursty ordering carries over (few groups here, but
+  burst_length: 8                 # bursts align with batch_per_gpu for coherent batches)
 eval:                           # sim/real campaign knobs — consumed by the
   sim_trials: 20                # deferred M3/M4 drivers (eval_icl.py sim|real),
   real_trials: 10               # not by the offline harness

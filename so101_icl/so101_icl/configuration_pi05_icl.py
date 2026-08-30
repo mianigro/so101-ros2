@@ -39,6 +39,25 @@ EXPERT_LORA_TARGETS = r"gemma_expert\.model\.layers\.\d+\.self_attn\.(q|v)_proj"
 
 
 @dataclass
+class KeypointConfig:
+    """Keypoint demo representation (Keypoint Action Tokens style, rev 5).
+
+    Demo keyframes are additionally represented as sparse keypoints (SIFT,
+    precomputed offline into an npz cache keyed ``<ds_idx>/<episode>``):
+    per frame up to ``n_kp`` keypoints × ``kp_dim`` features (2 normalized
+    coords + 128 L2-normalized descriptor + 1 valid flag). The DemoEncoder
+    pools them into ``tokens_kp`` tokens/demo through their own gated
+    branch, giving the prefix correspondence-bearing visual content that
+    raw SigLIP pooling cannot express.
+    """
+
+    enabled: bool = False
+    n_kp: int = 16                 # keypoints per frame (K)
+    kp_dim: int = 131              # 2 coords + 128 SIFT descriptor + 1 valid mask
+    tokens_kp: int = 32            # pooled keypoint tokens per demo
+
+
+@dataclass
 class DemoEncoderConfig:
     """DemoEncoder architecture knobs (ICL_IMPLEMENTATION.md §7)."""
 
@@ -55,6 +74,13 @@ class DemoEncoderConfig:
     # branch through a single scalar (the "null-out" failure mode observed in
     # stage-1 run 2) — the gate can still grow freely.
     gate_floor: float = 0.0
+    # Keypoint branch (rev 5); disabled by default so old configs/checkpoints
+    # load unchanged. Accepts a plain dict from YAML.
+    keypoints: KeypointConfig = field(default_factory=KeypointConfig)
+
+    def __post_init__(self):
+        if isinstance(self.keypoints, dict):
+            self.keypoints = KeypointConfig(**self.keypoints)
 
 
 @dataclass

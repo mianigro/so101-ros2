@@ -79,6 +79,16 @@ class TrainSettings:
     val_every: int = 1_000
     val_batches: int = 8
     gate_lr_mult: float = 10.0
+    # Demo-usage hinge loss (RoboTTT-inspired, rev 5): every step, an extra
+    # no-grad forward with the demo gates forced to 0 (same flow-matching
+    # noise/t) gives loss_zeroed; the optimized loss gains
+    #   w * relu(loss_demo - loss_zeroed + margin)
+    # which fires gradient exactly when the demo-conditioned prediction is
+    # not beating the demo-silenced one by `margin`. The optimizer can no
+    # longer profit from ignoring demos (the dead-saddle failure of the
+    # first stage-1 run). ~1.3-1.5x step time (one extra forward).
+    demo_usage_weight: float = 0.0
+    demo_usage_margin: float = 0.02
     # Language dropout (null-out mitigation, ICL §4.5): on this fraction of
     # micro-batches the task prompt is replaced by a vague stand-in, making
     # the demo pack the only task signal — gradient pressure to USE demos.
@@ -136,9 +146,9 @@ def _split_icl_fields(batch: dict) -> tuple[dict, dict]:
 
 def _move_icl_fields(batch: dict, device: str) -> dict:
     out = dict(batch)
-    for key in (DEMO_FRAMES, DEMO_MASK, DEMO_TRAJ, DEMO_TRAJ_OK):
-        if key in out:
-            out[key] = out[key].to(device, non_blocking=True)
+    for key, value in out.items():
+        if key.startswith("icl.") and torch.is_tensor(value):
+            out[key] = value.to(device, non_blocking=True)
     return out
 
 
@@ -196,6 +206,19 @@ def _demo_zeroed_loss(policy, batch, rng_state: tuple | None = None) -> float:
         return loss.item()
     finally:
         model._demo_gate_scale = old
+
+
+def usage_hinge(loss: torch.Tensor, loss_zeroed: float, margin: float) -> torch.Tensor:
+    """Rev 5 demo-usage hinge (RoboTTT-inspired): ``relu(loss - zeroed + margin)``.
+
+    Zero when the demo-conditioned loss beats the demo-silenced replay by
+    more than ``margin``; otherwise a penalty whose gradient flows only
+    through ``loss`` (the demo-conditioned path). ``loss_zeroed`` must come
+    from the no-grad zeroed replay with identical noise/timesteps.
+    """
+    if not torch.is_tensor(loss):
+        loss = torch.tensor(float(loss))
+    return torch.relu(loss - (float(loss_zeroed) - margin))
 
 
 def _param_groups(policy, settings: TrainSettings):
@@ -304,6 +327,18 @@ def run_training(
         query_batch = preprocessor(query_batch)
         batch = {**query_batch, **_move_icl_fields(icl_fields, device)}
         loss, _ = policy.forward(batch)
+
+        # Demo-usage hinge: penalize unless demos beat the demo-silenced
+        # replay of THIS batch by the margin (same noise/time). Gradient
+        # reaches only the demo-conditioned path through `loss`.
+        last_zeroed = last_usage = None
+        if settings.demo_usage_weight > 0 and DEMO_FRAMES in batch:
+            base_policy.eval()
+            last_zeroed = _demo_zeroed_loss(base_policy, batch, rng_state)
+            base_policy.train()
+            usage = usage_hinge(loss, last_zeroed, settings.demo_usage_margin)
+            last_usage = float(usage.item())
+            loss = loss + settings.demo_usage_weight * usage
         accelerator.backward(loss / settings.grad_accum)
 
         micro_step += 1
@@ -328,6 +363,10 @@ def run_training(
             "gate_traj": base_policy.model.demo_encoder.gate_traj.item(),
             "sec_per_step": (time.time() - start) / step,
         }
+        if last_zeroed is not None:
+            # last micro-batch's replay; the hinge fired when usage > 0
+            record["loss_zeroed"] = last_zeroed
+            record["usage_loss"] = last_usage
         if settings.language_dropout > 0:
             record["lang_dropout_rate"] = dropped / max(1, seen)
         if step % settings.demo_zeroed_every == 0 or step == 1:
@@ -469,33 +508,58 @@ def main(argv=None) -> int:
             f"{registry_path} missing — run `pixi run -e lerobot icl_data build-registry ...`"
         )
 
-    train_ds = ICLDataset(registry_path, policy.config, split="train",
-                          demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
-                          seed=stage["train"].get("seed", 42))
+    train_ds = ICLDataset(
+        registry_path, policy.config, split="train",
+        demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
+        seed=stage["train"].get("seed", 42),
+        keypoint_cache=dataset_cfg.get("keypoint_cache"),
+    )
     train_settings = TrainSettings(
         gate_lr_mult=lora_cfg.gate_lr_mult, **{
             k: v for k, v in stage["train"].items()
             if k in ("steps", "batch_per_gpu", "grad_accum", "lr", "warmup", "grad_clip",
                      "ckpt_every", "seed", "num_workers", "log_every",
                      "demo_zeroed_every", "val_every", "val_batches", "tensorboard",
-                     "language_dropout")
+                     "language_dropout", "demo_usage_weight", "demo_usage_margin")
         }
     )
     if "curriculum" in stage["train"]:
         train_settings.curriculum = [
             CurriculumPhase(p[0], p[1]) for p in stage["train"]["curriculum"]
         ]
-    train_loader = DataLoader(
-        train_ds, batch_size=train_settings.batch_per_gpu, shuffle=True,
-        num_workers=train_settings.num_workers, pin_memory=True, drop_last=True,
-    )
+    # Bursty group sampling (GEN-1.5 / Chan et al. 2022): tasks appear in
+    # contiguous bursts with Zipfian group popularity — the data regime under
+    # which in-context learning emerges — instead of uniformly shuffled.
+    group_sampling = stage["train"].get("group_sampling", "shuffle")
+    if group_sampling == "bursty":
+        from .data import BurstyGroupBatchSampler
+
+        batch_sampler = BurstyGroupBatchSampler(
+            train_ds, batch_size=train_settings.batch_per_gpu,
+            burst_length=int(stage["train"].get("burst_length", 4)),
+            seed=train_settings.seed, drop_last=True,
+        )
+        train_loader = DataLoader(
+            train_ds, batch_sampler=batch_sampler,
+            num_workers=train_settings.num_workers, pin_memory=True,
+        )
+        logger.info("bursty group sampling: burst_length=%d over %d groups",
+                    batch_sampler.burst_length, len(batch_sampler.groups))
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_size=train_settings.batch_per_gpu, shuffle=True,
+            num_workers=train_settings.num_workers, pin_memory=True, drop_last=True,
+        )
 
     # Fixed validation batches (bare-prompt); falls back to train samples
     # when the registry holds out no eval groups (e.g. the local smoke run).
     try:
-        val_ds = ICLDataset(registry_path, policy.config, split="eval",
-                            demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
-                            seed=train_settings.seed)
+        val_ds = ICLDataset(
+            registry_path, policy.config, split="eval",
+            demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
+            seed=train_settings.seed,
+            keypoint_cache=dataset_cfg.get("keypoint_cache"),
+        )
     except ValueError:
         val_ds = None
     val_batches = None

@@ -863,3 +863,74 @@ the code — if it isn't listed as done in §8, it isn't done.
    Successive-batch sampling within a group would tighten this.
 7. **`droid_100` v2.0 vs v3.0**: if the droid smoke is ever run, it loads
    with a version notice; only the local smoke is exercised.
+
+## 13. Rev 5 — training-pipeline improvements from the research sweep
+
+Three changes to how stage-1/stage-2 TRAIN demo conditioning, each tied to
+current published work. The two-stage flow (DROID pretrain → SO-101
+fine-tune → ICL at deployment) is unchanged; what changed is the pressure
+the optimizer feels to actually use demos, the data ordering, and the demo
+representation.
+
+### 13.1 Demo-usage hinge loss (RoboTTT-inspired) — `train_loop.py`
+
+The dead-saddle failure (gates nulling out) existed because the
+flow-matching loss pays the model nothing for USING demos: language +
+current observation alone minimize it. Rev 5 adds, every step, a replay of
+the same batch with demo gates forced to 0 (identical noise/timesteps —
+the `_demo_zeroed_loss` machinery) and the term
+
+    L = loss_fm(query | demos) + w · relu(loss_fm(query|demos) − loss_zeroed + margin)
+
+(`usage_hinge`). Gradient flows only through the demo-conditioned path and
+fires exactly when demos are not beating the demo-silenced baseline by
+`margin` — ignoring demos is now structurally unprofitable, not merely
+discouraged (gate floors, language dropout remain as before). Knobs:
+`train.demo_usage_weight` (0.5), `train.demo_usage_margin` (0.02); logged
+as `loss_zeroed` / `usage_loss`. Cost: one extra no-grad forward per step
+(~1.3–1.5x step time). RoboTTT's analogous finding: masking the
+flow-matching loss on demo timesteps turns them into pure context — same
+principle (demos must not compete with the action loss for gradient),
+different mechanism.
+
+### 13.2 Bursty group sampling (GEN-1.5 / Chan et al. 2022) — `data.py`
+
+GEN-1.5's one-shot ICL emerged with zero architectural mechanism under a
+"bursty" pretraining distribution (few dominant tasks recurring in
+contiguous runs, citing Chan et al. 2022). `BurstyGroupBatchSampler`
+replaces `shuffle=True` when `train.group_sampling: bursty`: task groups
+are drawn with Zipfian popularity weights and emit `burst_length`
+consecutive query episodes per draw; regenerate per epoch via the existing
+`set_epoch`; batches are single-group when `burst_length == batch_size`.
+Default remains `shuffle` — old configs unchanged.
+
+### 13.3 Keypoint demo representation (Keypoint Action Tokens style)
+
+Demos additionally enter as sparse correspondences instead of only pooled
+SigLIP features: SIFT keypoints (up to 16/frame × [2 coords + 128
+descriptor + 1 valid]) extracted offline (`icl_data precompute-keypoints`,
+npz cache keyed `<ds_idx>/<episode>`) or live in the bridge. The
+DemoEncoder gains a third branch (per-keypoint MLP → attention-pool →
+`tokens_kp` gated tokens, `gate_kp` under the same `gate_floor`), so a
+demo contributes [vis | kp | traj] tokens. Off by default
+(`demo_encoder.keypoints.enabled`); when disabled the token layout and
+checkpoints are bit-identical to rev 4. Plumbing: `icl.demo_kp`/
+`icl.demo_kp_ok` batch fields, side-channel binary part, bridge
+`--keypoints` / `keypoints` ROS parameter, DemoPackBuilder cache loading.
+
+### 13.4 Stage-2 short-hot schedule (GEN-1.5)
+
+GEN-1.5 gets +24% success from 1–10 gradient steps at pretraining-like
+LR. Stage 2 is now `steps: 500, lr: 1e-4, warmup: 20, ckpt/val_every: 50`
+(best/ tracks the fast adaptation); extend only if the val curve is still
+falling at 500. Also fixed: `init_adapter_from` now points at stage-1
+`best/` (no `final/` exists — stage 2 previously could not run from disk).
+
+### 13.5 Run order
+
+1. `pixi run icl_data precompute-keypoints --registry <so101 registry>` (stage 2)
+   / the droid equivalent with `--demo-camera observation.images.left_wrist_0_rgb`.
+2. Smoke: `train_icl.py --config icl_smoke_local_v1.yaml` (short steps) to
+   verify the hinge + sampler + kp fields end to end.
+3. Resume stage 1 on DROID with the new loss/bursty/kp enabled.
+4. M2 offline gate; stage 2 short-hot; sim/real campaigns.

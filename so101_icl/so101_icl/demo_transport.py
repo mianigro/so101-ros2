@@ -133,7 +133,8 @@ class DemoTransportServer:
             frame_shape = tuple(header["frame_shape"])       # e.g. [3, 224, 224]
             frames_per_demo = int(header["frames_per_demo"])
             expected_elems = k_max * frames_per_demo * int(np.prod(frame_shape))
-            if len(frames) != 2 or len(frames[1]) != expected_elems * 4:
+            # 2 parts: frames only; 3 parts: frames + keypoint features (rev 5)
+            if len(frames) not in (2, 3) or len(frames[1]) != expected_elems * 4:
                 return {
                     "status": "error",
                     "error": (
@@ -159,11 +160,36 @@ class DemoTransportServer:
 
             mask = torch.zeros(k_max, dtype=torch.bool)
             mask[: int(header["k"])] = True
+            kp = kp_ok = None
+            if header.get("kp") is not None:
+                # keypoint features ride as a second binary frame (rev 5)
+                n_kp, kp_dim = int(header["n_kp"]), int(header["kp_dim"])
+                expected_kp = k_max * frames_per_demo * n_kp * kp_dim
+                if len(frames) != 3 or len(frames[2]) != expected_kp * 4:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"expected a binary keypoint frame of {expected_kp} "
+                            f"float32 values, got {max(0, len(frames) - 2)} extra frame(s)"
+                        ),
+                    }
+                kp = torch.from_numpy(
+                    np.frombuffer(frames[2], dtype="<f4").copy().reshape(
+                        k_max, frames_per_demo, n_kp, kp_dim
+                    )
+                )
+                kp_ok = torch.zeros(k_max)
+                ok_vals = np.asarray(header["kp_ok"], dtype=np.float32)
+                kp_ok[: int(header["k"])] = torch.from_numpy(ok_vals[: int(header["k"])])
+            set_kwargs = {}
+            if kp is not None:
+                set_kwargs = {"kp": kp, "kp_ok": kp_ok}
             policy.model.set_demo_pack(
                 torch.from_numpy(demo_frames),
                 mask,
                 torch.from_numpy(traj),
                 torch.from_numpy(traj_ok),
+                **set_kwargs,
             )
             self._last_encode_s = time.perf_counter() - start
             return {"status": "ok", "encode_s": self._last_encode_s, "k": int(header["k"])}
@@ -207,10 +233,29 @@ class DemoTransportClient:
         traj: np.ndarray | None = None,  # [k, S, d] float32, already normalized
         traj_ok: np.ndarray | None = None,
         k_max: int = 4,
+        *,
+        kp: np.ndarray | None = None,    # [k, F, K, kp_dim] SIFT features (rev 5)
+        kp_ok: np.ndarray | None = None, # [k] float 0/1
     ) -> dict:
         k, f = demo_frames.shape[:2]
         padded = np.zeros((k_max, f, *demo_frames.shape[2:]), dtype=np.float32)
         padded[:k] = demo_frames
+        arrays = [padded.reshape(-1)]
+        header_extra = {}
+        if kp is not None:
+            kp_padded = np.zeros((k_max, *kp.shape[1:]), dtype=np.float32)
+            kp_padded[:k] = kp
+            arrays.append(kp_padded.reshape(-1))
+            if kp_ok is None:
+                kp_ok = np.ones(k, dtype=np.float32)
+            kp_ok_padded = np.zeros(k_max, dtype=np.float32)
+            kp_ok_padded[:k] = kp_ok
+            header_extra = {
+                "kp": True,                       # signals the binary part exists
+                "n_kp": int(kp.shape[2]),
+                "kp_dim": int(kp.shape[3]),
+                "kp_ok": kp_ok_padded.tolist(),
+            }
         if traj is None:
             traj = np.zeros((k_max, 16, 64), dtype=np.float32)
         else:
@@ -234,8 +279,9 @@ class DemoTransportClient:
                 "traj_dim": int(traj.shape[2]),
                 "traj": traj.tolist(),
                 "traj_ok": traj_ok.tolist(),
+                **header_extra,
             },
-            arrays=[padded.reshape(-1)],
+            arrays=arrays,
         )
 
     def clear(self) -> dict:
