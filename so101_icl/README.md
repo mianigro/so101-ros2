@@ -94,7 +94,7 @@ pixi run -e lerobot accelerate launch --num_processes 2 --multi_gpu \
 ```
 
 Prerequisites: `download-subset`, `build-registry`, `check-stats`,
-`precompute-keypoints`. Batch 4/GPU + grad-accum 2 — 16 GB cards OOM at 8.
+`precompute-keypoints`.
 
 **What training does (rev 6)**
 
