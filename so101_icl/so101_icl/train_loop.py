@@ -399,6 +399,10 @@ def run_training(
     data_iter = None
     lang_rng = random.Random(settings.seed + 1)
     dropped = seen = 0  # language-dropout application counters
+    # EMA of the bare-prompt demo ratio: the raw ratio is computed on a small
+    # fixed val batch set and jumps around; the EMA carries the trend a
+    # mid-run reader (or an early-stop decision) should actually trust.
+    demo_ratio_bare_ema: float | None = None
 
     if resume_state_path is not None:
         state = _load_trainer_state(
@@ -527,6 +531,17 @@ def run_training(
                 record["val/demo_ratio_bare"] = (
                     signal_bare[0] / max(signal_bare[1], 1e-8)
                 )
+                # Sign-corrected readout: % error reduction from demos under
+                # the vague prompt (positive = demos help).
+                record["val/icl_advantage_bare"] = (
+                    1.0 - record["val/demo_ratio_bare"]
+                )
+                demo_ratio_bare_ema = (
+                    record["val/demo_ratio_bare"] if demo_ratio_bare_ema is None
+                    else 0.9 * demo_ratio_bare_ema
+                    + 0.1 * record["val/demo_ratio_bare"]
+                )
+                record["val/demo_ratio_bare_ema"] = demo_ratio_bare_ema
                 selection = min(selection, record.get("val/demo_ratio",
                                                       record["val/demo_ratio_bare"]))
             if selection < best_selection:

@@ -3,3 +3,4 @@ configs/**.npz
 configs/task_registry_droid_clusters.json
 configs/task_registry_smoke_local_clusters.json
 configs/task_registry_droid.json
+configs/task_registry_droid_kp.npz.meta.json
