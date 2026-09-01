@@ -8,23 +8,33 @@ dataset:
   grouping_key: task_category    # 86 groups
   camera_rename: droid           # exterior_1->base_0_rgb, wrist->left_wrist_0_rgb, exterior_2->right_wrist_0_rgb
   demo_camera: observation.images.left_wrist_0_rgb   # droid "wrist" cam (see camera_rename).
-                                  # Kept on wrist for stage 1 (the run in progress uses it; changing
-                                  # requires a restart). Revisit only if the F-ablation shows weak
-                                  # demo signal — exterior_1 (base_0_rgb) is the alternative.
+                                  # REQUIRED demo angle — do not switch to exterior_1;
+                                  # the keypoint cache must be built for this exact view.
   task_registry: so101_icl/configs/task_registry_droid.json
-  keypoint_cache: so101_icl/configs/task_registry_droid_kp.npz   # rev 5: run
-                                 # `pixi run icl_data precompute-keypoints --registry
-                                 # so101_icl/configs/task_registry_droid.json
-                                 # --demo-camera observation.images.left_wrist_0_rgb` first
-  holdout_groups: {eval: 3, test: 3}
+  task_cluster_cache: so101_icl/configs/task_registry_droid_clusters.json
+                                 # rev 6: run `icl_data cluster-tasks --from-config
+                                 # so101_icl/configs/icl_pretrain_droid_v1.yaml` first.
+                                 # DROID task_category values are collection LOCATIONS
+                                 # and exact task strings are unique per episode
+                                 # (0.2% same-string packs) — supports are sampled
+                                 # from the query's TASK CLUSTER instead.
+  keypoint_cache: so101_icl/configs/task_registry_droid_kp.npz   # rev 6: 12 frames/demo — run
+                                 # `icl_data precompute-keypoints --from-config
+                                 # so101_icl/configs/icl_pretrain_droid_v1.yaml` first
+                                 # (registry/camera/frames/output all come from this file)
+  holdout_groups: {eval: 6, test: 6}   # 6+6 of 86 categories (the §6.1 plan): the M2
+                                       # gate is a median over held-out groups — 3 would
+                                       # make that a median of 3 numbers
   recompute_stats: auto          # recompute quantiles if the subset ships min/max only
-demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
-               gate_floor: 0.8,          # CALIBRATED (so101_icl/calibrate_gate_floor.py): camera
-                                 # prefix tokens measure RMS ~4.0, language ~10; LayerNorm pins
-                                 # demo token RMS at the gate value, so 0.8 puts demos at ~20%
-                                 # of camera loudness (0.1 was 2.5% — near-inaudible).
+demo_encoder: {k_max: 2, frames_per_demo: 12, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
+               gate_floor: 0.3,          # rev 7: gates are now softmax logits sharing a fixed
+                                 # budget (default = n_branches * gate_floor = 0.9), so
+                                 # 0.3 is the per-branch loudness at the uniform init —
+                                 # a branch can only get louder by taking share from the
+                                 # others (kills the gate_kp runaway seen at lr_mult=50
+                                 # and the lockstep drift, with no clamps or ceilings).
                keypoints: {enabled: true, n_kp: 16, kp_dim: 131, tokens_kp: 32}}   # rev 5 branch
-lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention, gate_lr_mult: 50.0}
+lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention}
 train:
   steps: 10000
   batch_per_gpu: 4      # 16 GB 4080s OOM at 8 during backward; accumulate instead
@@ -32,19 +42,30 @@ train:
   lr: 1.0e-4
   warmup: 100
   grad_clip: 1.0
-  ckpt_every: 2000
+  gate_lr_mult: 50.0   # demo gates start at 0 and need a stronger push than the adapters
+  ckpt_every: 1000   # crash cost == this interval (trainer state resumes mid-schedule)
   seed: 42
   num_workers: 8
-  curriculum: [[1000, [1]], [3000, [1, 2]], [100000000, [1, 2, 3, 4]]]
+  curriculum: [[100000000, [1, 2]]]   # k∈{1,2} from step 0 (rev 6): clusters made packs
+                                      # task-aligned, so no k=1-only warmup phase; k=1
+                                      # stays in the mix for single-demo missions
   demo_zeroed_every: 100
-  language_dropout: 0.5         # % of batches get a vague prompt -> demos are the only task signal
-  demo_usage_weight: 2.0        # rev 5 RoboTTT-style hinge: every step, penalize unless the
+  language_dropout: 0.7         # rev 8 live-run revision: raised from 0.5 — at step 1000
+                                # val/demo_ratio crossed 1.0 (0.962 → 1.018): the model was
+                                # learning to ignore the wrist-video demos whenever the full
+                                # prompt was present. 70% of batches now make the demo pack
+                                # the only task signal.
+  demo_usage_weight: 4.0        # rev 8 live-run revision: raised from 2.0 — usage_loss was
+                                # creeping up (~0.019 → 0.021), i.e. demos beating the
+                                # silenced replay by less than the margin.
+                                # rev 5 RoboTTT-style hinge: every step, penalize unless the
   demo_usage_margin: 0.02       # demo-conditioned loss beats the demo-zeroed replay by margin.
                                 # Structural fix for the dead-saddle (gates nulling out) —
                                 # ~1.4x step time (one extra no-grad forward).
   group_sampling: bursty        # rev 5 GEN-1.5/Chan et al.: Zipf-popularity task bursts
   burst_length: 4               # instead of uniform shuffle — the regime where ICL emerges
-  val_every: 1000
+  val_every: 500                # best/ is selected on the held-out demo/zeroed ratio (rev 6)
 eval:                            # offline defaults for `eval_icl.py offline`
   offline_trials: 500            # (CLI flags override)
-  ablations: {k: [1, 2, 4], frames: [4, 6, 8], traj: [on, off]}
+  ablations: {k: [1, 2], frames: [6, 12]}   # k ≤ k_max; kp cache is 12-frame;
+                                            # traj ablation removed (rev 8: no traj branch)

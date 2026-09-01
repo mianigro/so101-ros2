@@ -26,16 +26,18 @@ from lerobot.policies.pi05.configuration_pi05 import PI05Config
 
 BASE_CHECKPOINT = "lerobot/pi05_base"
 
-# Exact module path of the VLM attention inside PI05Pytorch; asserted at
-# import in modeling_pi05_icl.py so a lerobot version bump fails loudly.
+# Exact module paths of the LoRA target projections inside PI05Pytorch.
+# ``lora.discover_lora_targets`` enumerates the layer index ``i`` from the
+# live module tree and verifies every constructed name exists, so a lerobot
+# version bump fails loudly at injection time (not via pattern matching).
 VLM_ATTENTION_PROJ_PATH = (
     "paligemma_with_expert.paligemma.model.language_model.layers.{i}.self_attn.{proj}_proj"
 )
-
-VLM_LORA_TARGETS = (
-    r"paligemma_with_expert\.paligemma\.model\.language_model\.layers\.\d+\.self_attn\.(q|k|v|o)_proj"
+VLM_ATTN_PROJS = ("q", "k", "v", "o")
+EXPERT_ATTENTION_PROJ_PATH = (
+    "paligemma_with_expert.gemma_expert.model.layers.{i}.self_attn.{proj}_proj"
 )
-EXPERT_LORA_TARGETS = r"gemma_expert\.model\.layers\.\d+\.self_attn\.(q|v)_proj"
+EXPERT_ATTN_PROJS = ("q", "v")
 
 
 @dataclass
@@ -74,6 +76,15 @@ class DemoEncoderConfig:
     # branch through a single scalar (the "null-out" failure mode observed in
     # stage-1 run 2) — the gate can still grow freely.
     gate_floor: float = 0.0
+    # Softmax competition across the branch gates (rev 7): the raw
+    # gate_vis/traj/kp scalars are LOGITS, and the effective gates are
+    # gate_budget * softmax(logits) — the branches share a fixed loudness
+    # budget, so one gate (e.g. keypoints) can only grow by taking share from
+    # the others. Kills both the "all gates drift up together" mode and the
+    # single-gate runaway seen at gate_lr_mult=50; no clamps or ceilings.
+    # Total loudness split by the softmax. None -> n_branches * gate_floor,
+    # so equal logits (the zero init) give every branch exactly gate_floor.
+    gate_budget: float | None = None
     # Keypoint branch (rev 5); disabled by default so old configs/checkpoints
     # load unchanged. Accepts a plain dict from YAML.
     keypoints: KeypointConfig = field(default_factory=KeypointConfig)
@@ -85,15 +96,19 @@ class DemoEncoderConfig:
 
 @dataclass
 class LoRAConfig:
-    """LoRA adapter knobs; injected manually via peft (see lora.py)."""
+    """LoRA adapter knobs; injected manually via peft (see lora.py).
+
+    ``gate_lr_mult`` (the optimizer-side learning-rate multiplier for the
+    demo gates) deliberately lives in ``train_loop.TrainSettings``, not here:
+    it is a training concern, and the adapter artifact must stay
+    optimizer-agnostic.
+    """
 
     rank: int = 32
     alpha: int = 64
     dropout: float = 0.05
     # "vlm_attention" | "vlm_attention+expert"
     targets: str = "vlm_attention"
-    # The demo gates start at 0 and need a stronger push than the adapters.
-    gate_lr_mult: float = 10.0
 
 
 @PreTrainedConfig.register_subclass("pi05_icl")
@@ -116,6 +131,8 @@ class ICLConfig(PI05Config):
             raise ValueError(f"k_max must be in [1, 8], got {de.k_max}")
         if de.gate_floor < 0:
             raise ValueError(f"gate_floor must be >= 0, got {de.gate_floor}")
+        if de.gate_budget is not None and de.gate_budget < 0:
+            raise ValueError(f"gate_budget must be >= 0, got {de.gate_budget}")
         if self.lora.targets not in ("vlm_attention", "vlm_attention+expert"):
             raise ValueError(f"Unknown lora.targets: {self.lora.targets!r}")
         super().__post_init__()

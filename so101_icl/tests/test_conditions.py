@@ -21,7 +21,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from so101_icl.conditions import (  # noqa: E402
-    CONDITIONS,
     DemoPackBuilder,
     apply_condition,
     bare_prompt,
@@ -98,9 +97,6 @@ class TestApplyCondition(unittest.TestCase):
         self.assertEqual(set_call[1], (2, 6, 3, 224, 224))  # sliced to k
         self.assertEqual(set_call[3], 4)  # k_max padding
 
-    def test_conditions_tuple(self):
-        self.assertEqual(CONDITIONS, ("full_icl", "prompt_enriched", "bare_prompt"))
-
 
 class TestBuilderRegistryHandling(unittest.TestCase):
     """Registry-facing behavior that needs no dataset on disk."""
@@ -120,6 +116,116 @@ class TestBuilderRegistryHandling(unittest.TestCase):
             self.assertEqual(builder.resolve_group("task_a"), "task_a")
             with self.assertRaises(ValueError):
                 builder.resolve_group("missing")
+
+
+class _FakeEpisodes:
+    def __init__(self):
+        import pandas as pd
+
+        self._df = pd.DataFrame([{
+            "episode_index": 0, "dataset_from_index": 0,
+            "dataset_to_index": 10, "length": 10,
+        }])
+
+    def to_pandas(self):
+        return self._df
+
+
+class _FakeDataset:
+    """Minimal LeRobotDataset stand-in for DemoPackBuilder._bundle."""
+
+    def __init__(self, image_keys):
+        self.meta = type("Meta", (), {})()
+        self.meta.info = {"features": {
+            **{k: {"shape": [3, 224, 224]} for k in image_keys},
+            "observation.state": {"shape": [7]},
+            "action": {"shape": [7]},
+        }}
+        self.meta.stats = {}
+        self.meta.episodes = _FakeEpisodes()
+        self.hf_dataset = type("HF", (), {"select_columns": lambda self, cols: None})()
+
+    def __getitem__(self, idx):
+        import torch
+
+        return torch.zeros(3, 224, 224)
+
+
+class TestBuilderCameraResolution(unittest.TestCase):
+    """The demo camera must resolve to a real feature key or fail loudly."""
+
+    def _registry(self, tmp, camera_rename):
+        import json
+
+        path = Path(tmp) / "reg.json"
+        path.write_text(json.dumps({
+            "version": 1,
+            "datasets": [{
+                "repo_id": "local/fake", "root": str(tmp),
+                "camera_rename": camera_rename,
+            }],
+            "groups": {"task_a": [[0, 0, 10]]}, "splits": {"train": ["task_a"]},
+        }))
+        return path
+
+    def _builder(self, registry_path, image_keys, **kwargs):
+        from unittest.mock import patch
+
+        import so101_icl.conditions as conditions
+
+        builder = DemoPackBuilder(registry_path, **kwargs)
+        patcher_ds = patch.object(
+            conditions, "open_local_dataset", return_value=_FakeDataset(image_keys))
+        patcher_norm = patch.object(conditions, "TrajNormalizer", return_value=None)
+        patcher_ds.start()
+        patcher_norm.start()
+        self.addCleanup(patcher_ds.stop)
+        self.addCleanup(patcher_norm.stop)
+        return builder
+
+    def test_default_demo_camera_is_wrist(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder(self._registry(tmp, {}), [])
+            self.assertEqual(
+                builder._demo_camera, "observation.images.left_wrist_0_rgb")
+
+    def test_camera_resolved_through_reverse_rename(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._registry(tmp, {
+                "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+            })
+            builder = self._builder(
+                registry, ["observation.images.wrist", "observation.images.front"])
+            bundle = builder._bundle(0)
+            self.assertEqual(bundle["camera"], "observation.images.wrist")
+
+    def test_missing_camera_raises_with_available_keys(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._registry(tmp, {})
+            builder = self._builder(registry, ["observation.images.front"])
+            with self.assertRaises(ValueError) as ctx:
+                builder._bundle(0)
+            message = str(ctx.exception)
+            self.assertIn("demo camera", message)
+            self.assertIn("observation.images.front", message)  # lists what exists
+
+    def test_no_silent_first_key_fallback(self):
+        """Explicit non-existent camera must never fall back to another view."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = self._registry(tmp, {})
+            builder = self._builder(
+                registry, ["observation.images.front"],
+                demo_camera="observation.images.base_0_rgb")
+            with self.assertRaises(ValueError):
+                builder._bundle(0)
 
 
 if __name__ == "__main__":

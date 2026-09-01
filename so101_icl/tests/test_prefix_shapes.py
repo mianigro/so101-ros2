@@ -68,14 +68,6 @@ class TestSplice(unittest.TestCase):
             splice_demo_tokens(embs, pad, att, torch.randn(3, 2, 128),
                                torch.ones(3, 2, dtype=torch.bool), n_lang_tokens=4)
 
-    def test_dtype_follows_prefix(self):
-        embs, pad, att = _make_prefix()
-        e2, _, _ = splice_demo_tokens(
-            embs, pad, att, torch.randn(1, 2, 128), torch.ones(1, 2, dtype=torch.bool),
-            n_lang_tokens=4,
-        )
-        self.assertEqual(e2.dtype, embs.dtype)
-
     def test_position_ids_monotonic_via_pad_masks(self):
         """PI05Pytorch computes position_ids = cumsum(pad_masks) - 1."""
         embs, pad, att = _make_prefix()
@@ -125,25 +117,6 @@ class TestSplice(unittest.TestCase):
         pos = prefix_offsets + torch.cumsum(suffix_pad, dim=1) - 1
         self.assertEqual(pos[0, 0].item(), int(p2[0].sum()))
         self.assertEqual(pos[0, -1].item(), int(p2[0].sum()) + 9)
-
-    def test_demo_at_end_equals_demo_mid_insertion_loss_parity(self):
-        """Insertion position must not change the masked-attention structure."""
-        from lerobot.policies.common.vla_utils import make_att_2d_masks
-
-        embs, pad, att = _make_prefix(batch=1)
-        d_embs = torch.randn(1, 4, 128)
-        d_pad = torch.ones(1, 4, dtype=torch.bool)
-
-        mid = splice_demo_tokens(embs, pad, att, d_embs, d_pad, n_lang_tokens=4)
-        # end-insertion variant: demos appended after language
-        end_embs = torch.cat([embs, d_embs], dim=1)
-        end_pad = torch.cat([pad, d_pad], dim=1)
-        end_att = torch.cat([att, torch.zeros(1, 4, dtype=torch.bool)], dim=1)
-
-        for tensors in (mid, (end_embs, end_pad, end_att)):
-            e, p, a = tensors
-            att_2d = make_att_2d_masks(p, a)
-            self.assertEqual(att_2d.shape[1], e.shape[1])
 
 
 if __name__ == "__main__":

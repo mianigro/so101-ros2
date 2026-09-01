@@ -9,17 +9,20 @@ dataset:
   root: ~/.cache/huggingface/lerobot
   grouping_key: task
   camera_rename: pi05_base
-  demo_camera: observation.images.base_0_rgb
+  demo_camera: observation.images.left_wrist_0_rgb   # wrist pathway — same as stages 1-2
   task_registry: so101_icl/configs/task_registry_smoke_local.json
+  task_cluster_cache: so101_icl/configs/task_registry_smoke_local_clusters.json
+                                 # run `icl_data cluster-tasks --registry ...` first
   holdout_groups: {eval: 0, test: 0}
-demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
-lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
+demo_encoder: {k_max: 2, frames_per_demo: 12, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
+lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention}
 train:
   steps: 200
   batch_per_gpu: 2
   lr: 1.0e-4
   warmup: 20
   grad_clip: 1.0
+  gate_lr_mult: 10.0   # demo gates start at 0 and need a stronger push than the adapters
   ckpt_every: 100
   seed: 42
   num_workers: 2
@@ -30,4 +33,4 @@ train:
   log_every: 5
 eval:                            # offline defaults for `eval_icl.py offline`
   offline_trials: 8              # 1 group x 8 episodes — smoke only
-  ablations: {k: [1, 2], frames: [4, 6], traj: [on, off]}
+  ablations: {k: [1, 2], frames: [4, 6]}   # traj ablation removed in rev 8 (video-only demos)

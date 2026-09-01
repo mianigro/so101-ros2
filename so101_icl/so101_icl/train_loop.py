@@ -23,15 +23,22 @@ Both stages share this loop; they differ only in config. Each step:
 3. inherited flow-matching loss -> backward -> grads reach only LoRA +
    DemoEncoder + gates -> clip 1.0 -> AdamW (gates get ``gate_lr_mult``).
 
-Logged: ``loss``, ``val/loss`` (bare-prompt), ``loss_demo_zeroed`` and
+Logged: ``loss``, ``val/loss`` (bare-prompt), the held-out ICL selection
+signal (``val/loss_demo`` vs ``val/loss_demo_zeroed`` and their ratio —
+``best/`` is saved on the ratio, the §6.4 acceptance signal, NOT on
+bare-prompt loss), ``loss_demo_zeroed`` and
 ``demo_zeroed_ratio = loss / loss_demo_zeroed`` (same
-batch with gates forced to 0 — the in-training ICL signal), gate values and
-LoRA norms. Artifacts are adapter-only (``icl_adapter.safetensors``); the
-base checkpoint is never rewritten.
+batch with gates forced to 0 — the in-training ICL signal), gate values
+(incl. ``gate_kp``), ``lora_norm``, and LoRA norms. Artifacts are
+adapter-only (``icl_adapter.safetensors``) plus a ``trainer_state.pt``
+per checkpoint (step/optimizer/scheduler/RNG) so ``--resume-from``
+continues the LR schedule instead of restarting it; the base checkpoint
+is never rewritten.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -175,6 +182,40 @@ def evaluate_loss(policy, preprocessor, batches, device, bare_prompt: bool) -> f
     return sum(losses) / max(1, len(losses))
 
 
+@torch.no_grad()
+def evaluate_icl_signal(
+    policy, preprocessor, batches, device, bare_prompt: bool = False
+) -> tuple[float, float] | None:
+    """Held-out ICL signal: demo-conditioned vs demo-zeroed query loss.
+
+    Same batches, same flow-matching noise (RNG replay), gates live vs
+    forced to 0 — the §6.4 acceptance signal, computed on eval groups.
+    With ``bare_prompt`` the task text is replaced by the vague stand-in
+    (the language-dropout prompt), making the demo pack the ONLY task
+    signal — the honest ICL test: a model can show parity on full prompts
+    simply because language+observation suffice, while only the bare run
+    shows whether the demo pathway actually carries task information.
+    Returns ``None`` when no batch carries demo fields.
+    """
+    policy.eval()
+    cond, zeroed = [], []
+    for batch in batches:
+        icl, rest = _split_icl_fields(batch)
+        if not icl:
+            continue
+        if bare_prompt and "task" in rest:
+            rest = {**rest, "task": [LANGUAGE_DROPOUT_PROMPT] * len(rest["task"])}
+        full = {**preprocessor(rest), **_move_icl_fields(icl, device)}
+        rng_state = _capture_rng_state()
+        loss, _ = policy.forward(full)
+        cond.append(loss.item())
+        zeroed.append(_demo_zeroed_loss(policy, full, rng_state))
+    policy.train()
+    if not cond:
+        return None
+    return sum(cond) / len(cond), sum(zeroed) / len(zeroed)
+
+
 def _capture_rng_state() -> tuple:
     """Snapshot CPU + CUDA RNG (the flow-matching noise/time come from here)."""
     states = (torch.get_rng_state(),)
@@ -238,6 +279,51 @@ def _lr_lambda(step: int, settings: TrainSettings) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
+def _lora_norm(policy) -> float:
+    """L2 norm over all LoRA adapter tensors (one device sync)."""
+    total = None
+    with torch.no_grad():
+        for name, p in policy.named_parameters():
+            if ".lora_" in name:
+                s = p.float().pow(2).sum()
+                total = s if total is None else total + s
+    return 0.0 if total is None else float(total.sqrt().item())
+
+
+def _save_trainer_state(
+    dir_path: Path | str, *, step: int, micro_step: int, best_selection: float,
+    optimizer, scheduler, train_loader, settings: TrainSettings,
+) -> Path:
+    """Persist everything a mid-run resume needs, next to the adapter."""
+    state = {
+        "step": step,
+        "micro_step": micro_step,
+        "best_selection": best_selection,
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "dataset_epoch": getattr(train_loader.dataset, "_epoch", 0),
+        "rng_cpu": torch.get_rng_state(),
+        "rng_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "settings": dataclasses.asdict(settings),
+    }
+    path = Path(dir_path) / "trainer_state.pt"
+    torch.save(state, path)
+    return path
+
+
+def _load_trainer_state(path: Path | str, *, optimizer, scheduler, train_loader) -> dict:
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    optimizer.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])
+    dataset = getattr(train_loader.dataset, "dataset", train_loader.dataset)
+    if hasattr(dataset, "set_epoch"):
+        dataset.set_epoch(state.get("dataset_epoch", 0))
+    torch.set_rng_state(state["rng_cpu"])
+    if state.get("rng_cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["rng_cuda"])
+    return state
+
+
 def run_training(
     policy,
     preprocessor,
@@ -248,6 +334,7 @@ def run_training(
     *,
     accelerator=None,
     init_adapter_path: Path | str | None = None,
+    resume_state_path: Path | str | None = None,
 ) -> Path:
     """Main loop; called by train_icl.py on each accelerate process."""
     from accelerate import Accelerator
@@ -278,6 +365,19 @@ def run_training(
 
     torch.manual_seed(settings.seed)
 
+    # A zero softmax budget (gate_floor=0 with the default gate_budget) keeps
+    # the exact-zero M0 init but zeroes every gate gradient — the dead saddle.
+    enc_cfg = policy.model.demo_encoder.config
+    budget = enc_cfg.gate_budget
+    if budget is None:
+        budget = max(2, 2 if policy.model.demo_encoder.keypoints_enabled else 1) * enc_cfg.gate_floor
+    if budget <= 0:
+        raise ValueError(
+            "demo gate softmax budget is 0 (gate_floor=0 and no gate_budget "
+            "set): every effective gate is 0 and no gate can ever train. "
+            "Set demo_encoder.gate_floor > 0 or an explicit gate_budget."
+        )
+
     policy.model.gradient_checkpointing_enable()
     policy.train()
 
@@ -293,11 +393,27 @@ def run_training(
     metrics_file = output_dir / "metrics.jsonl"
     step = 0
     micro_step = 0
-    best_val = float("inf")
+    best_selection = float("inf")
+    record: dict = {}  # last logged step record ({} when a resume lands past the end)
     start = time.time()
     data_iter = None
     lang_rng = random.Random(settings.seed + 1)
     dropped = seen = 0  # language-dropout application counters
+
+    if resume_state_path is not None:
+        state = _load_trainer_state(
+            resume_state_path, optimizer=optimizer, scheduler=scheduler,
+            train_loader=train_loader,
+        )
+        step = state["step"]
+        micro_step = state["micro_step"]
+        best_selection = state["best_selection"]
+        if is_main:
+            logger.info(
+                "resumed trainer state from %s at step %d (optimizer, scheduler, "
+                "RNG and dataset epoch restored — the LR schedule continues, "
+                "not restarts)", resume_state_path, step,
+            )
 
     while step < settings.steps:
         # k-curriculum applies at epoch granularity: dataloader workers fork
@@ -355,14 +471,23 @@ def run_training(
         if not is_main:
             continue
 
+        # Effective gates (post-softmax) — what actually scales the demo
+        # tokens, not raw logits. Branches: vis (+ kp when enabled).
+        eff_gates = base_policy.model.demo_encoder.effective_gates()
         record = {
             "step": step,
             "loss": loss.item(),
             "lr": scheduler.get_last_lr()[0],
-            "gate_vis": base_policy.model.demo_encoder.gate_vis.item(),
-            "gate_traj": base_policy.model.demo_encoder.gate_traj.item(),
+            "gate_vis": eff_gates[0].item(),
             "sec_per_step": (time.time() - start) / step,
         }
+        if len(eff_gates) > 1:
+            record["gate_kp"] = eff_gates[-1].item()
+        if step % settings.log_every == 0 or step == 1:
+            # Adapter-growth telemetry (the §11.4 deferred logging): a norm
+            # racing up while the gates stay pinned at the floor means the
+            # LoRA is compensating for a shut demo branch.
+            record["lora_norm"] = _lora_norm(base_policy)
         if last_zeroed is not None:
             # last micro-batch's replay; the hinge fired when usage > 0
             record["loss_zeroed"] = last_zeroed
@@ -378,10 +503,41 @@ def run_training(
             record["val/loss"] = evaluate_loss(
                 policy, preprocessor, val_batches, str(device), bare_prompt=True
             )
-            if record["val/loss"] < best_val:
-                best_val = record["val/loss"]
+            # Selection metric: the §6.4/M2 acceptance signal on held-out
+            # groups (demos must BEAT the demo-silenced replay), not
+            # bare-prompt loss — a demo-ignoring checkpoint wins that one.
+            signal = evaluate_icl_signal(
+                base_policy, preprocessor, val_batches, str(device)
+            )
+            selection = record["val/loss"]
+            if signal is not None:
+                record["val/loss_demo"], record["val/loss_demo_zeroed"] = signal
+                record["val/demo_ratio"] = signal[0] / max(signal[1], 1e-8)
+                selection = record["val/demo_ratio"]
+            # Second pass with the vague prompt: the demo pack is the ONLY
+            # task signal, so this ratio measures actual ICL ability rather
+            # than "language already sufficed". The best checkpoint must win
+            # BOTH regimes (min over the two ratios).
+            signal_bare = evaluate_icl_signal(
+                base_policy, preprocessor, val_batches, str(device), bare_prompt=True
+            )
+            if signal_bare is not None:
+                (record["val/loss_demo_bare"],
+                 record["val/loss_demo_zeroed_bare"]) = signal_bare
+                record["val/demo_ratio_bare"] = (
+                    signal_bare[0] / max(signal_bare[1], 1e-8)
+                )
+                selection = min(selection, record.get("val/demo_ratio",
+                                                      record["val/demo_ratio_bare"]))
+            if selection < best_selection:
+                best_selection = selection
                 save_icl_adapter(
                     base_policy, output_dir / "best", init_adapter_path=init_adapter_path
+                )
+                _save_trainer_state(
+                    output_dir / "best", step=step, micro_step=micro_step,
+                    best_selection=best_selection, optimizer=optimizer,
+                    scheduler=scheduler, train_loader=train_loader, settings=settings,
                 )
         print(f"step {step}/{settings.steps} {record}", flush=True)
         if writer is not None:
@@ -391,15 +547,24 @@ def run_training(
         with open(metrics_file, "a") as f:
             f.write(json.dumps(record) + "\n")
         if step % settings.ckpt_every == 0 or step == settings.steps:
-            save_icl_adapter(
-                base_policy, output_dir / f"step_{step}", init_adapter_path=init_adapter_path
+            ckpt_dir = output_dir / f"step_{step}"
+            save_icl_adapter(base_policy, ckpt_dir, init_adapter_path=init_adapter_path)
+            _save_trainer_state(
+                ckpt_dir, step=step, micro_step=micro_step,
+                best_selection=best_selection, optimizer=optimizer,
+                scheduler=scheduler, train_loader=train_loader, settings=settings,
             )
 
     final = save_icl_adapter(
         base_policy, output_dir / "final", init_adapter_path=init_adapter_path
     )
+    _save_trainer_state(
+        output_dir / "final", step=step, micro_step=micro_step,
+        best_selection=best_selection, optimizer=optimizer,
+        scheduler=scheduler, train_loader=train_loader, settings=settings,
+    )
     if writer is not None:
-        if is_main:
+        if is_main and record:
             writer.add_hparams(
                 {
                     "lr": settings.lr,
@@ -458,7 +623,9 @@ def main(argv=None) -> int:
     parser.add_argument("--config", required=True, help="stage YAML (configs/*.yaml)")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--resume-from", default=None,
-                        help="adapter dir to resume from (overrides config)")
+                        help="adapter dir to resume from (overrides config); "
+                             "resumes the mid-run schedule when the dir "
+                             "contains trainer_state.pt, else warm start")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -475,7 +642,17 @@ def main(argv=None) -> int:
         demo_encoder=demo_cfg, lora=lora_cfg,
         gradient_checkpointing=True,
     )
-    policy = setup_trainable_policy(policy, policy.config)
+    # Single init mechanism for both stages: stage 2 / resumes pass an
+    # adapter dir (validated on load); stage 1 pretrain starts from scratch
+    # with the M0 zero-init assertions.
+    init_adapter = args.resume_from or stage.get("init_adapter_from")
+    policy = setup_trainable_policy(
+        policy, policy.config,
+        init_adapter_from=init_adapter,
+        base_name_or_path=stage["base_checkpoint"],
+    )
+    if init_adapter:
+        logger.info("initialized adapters from %s", init_adapter)
 
     dataset_cfg = stage["dataset"]
     if str(dataset_cfg.get("recompute_stats", "")).lower() == "auto":
@@ -492,12 +669,6 @@ def main(argv=None) -> int:
                 )
         logger.info("stats preflight ok (q01/q99 present for state/action in all stage datasets)")
     registry_path = Path(dataset_cfg["task_registry"])
-    init_adapter = args.resume_from or stage.get("init_adapter_from")
-    if init_adapter:
-        from .lora import load_icl_adapter
-
-        load_icl_adapter(policy, init_adapter, base_name_or_path=stage["base_checkpoint"])
-        logger.info("initialized adapters from %s", init_adapter)
     if not registry_path.exists():
         if registry_path.name.endswith("_droid.json"):
             raise FileNotFoundError(
@@ -513,12 +684,13 @@ def main(argv=None) -> int:
         demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
         seed=stage["train"].get("seed", 42),
         keypoint_cache=dataset_cfg.get("keypoint_cache"),
+        cluster_cache=dataset_cfg.get("task_cluster_cache"),
     )
     train_settings = TrainSettings(
-        gate_lr_mult=lora_cfg.gate_lr_mult, **{
+        **{
             k: v for k, v in stage["train"].items()
             if k in ("steps", "batch_per_gpu", "grad_accum", "lr", "warmup", "grad_clip",
-                     "ckpt_every", "seed", "num_workers", "log_every",
+                     "ckpt_every", "seed", "num_workers", "log_every", "gate_lr_mult",
                      "demo_zeroed_every", "val_every", "val_batches", "tensorboard",
                      "language_dropout", "demo_usage_weight", "demo_usage_margin")
         }
@@ -559,6 +731,7 @@ def main(argv=None) -> int:
             demo_camera=dataset_cfg.get("demo_camera", "observation.images.base_0_rgb"),
             seed=train_settings.seed,
             keypoint_cache=dataset_cfg.get("keypoint_cache"),
+            cluster_cache=dataset_cfg.get("task_cluster_cache"),
         )
     except ValueError:
         val_ds = None
@@ -580,8 +753,26 @@ def main(argv=None) -> int:
     preprocessor, _post = build_stage_preprocessor(policy.config, primary_ds.meta.stats)
 
     output_dir = Path(args.output_dir or stage.get("output_dir", "so101_icl/runs/run"))
+    # --resume-from means mid-run resume when the checkpoint dir carries
+    # trainer state (schedule continues); otherwise it is a plain warm
+    # start (stage-2 semantics: weights only, schedule from scratch).
+    resume_state_path = None
+    if args.resume_from:
+        candidate = Path(args.resume_from) / "trainer_state.pt"
+        if candidate.exists():
+            resume_state_path = candidate
+        else:
+            logger.info(
+                "no trainer_state.pt in %s — warm start only (LR schedule "
+                "restarts)", args.resume_from,
+            )
     run_training(
         policy, preprocessor, train_loader, val_batches, train_settings,
-        output_dir, init_adapter_path=Path(init_adapter) if init_adapter else None,
+        output_dir,
+        # The fingerprint wants the adapter FILE, not its directory.
+        init_adapter_path=(
+            Path(init_adapter) / "icl_adapter.safetensors" if init_adapter else None
+        ),
+        resume_state_path=resume_state_path,
     )
     return 0

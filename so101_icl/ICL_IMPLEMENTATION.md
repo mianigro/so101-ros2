@@ -65,7 +65,7 @@ registry mechanics).
 | Action expert (`gemma_expert`, ~311 M) + `action_in/out_proj`, `time_mlp` | ~320 M | **Frozen** |
 | LoRA on VLM attention (`q,k,v,o_proj`, r=32) | ~10 M | **Trained**, zero-init |
 | `DemoEncoder` (pool + trajectory MLP) | ~2 M | **Trained**, out-projections at default init |
-| Demo gates `g` (scalar per token block) + order embedding | 3 | **Trained**, init 0 |
+| Demo gates `g` (vis + kp logits) + order embedding | 2 | **Trained**, logits init 0 (rev 8: effective gate = `gate_budget·softmax(logits)`) |
 
 Zero-init property, **as built** (rev 3 — differs from the original recipe):
 LoRA `B` matrices are 0 by construction (peft default), and only the
@@ -93,13 +93,18 @@ the optimizer drives the single scalar gates toward zero (observed:
 `gate_vis` 0.05 → 0.027 with `demo_zeroed_ratio` climbing back above 1.1).
 Two mitigations, both config knobs:
 
-- `demo_encoder.gate_floor` (e.g. 0.1): the gates are initialized AT the
-  floor and clamped below it (`clamp(gate, min=floor)` in `forward`) — the
-  demo branch cannot be silenced through one scalar, while the gate still
-  grows freely upward. `gate_scale=0` (the `loss_demo_zeroed` replay)
-  multiplies AFTER the clamp, so the metric keeps working. With
-  `gate_floor > 0` the zero-token-at-init property is intentionally
-  given up; no-pack parity still holds (no pack → no demo tokens).
+- `demo_encoder.gate_floor` / `gate_budget` (rev 8; supersedes the rev 6
+  clamp, see §14.8): the raw gate scalars are **logits** and the effective
+  gates are `gate_budget · softmax(logits)` — the three branches share a
+  fixed loudness budget (default `n_branches · gate_floor`, so the uniform
+  zero-logit init gives every branch exactly `gate_floor`). No branch can
+  grow without taking share from the others: the single-gate runaway
+  (`gate_kp` 0.3 → 0.48 monotonic at `gate_lr_mult=50`) and lockstep drift
+  are structurally impossible — no clamps, no ceilings. A zero budget
+  (`gate_floor=0` with the default budget) zeroes every gate gradient and
+  is refused at train start. `gate_scale=0` (the `loss_demo_zeroed` replay)
+  multiplies AFTER the softmax, so the metric keeps working. No-pack parity
+  still holds (no pack → no demo tokens).
 - `train.language_dropout` (e.g. 0.3): on that fraction of micro-batches
   the task prompt is replaced by a vague stand-in (`"do the task."`),
   making the demo pack the only task signal — direct gradient demand for
@@ -123,9 +128,10 @@ Two mitigations, both config knobs:
                          └───────────────────────────────────────────────────────────┘
 ```
 
-Demo tokens are gated: `demo_tok' = g · pool_out(...)`, `g` init 0.
-Training moves `g` and the adapters; inference uses the cached prefix KV
-exactly as `sample_actions` does today.
+Demo tokens are gated: `demo_tok' = g · pool_out(...)` with the effective
+`g = gate_budget · softmax(gate_logits)` (rev 8; uniform at init).
+Training moves the gate logits and the adapters; inference uses the cached
+prefix KV exactly as `sample_actions` does today.
 
 ### 2.3 Token and memory budget
 
@@ -348,11 +354,11 @@ class DemoEncoder(nn.Module):
     # vision branch:
     #   frame_embs = paligemma.embed_image(frames).detach()        # [F, 256, D], frozen
     #   pooled = MultiHeadAttention(q=T learned queries, k=v=frame_embs)  # [T, D], T=64
-    #   out_vis = LayerNorm(vis_proj(pooled)) * gate              # default-init proj, gate init 0
-    # trajectory branch:
-    #   out_traj = LayerNorm(traj_proj(MLP(traj))) * traj_ok * gate2  # [32, D]
+    #   out_vis = LayerNorm(vis_proj(pooled)) * g_eff      # default-init proj; g_eff from softmax (rev 8)
+    # trajectory branch: REMOVED (rev 8) — demos are video-only; traj/traj_ok ignored
     # outputs: concat over demos + order embedding (learned, k≤4, init 0) + pad mask
-    # reset_icl_parameters(): zeroes ONLY gates + order embedding (§2.1 dead-saddle fix)
+    # effective gates: g_eff* = gate_budget * softmax([gate_vis, gate_kp])
+    # reset_icl_parameters(): zeroes ONLY gate logits + order embedding (§2.1 dead-saddle fix)
 ```
 
 - Image transform reuse: demo frames go through the same code path as
@@ -472,7 +478,18 @@ disk.
 
 1. task t ~ p(task) (uniform over train groups, temperature knob for
    rebalancing scarce tasks);
-2. support: k ~ U{1..4} episodes of t, disjoint from the query episode;
+2. support: k ~ U{1..4} episodes of t, disjoint from the query episode —
+   rev 6: drawn from episodes in the query's **task cluster** where a
+   cluster cache exists (`icl_data cluster-tasks`; embedded task-string
+   clusters — DROID `task_category` values are collection locations and
+   exact strings are unique per episode, so this is the only task-aligned
+   grouping that works, §14.5/§14.6), falling back to the exact task
+   string, then to the rest of the group. A demo pack must show the
+   query's task, not merely its category: with `language_dropout` the
+   demos are often the only task signal, and at deployment the
+   bridge always pushes demos of the executed subtask. Roles alternate
+   across draws — every episode is a query once per epoch and a support
+   example for its same-task siblings on other draws;
 3. keyframes: F=6 frames per support episode — indices = uniform stride
    over episode length, always including first and last frame (start and
    goal emphasis);
@@ -515,12 +532,20 @@ disk.
     helping; hovering at 1.0 means the demos are being nulled, §2.1/§6.4);
   - `lang_dropout_rate`: running fraction of batches that received the
     vague prompt (sanity check on `train.language_dropout`);
-  - `lr`, gate values, `sec_per_step`.
-  - (LoRA-norm and token/dropout stats from the original plan are **not**
-    implemented — deferred, §11.)
-- Param groups: the demo gates get `gate_lr_mult` (default 10×) the base LR.
-- Checkpointing: `ckpt_every` steps + best-val + final; adapter-only
-  artifacts; resume flag.
+  - `lr`, EFFECTIVE gate values (`gate_vis` and `gate_kp` when the keypoint
+    branch is enabled; rev 8: post-softmax, summing to the budget — watch
+    the allocation, not absolute growth), `sec_per_step`;
+  - `lora_norm` every `log_every` steps (rev 6: the §11.4 deferred LoRA
+    telemetry — a norm racing up while the effective gates sit at the
+    uniform init means the LoRA is compensating for a shut demo branch).
+- Param groups: the demo gate logits get `train.gate_lr_mult` (default 10×) the base LR.
+- Checkpointing (rev 6): `ckpt_every` steps + best + final; adapter-only
+  artifacts, each checkpoint dir also carrying `trainer_state.pt` (step,
+  optimizer, scheduler, RNG, dataset epoch) so `--resume-from` continues
+  the LR schedule instead of restarting it. `best/` is selected on the
+  **held-out demo/zeroed ratio** (`evaluate_icl_signal`: same val batches
+  with gates live vs forced 0 under replayed noise), not on bare-prompt
+  val loss — a demo-ignoring checkpoint wins that one (see §14).
 - Determinism/seed in config; `WANDB_MODE=offline` default.
 
 ### 4.6 `registration.py` + `serve_icl.py` — serving with one server edit
@@ -684,8 +709,8 @@ differ.
 | Frames per demo F | 6 (ablate 4/8) | 6 |
 | Trajectory branch | on when available, `traj_ok` mask | on when available |
 | Batch | 4/GPU × grad_accum 2 × 2 (DDP) — 16 GB 4080s OOM at 8 during backward | 8/GPU × 2 |
-| Optimizer | AdamW, lr 1e-4, wd 0.01, betas default | AdamW, lr 2.5e-5 (RICL finetune analog) |
-| Schedule | cosine, warmup 500 steps | cosine, warmup 100 steps |
+| Optimizer | AdamW, lr 1e-4, wd 0.01, betas (0.9, 0.95) | AdamW, lr 1e-4 (GEN-1.5 short-hot: pretraining-like LR; supersedes the rev-3 2.5e-5 RICL analog) |
+| Schedule | cosine, warmup 100 steps | cosine, warmup 20 steps |
 | Steps | 10k; extend to 20k if val still falling | 1k–3k; early-stop on val |
 | Precision / memory | bf16 mixed, gradient checkpointing on | same |
 | Grad clip | 1.0 | 1.0 |
@@ -696,7 +721,10 @@ differ.
 - `loss_demo_zeroed` > `loss` by a clear margin on *held-out groups* by
   mid-training (demos are being used; if the two curves coincide from
   start to end, the gate stayed shut — raise gate lr or lower LoRA dropout
-  before touching anything else).
+  before touching anything else). Rev 6: this is now the **checkpoint
+  selection criterion** — `best/` saves on the held-out
+  `val/demo_ratio` (see §14.1); bare-prompt `val/loss` remains logged as
+  a seen-group drift bound.
 - No catastrophic drift on seen groups: bare-prompt val loss on seen groups
   within ~10 % of its value at step 0 (zero-init should keep this
   automatic; it is asserted, not assumed).
@@ -732,12 +760,16 @@ dataset:
                                              # exterior_2->right_wrist_0_rgb); explicit maps also accepted
   demo_camera: observation.images.left_wrist_0_rgb   # which camera feeds demo keyframes
   task_registry: so101_icl/configs/task_registry_droid.json   # built from downloaded chunks only
-  holdout_groups: {eval: 3, test: 3}        # whole task_category values, names frozen in registry
+  task_cluster_cache: so101_icl/configs/task_registry_droid_clusters.json   # cluster-tasks (§14.6)
+  holdout_groups: {eval: 6, test: 6}        # whole task_category values, names frozen in registry
   recompute_stats: auto                     # recompute quantiles if subset ships min/max only
-demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
-               gate_floor: 0.1}    # null-out mitigation (§2.1); 0.0 = original zero-init
-lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention, gate_lr_mult: 50.0}
+demo_encoder: {k_max: 2, frames_per_demo: 12, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
+               gate_floor: 0.3}    # rev 8: per-branch loudness at the uniform softmax init; the
+                                   # branches share budget n*floor (§2.1, §14.8); 0.0 = zero budget,
+                                   # refused at train start (dead gradients)
+lora: {rank: 32, alpha: 64, dropout: 0.01, targets: vlm_attention}
 train:
+  gate_lr_mult: 50.0
   steps: 10000
   batch_per_gpu: 4                # 16 GB 4080s OOM at 8 during backward
   grad_accum: 2                   # effective batch 4*2*2 GPUs = 16
@@ -766,12 +798,14 @@ dataset:
   repo_ids: [local/so101_teleop_v1, local/so101_sim_round2]   # rosbag_to_lerobot + self-improve exports (to be curated; §6.1)
   grouping_key: task
   camera_rename: pi05_base       # PRESET (wrist->left_wrist_0_rgb, overhead_1->base_0_rgb, overhead_2->right_wrist_0_rgb)
-  demo_camera: observation.images.base_0_rgb
+  demo_camera: observation.images.left_wrist_0_rgb   # rev 8: wrist cam, same as stage 1;
+                                                     # the code default everywhere — there is
+                                                     # no base_0_rgb fallback anymore
   task_registry: so101_icl/configs/task_registry_so101.json
   holdout_tasks: {eval: 3, test: 3}
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8}
-lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
-train: {steps: 2000, batch_per_gpu: 8, lr: 2.5e-5, warmup: 100, grad_clip: 1.0, ckpt_every: 500, seed: 43,
+lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention}
+train: {gate_lr_mult: 10.0, steps: 2000, batch_per_gpu: 8, lr: 2.5e-5, warmup: 100, grad_clip: 1.0, ckpt_every: 500, seed: 43,
         curriculum: [[100000000, [1, 2, 3, 4]]], demo_zeroed_every: 100, val_every: 250}
 eval:                           # sim/real campaign knobs — consumed by eval_icl.py sim|real
   sim_trials: 20
@@ -804,10 +838,10 @@ parallel with stage 1 (§11).
 | **Silent weight-load failure** (`from_pretrained` strict-default swallows errors, §4.0.1) | Loader passes `strict=False`; M0 asserts a frozen param equals its checkpoint tensor before parity |
 | Prefix attention mask/position-id errors with inserted tokens | `tests/test_prefix_shapes.py`: assert mask symmetry, position-id monotonicity, and loss parity between demo-at-end vs demo-mid insertion on a tiny batch |
 | Demo tokens ignored (gate stays ~0, `loss_demo_zeroed` ≈ `loss`) | Curriculum on k; gate lr multiplier; if still shut: lower LoRA dropout, raise tokens/demo, extend steps — in that order |
-| **Embodiment gap stage 1 → 2** (Franka 8-dim/15 fps → SO-101 6-dim/30 fps) | Both pad to 32 + prompt-tokenized state (no shape mismatch); stage-2 continued training adapts; optional expert-LoRA knob if transfer is weak; RICL per-task finetune is the precedent for short continued training |
+| **Embodiment gap stage 1 → 2** (Franka 8-dim/15 fps → SO-101 6-dim/30 fps) | Both pad to 32 + prompt-tokenized state (no shape mismatch); stage-2 continued training adapts; optional expert-LoRA knob if transfer is weak — supported by the rev-6 adapter load rule: `vlm_attention` stage-1 adapters load into a `vlm_attention+expert` stage-2 policy (fresh expert adapters start at B=0); the reverse narrowing is refused. RICL per-task finetune is the precedent for short continued training |
 | **DROID disk/subset constraints** (~810 GB full, ~225 GB free) | Chunk-subset strategy (§4.4); registry built from downloaded chunks only; droid_100 smoke first; BridgeData2 documented fallback |
 | Stage-1/stage-2 processor-stats skew | Processors rebuilt per stage (§6.5); DemoEncoder consumes already-normalized inputs; image path stats-free (VISUAL=IDENTITY) |
-| DROID task-string noise (49,630 strings) fragments groups | Group by `task_category` (86 values); registry alias map for our own data |
+| DROID task-string noise (49,630 strings) fragments groups | Rev 6: `icl_data cluster-tasks` embeds strings (cached bge-large) and clusters by intent ACROSS locations; `task_category` alone is NOT a task grouping — its 86 values are collection locations ("2300 Jane Ln", "Autolab"). Exact-string matching covers only 0.2% of queries; clustering covers 93.7% (threshold 0.85) |
 | Train/serve skew in demo-frame preprocessing | Single shared path: `PI05Policy._preprocess_images` reused by `data.py`, `demo_transport.py`, `bridge_icl_node.py` (§4.2) |
 | VRAM overshoot on 16 GB | Knobs: batch 8→4/GPU (+grad accum 2), F 6→4, tokens 96→64/demo; activation memory is the only variable term |
 | LeRobot version drift (installed 0.6.1 pinned in pixi) | Anchors in §1 are line-checked against 0.6.1; `so101_icl` imports only public API (`PI05Policy`, `PI05Pytorch`, registry) + one internal path constant (`paligemma_with_expert...`) asserted at import with a clear error message |
@@ -850,9 +884,9 @@ the code — if it isn't listed as done in §8, it isn't done.
    campaign — the blocking prerequisite for M3/M4.
 3. **M3/M4/M5 execution**: campaigns and bridge are code-complete but
    unrun (§8); the bridge has never talked to a live Bridge Robot.
-4. **Deferred loss-metric logging**: LoRA-norm and token/dropout stats
-   from the original §4.5 plan are not implemented (loss, lr, gates,
-   sec_per_step, loss_demo_zeroed, val/loss are).
+4. **Deferred loss-metric logging**: token/dropout stats from the original
+   §4.5 plan are still not implemented; LoRA norms (`lora_norm`) and the
+   keypoint gate (`gate_kp`) were added in rev 6 (§14).
 5. **M1 smoke ran on local SO-101 data**, not `lerobot/droid_100` as
    originally planned (no droid download at the time). Same gate
    semantics, different data.
@@ -911,7 +945,7 @@ SigLIP features: SIFT keypoints (up to 16/frame × [2 coords + 128
 descriptor + 1 valid]) extracted offline (`icl_data precompute-keypoints`,
 npz cache keyed `<ds_idx>/<episode>`) or live in the bridge. The
 DemoEncoder gains a third branch (per-keypoint MLP → attention-pool →
-`tokens_kp` gated tokens, `gate_kp` under the same `gate_floor`), so a
+`tokens_kp` gated tokens, `gate_kp` in the same softmax budget), so a
 demo contributes [vis | kp | traj] tokens. Off by default
 (`demo_encoder.keypoints.enabled`); when disabled the token layout and
 checkpoints are bit-identical to rev 4. Plumbing: `icl.demo_kp`/
@@ -933,4 +967,179 @@ falling at 500. Also fixed: `init_adapter_from` now points at stage-1
 2. Smoke: `train_icl.py --config icl_smoke_local_v1.yaml` (short steps) to
    verify the hinge + sampler + kp fields end to end.
 3. Resume stage 1 on DROID with the new loss/bursty/kp enabled.
-4. M2 offline gate; stage 2 short-hot; sim/real campaigns.
+
+---
+
+## 14. Rev 6 — training-loop reliability (so a stage-1 re-run lands)
+
+Four changes to the shared loop; the objective, data and architecture are
+untouched. Motivation: the first stage-1 attempt stopped mid-run, and the
+loop had two ways to waste the re-run — selecting the wrong `best/`
+checkpoint, and a resume that restarted the LR schedule from zero.
+
+### 14.1 Checkpoint selection on the held-out ICL signal
+
+`best/` was saved on bare-prompt `val/loss` — the demo-FREE path, which a
+checkpoint that ignores demos wins. The §6.4 acceptance signal
+(demo-conditioned vs demo-silenced loss on held-out groups) existed only
+as a train-batch log line. Rev 6 adds `evaluate_icl_signal`: at each val
+pass, the held-out batches run twice (gates live vs forced 0, identical
+noise via RNG replay), logging `val/loss_demo`, `val/loss_demo_zeroed`,
+`val/demo_ratio`; `best/` saves on the ratio (falls back to `val/loss`
+only when the eval split carries no demo fields). Bare-prompt `val/loss`
+stays logged as the seen-group drift bound of §6.4.
+
+### 14.2 Resumable trainer state
+
+Checkpoints were adapter-only: `--resume-from` restored weights and then
+restarted at step 0 with fresh AdamW moments and a full warmup + cosine
+cycle. Rev 6 writes `trainer_state.pt` (step, micro_step, optimizer,
+scheduler, dataset epoch, CPU/CUDA RNG, settings snapshot) next to every
+`best/`, `step_N/` and `final/` adapter. `--resume-from <dir>` continues
+the schedule where it stopped when the dir carries trainer state; without
+it, the load is a plain warm start — which is exactly stage-2 semantics
+(`init_adapter_from` never resumes a schedule).
+
+### 14.3 Adapter telemetry: `gate_kp` + `lora_norm`
+
+The keypoint branch's gate was unlogged (both stage configs enable it),
+and the §11.4 LoRA-norm telemetry was deferred. Rev 6 logs `gate_kp`
+when the branch exists and `lora_norm` (L2 over all adapter tensors, one
+device sync) every `log_every` steps. Diagnostic pairing: effective gates
+stuck at the uniform init while `lora_norm` races up = the LoRA is
+compensating for a shut demo branch. (Rev 8: the logged values are
+post-softmax effective gates, so they sum to the budget.)
+
+### 14.4 Adapter load: widening targets allowed
+
+The strict load validation (§ lora.py) refused any `lora.targets`
+mismatch — which locked out the §9 expert-LoRA contingency ("if stage-1→2
+transfer is weak, enable expert attention adapters in stage 2"). Rev 6
+allows exactly one widening: a `vlm_attention` adapter loads into a
+`vlm_attention+expert` policy, because freshly injected expert adapters
+start at B=0 (M0-neutral for the new branch). The reverse narrowing is
+still refused — it would silently drop trained expert adapters.
+Rank/alpha/demo_encoder equality checks are unchanged; dropout remains
+recorded-not-enforced.
+
+### 14.5 Same-task-string support sampling
+
+`task_category` grouping (86 categories over DROID's ~50k task strings —
+~577 per category on average) means the old sampler routinely paired a
+query with demos of a *different* task from the same category. On
+prompt-dropped batches those demos are the only task signal — and the
+wrong one — so the usage hinge punished the model for correctly ignoring
+them, injecting noise into exactly the signal rev 5 was built to protect.
+Rev 6 adds the deployment contract to the sampler: supports are drawn
+from episodes with the query's normalized task string when the group has
+them (`_episode_task_strings`, best-effort from the episodes metadata
+`tasks` column), falling back to category-wide selection otherwise. The
+registry stays category-keyed (splits, holdouts, bursty sampling
+unchanged); this only constrains which group members become a query's
+demo pack, aligning training with both the language-dropout/hinge
+assumptions and the runtime bridge behavior (demos of the executed
+subtask only).
+
+### 14.6 Task-intent clustering (`icl_data cluster-tasks`)
+
+Measured on the on-disk DROID subset (3,129 episodes): the two groupings
+stage 1 relied on carry almost no task signal. Exact task strings are
+essentially unique per episode — **0.2%** of queries can fill a full
+same-string demo pack (3.2% have even one sibling). And `task_category`
+— the 86-value grouping key — turns out to be the collection
+**location** ("2300 Jane Ln", "416 W Dana St", "Autolab"), so
+category-wide demo packs share a kitchen, not a task. This is the
+likely root cause of the failed first stage-1 run.
+
+Fix: `icl_data cluster-tasks --registry <json>` embeds every episode's
+normalized task string with the HF-cached `BAAI/bge-large-en-v1.5`
+(transformers only — no new dependency; CLS pooling, L2-normalized) and
+clusters with scipy average-linkage on cosine distance
+(`--threshold`, default 0.85). Clusters span locations: task intent,
+per the deployment contract. Output: a sidecar JSON keyed
+`<ds_idx>/<ep>` (keypoint-cache convention) consumed by `ICLDataset(cluster_cache=...)`;
+`_ep_task` then keys episodes by cluster id (exact string is the
+fallback). Coverage on the same subset: **93.7%** full same-cluster
+packs / **98.5%** ≥1 sibling. Junk rows (DROID stores some empty tasks
+as the literal string `"['']"`) are rejected by an
+alphanumeric-content filter — otherwise they form a 20k-episode
+garbage cluster.
+
+Pipeline order: `build-registry` → `cluster-tasks` → `check-stats` →
+`precompute-keypoints`. Re-run `cluster-tasks` after every
+`build-registry` (episode keys follow the registry's dataset order).
+
+### 14.7 Gate floor 0.8 → 0.3 and k∈{1,2} from step 0 (live-run revision)
+
+The 0.8 floor was calibrated against base-model token loudness (cameras
+RMS ~4.0, language ~10; demo tokens at ~20% of camera level) and stood
+unchanged through the sampling fixes. The first ~430 steps of the
+cluster-aligned stage-1 re-run then showed what the optimizer actually
+wants: `gate_vis`/`gate_traj` sank below the floor within 400 steps
+(0.80 → 0.78, effective loudness pinned at 0.8), `gate_kp` grew
+unprompted (0.80 → 0.91), `demo_zeroed_ratio` climbed to 1.85 at the
+k=1 checkpoint and the usage hinge fired on 88% of logged steps. The
+model was carrying two demo channels it would mute — the floor was
+overriding a legitimate vote, a weaker echo of the corruption the
+sampling fixes removed.
+
+Revision, both stage configs:
+- `gate_floor: 0.8 → 0.3` (~7.5% of camera loudness — above the 0.1
+  near-inaudible dead zone, low enough that the vote can act). MUST match
+  across stages: the adapter loader refuses demo_encoder mismatches.
+- `curriculum: [[inf, [1, 2]]]` — k∈{1,2} from step 0. The k=1-only
+  warmup phase predated task clusters; with aligned packs the thin
+  single-demo regime was where the pathology lived. k=1 stays in the mix
+  (single-demo missions at deployment).
+- `k_max: 4 → 2`, `frames_per_demo: 6 → 12` on stage 1 (same 24 SigLIP
+  forwards per sample, deeper per-demo temporal coverage, halved prefix
+  token budget); curriculum and eval ablations capped to match.
+
+### 14.8 Rev 8 — softmax gate competition (supersedes the clamp)
+
+The rev 6 clamp fixed null-out but reintroduced the same disease one run
+later from the other side: with `gate_lr_mult=50` the raw `gate_kp` rose
+monotonically (0.30 → 0.48 by step 365 in the rev 7 re-run, no
+saturation) while `gate_vis`/`gate_traj` sat pinned just below the floor
+— an independent-gate system drifting toward keypoint-only collapse,
+exactly what a floor cannot see.
+
+Revision: the raw gate scalars are now **logits** and the effective gates
+are `gate_budget · softmax(logits)` (`DemoEncoder.effective_gates`).
+Properties:
+
+- Fixed total loudness: a branch grows only by taking share from the
+  others. Single-gate runaway and lockstep drift are structurally
+  impossible — no clamps, no ceilings, no new per-gate magic numbers.
+- Init is unchanged in effect: logits start at 0 (uniform shares) and the
+  budget defaults to `n_branches · gate_floor`, so every branch starts at
+  `gate_floor` exactly as in rev 6/7.
+- Degenerate configs are loud: `gate_floor=0` with the default budget
+  means budget 0 → every gate gradient is exactly 0 (the §2.1 dead
+  saddle) — `train_loop` refuses to start in that state.
+- Telemetry: `metrics.jsonl` logs the post-softmax effective gates; they
+  sum to the budget, so read them as an allocation, not absolute levels.
+- Checkpoints from clamp-mode runs (incl. rev 7 stage 1) store raw gate
+  values under clamp semantics; restart training rather than resuming
+  across this revision (raw values would be reinterpreted as logits).
+
+**Rev 8 final form — video-only demos.** Deployment demos are wrist-cam
+VIDEO ONLY (no joint states). The trajectory branch is therefore removed
+outright: the encoder keeps only the vision and keypoint branches, the
+`traj`/`traj_ok` pack fields survive on the wire and in batches as
+accepted-and-ignored zeros, and the softmax budget (default
+`2 · gate_floor` with keypoints on) is split between vis and kp. The
+stage-2 demo camera moved to `left_wrist_0_rgb` to match the deployment
+demo source (rebuild its keypoint cache for the new view).
+
+## 15. Rev 7 — planned run order
+
+1. `icl_data build-registry --from-config` (holdouts 6+6)
+2. `icl_data cluster-tasks --from-config`
+3. `icl_data check-stats` (+ `--fix --yes` if needed)
+4. `icl_data precompute-keypoints --from-config`
+5. Smoke: `train_icl.py --config icl_smoke_local_v1.yaml`
+6. Stage 1: 10k steps, 2×4080 — judge on held-out `val/demo_ratio` < 1
+   by mid-run and the gate allocation leaving uniform (§14.8: shares
+   moving away from 1/n each)
+7. M2 offline gate; stage 2 short-hot; sim/real campaigns.

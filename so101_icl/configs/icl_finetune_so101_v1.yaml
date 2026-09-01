@@ -4,26 +4,29 @@
 base_checkpoint: lerobot/pi05_base          # unchanged — the base is never rewritten
 dtype: bfloat16
 output_dir: so101_icl/runs/icl_finetune_so101_v1
-init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/best   # stage 1 stopped at
-                                 # ~1827/10000 steps: only best/ exists, no final/.
-                                 # DO NOT point this at final/ — stage 2 would not run.
+init_adapter_from: so101_icl/runs/icl_pretrain_droid_v1/best   # stage-1 best (held-out
+                                 # demo/zeroed ratio selected). Prefer best/ over final/
+                                 # unless the full 10k run completed cleanly
 dataset:
   repo_ids: [local/so101_teleop_v1, local/so101_sim_round2]   # rosbag_to_lerobot + self-improve exports (to be curated)
   root: ~/.cache/huggingface/lerobot
   grouping_key: task
   camera_rename: pi05_base       # wrist->left_wrist_0_rgb, overhead_1->base_0_rgb, overhead_2->right_wrist_0_rgb
-  demo_camera: observation.images.base_0_rgb   # overhead_1 view — the demo keyframe source.
-                                  # base_0_rgb/overhead_1 is the right default for SO-101 teleop
-                                  # demos (scene-wide, task-informative keyframes); the wrist view
-                                  # is often motion-blurred and self-occluded during teleop.
+  demo_camera: observation.images.left_wrist_0_rgb   # rev 8: demos are video-only from the
+                                  # WRIST cam (deployment assumption — same as stage 1).
+                                  # REBUILD task_registry_so101_kp.npz for this view before
+                                  # training: `icl_data precompute-keypoints --from-config`
+                                  # (the cache is per-camera; a stale cache silently mismatches).
   task_registry: so101_icl/configs/task_registry_so101.json
   keypoint_cache: so101_icl/configs/task_registry_so101_kp.npz   # rev 5: precompute-keypoints first
   holdout_tasks: {eval: 3, test: 3}
 demo_encoder: {k_max: 4, frames_per_demo: 6, tokens_vis: 64, tokens_traj: 32, traj_steps: 16, n_heads: 8,
-               gate_floor: 0.8,          # match stage 1 (calibrated there); stage 2 loads gates
-                                 # trained at this floor and must not be allowed to sink below it
+               gate_floor: 0.3,          # MUST equal stage 1's gate_floor (rev 6 revision —
+                                 # see its config): the adapter loader refuses
+                                 # demo_encoder mismatches, and stage 2 loads gate
+                                 # logits trained with this softmax budget anchor
                keypoints: {enabled: true, n_kp: 16, kp_dim: 131, tokens_kp: 32}}   # rev 5 branch
-lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention, gate_lr_mult: 10.0}
+lora: {rank: 32, alpha: 64, dropout: 0.05, targets: vlm_attention}
 train:
   steps: 500                      # rev 5 short-hot stage 2 (GEN-1.5: 10 gradient steps at
   lr: 1.0e-4                      # pretraining-like LR gave +24% over one-shot; most value
@@ -32,11 +35,14 @@ train:
   val_every: 50                   # if the val curve is still falling at step 500.
   batch_per_gpu: 8
   grad_clip: 1.0
+  gate_lr_mult: 10.0   # demo gates start at 0 and need a stronger push than the adapters
   seed: 43
   num_workers: 8
   curriculum: [[100000000, [1, 2, 3, 4]]]   # no curriculum in stage 2
   demo_zeroed_every: 50
-  demo_usage_weight: 0.5          # same usage hinge as stage 1 (rev 5)
+  demo_usage_weight: 1.0          # usage hinge keeps active pressure on the stage-1
+                                  # gates while the adapters shift to SO-101 (0.5 let
+                                  # them coast through the short-hot 500 steps)
   demo_usage_margin: 0.02
   language_dropout: 0.3           # stage-2 data is one-task-heavy; keep language from
                                   # shortcutting task identification

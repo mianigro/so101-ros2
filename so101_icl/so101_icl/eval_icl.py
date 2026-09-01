@@ -42,7 +42,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .data import ICLDataset, load_task_registry
-from .lora import load_icl_adapter, setup_trainable_policy
+from .lora import setup_trainable_policy
 from .modeling_pi05_icl import PI05ICLPolicy
 from .train_loop import (
     _demo_zeroed_loss,
@@ -70,12 +70,14 @@ def load_eval_policy(adapter_dir: Path | str, base_checkpoint: str = "lerobot/pi
         base_checkpoint, device=device, dtype="bfloat16",
         demo_encoder=demo_encoder or DemoEncoderConfig(), lora=lora or LoRAConfig(),
     )
-    setup_trainable_policy(policy, policy.config)
     adapter_dir = Path(adapter_dir)
-    if (adapter_dir / "icl_adapter.safetensors").exists():
-        load_icl_adapter(policy, adapter_dir, base_name_or_path=base_checkpoint)
-    else:
+    init_adapter = adapter_dir if (adapter_dir / "icl_adapter.safetensors").exists() else None
+    if init_adapter is None:
         logger.warning("no adapter found in %s; evaluating the zero-init policy", adapter_dir)
+    setup_trainable_policy(
+        policy, policy.config, init_adapter_from=init_adapter,
+        base_name_or_path=base_checkpoint,
+    )
     policy.eval()
     return policy
 
@@ -100,15 +102,13 @@ def run_offline(
     batch_size: int = 4,
     ablate_k: tuple[int, ...] = (1, 2, 4),
     ablate_frames: tuple[int, ...] = (),
-    ablate_traj: tuple[bool, ...] = (),
 ) -> str:
     """Three-condition query-loss table over held-out groups (markdown).
 
-    Ablation dimensions (ICL §4.8): ``ablate_k`` (support size), ``ablate_frames``
-    (keyframes per demo, evaluated at the largest k) and ``ablate_traj``
-    (trajectory branch on/off, same anchor setting). The per-group table uses
-    the largest-k run — the M2 gate reads per held-out group, not just the
-    aggregate.
+    Ablation dimensions (ICL §4.8): ``ablate_k`` (support size) and
+    ``ablate_frames`` (keyframes per demo, evaluated at the largest k). The
+    per-group table uses the largest-k run — the M2 gate reads per held-out
+    group, not just the aggregate.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     from .configuration_pi05_icl import DemoEncoderConfig, LoRAConfig
@@ -123,7 +123,7 @@ def run_offline(
     try:
         dataset = ICLDataset(registry_path, policy.config, split=split,
                              demo_camera=stage_config["dataset"].get(
-                                 "demo_camera", "observation.images.base_0_rgb"),
+                                 "demo_camera", "observation.images.left_wrist_0_rgb"),
                              keypoint_cache=stage_config["dataset"].get("keypoint_cache"))
     except ValueError:
         # Loud in the log AND in the report: the M2 gate is only meaningful
@@ -133,7 +133,7 @@ def run_offline(
         logger.warning(split_note)
         dataset = ICLDataset(registry_path, policy.config, split="train",
                              demo_camera=stage_config["dataset"].get(
-                                 "demo_camera", "observation.images.base_0_rgb"),
+                                 "demo_camera", "observation.images.left_wrist_0_rgb"),
                              keypoint_cache=stage_config["dataset"].get("keypoint_cache"))
     reg = load_task_registry(registry_path)
     primary = reg["datasets"][0]
@@ -144,7 +144,7 @@ def run_offline(
 
     default_frames = dataset.frames_per_demo
 
-    def _run(label: str, *, k: int, frames: int, traj_ok: bool):
+    def _run(label: str, *, k: int, frames: int):
         dataset.k_choices = [k]
         dataset.frames_per_demo = frames
         dataset.set_epoch(0)  # fixed support/query sets across runs
@@ -156,8 +156,6 @@ def run_offline(
             groups = [dataset._index[i][1]
                       for i in range(j * batch_size, min((j + 1) * batch_size, len(dataset)))]
             icl, rest = _split_icl_fields(raw)
-            if not traj_ok:
-                icl["icl.demo_traj_ok"] = torch.zeros_like(icl["icl.demo_traj_ok"])
             rest = preprocessor(rest)
             batch = {**rest, **_move_icl_fields(icl, device)}
             with torch.no_grad():
@@ -182,12 +180,9 @@ def run_offline(
     k_anchor = max(ablate_k)
     runs: list[tuple[tuple, dict]] = []
     for k in ablate_k:
-        runs.append(_run(f"k={k}", k=k, frames=default_frames, traj_ok=True))
+        runs.append(_run(f"k={k}", k=k, frames=default_frames))
     for f in ablate_frames:
-        runs.append(_run(f"F={f}", k=k_anchor, frames=f, traj_ok=True))
-    for traj in ablate_traj:
-        runs.append(_run(f"traj={'on' if traj else 'off'}",
-                         k=k_anchor, frames=default_frames, traj_ok=traj))
+        runs.append(_run(f"F={f}", k=k_anchor, frames=f))
 
     return _offline_report(
         [r[0] for r in runs], n_k_runs=len(ablate_k), per_group=runs[min(len(ablate_k), len(runs)) - 1][1],
@@ -294,6 +289,7 @@ def run_real(args) -> int:
         builder = DemoPackBuilder(
             args.registry, k=args.k, frames_per_demo=args.frames_per_demo,
             k_max=args.k_max, stats_path=args.stats,
+            demo_camera=args.demo_camera,
         )
     group = builder.resolve_group(args.group) if builder is not None else None
 
@@ -400,8 +396,6 @@ def main(argv=None) -> int:
                    help="k ablations (default: eval.ablations.k from the stage YAML, else 1 2 4)")
     p.add_argument("--frames", type=int, nargs="+", default=None,
                    help="frames-per-demo ablations (default: eval.ablations.frames, else none)")
-    p.add_argument("--traj", nargs="+", default=None, choices=["on", "off"],
-                   help="trajectory-branch ablations (default: eval.ablations.traj, else none)")
     p.add_argument("--output", default=None, help="write the markdown report here")
 
     p = sub.add_parser(
@@ -415,6 +409,9 @@ def main(argv=None) -> int:
                    help="comma-separated conditions (default: eval.conditions, else all three)")
     p.add_argument("--group", default=None, help="registry task group")
     p.add_argument("--stats", default=None, help="stage_stats.json for traj normalization")
+    p.add_argument("--demo-camera", default="observation.images.left_wrist_0_rgb",
+                   help="policy-side camera key demos are drawn from "
+                        "(must match the stage YAML the policy was trained with)")
     p.add_argument("--k", type=int, default=None)
     p.add_argument("--frames-per-demo", type=int, default=None)
     p.add_argument("--demo-host", default="127.0.0.1")
@@ -472,19 +469,12 @@ def main(argv=None) -> int:
         else:
             ablate_k = tuple(eval_cfg.get("ablations", {}).get("k", [1, 2, 4]))
         abl = eval_cfg.get("ablations", {})
-
-        def _traj_flag(t) -> bool:
-            # YAML 1.1 parses bare on/off as booleans; argparse gives strings
-            return t if isinstance(t, bool) else str(t).strip().lower() == "on"
-
         ablate_frames = (tuple(args.frames) if args.frames is not None
                          else tuple(abl.get("frames", [])))
-        ablate_traj = (tuple(_traj_flag(t) for t in args.traj) if args.traj is not None
-                       else tuple(_traj_flag(t) for t in abl.get("traj", [])))
         report = run_offline(
             args.adapter, args.registry, stage, split=args.split,
             trials=trials, batch_size=args.batch_size, ablate_k=ablate_k,
-            ablate_frames=ablate_frames, ablate_traj=ablate_traj,
+            ablate_frames=ablate_frames,
         )
         print(report)
         if args.output:

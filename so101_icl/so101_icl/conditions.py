@@ -97,7 +97,7 @@ class DemoPackBuilder:
         max_state_dim: int = 32,
         max_action_dim: int = 32,
         stats_path: Path | str | None = None,
-        demo_camera: str | None = None,
+        demo_camera: str = "observation.images.left_wrist_0_rgb",
         keypoint_cache: Path | str | None = None,
         n_kp: int = 16,
         kp_dim: int = 131,
@@ -114,9 +114,12 @@ class DemoPackBuilder:
         if keypoint_cache is not None:
             import numpy as np
 
+            from .data import validate_keypoint_cache_camera
+
             cache = np.load(Path(keypoint_cache).expanduser())
             self._kp_cache = {name: cache[name] for name in cache.files}
             self._kp_keys = frozenset(self._kp_cache.keys())
+            validate_keypoint_cache_camera(keypoint_cache, demo_camera)
         self._n_kp = int(n_kp)
         self._kp_dim = int(kp_dim)
 
@@ -156,12 +159,18 @@ class DemoPackBuilder:
             max_state_dim=self._max_state_dim, max_action_dim=self._max_action_dim,
         )
         camera = self._demo_camera
-        if camera is None:
-            keys = [k for k in info_features if k.startswith("observation.images.")]
-            camera = keys[0] if keys else "observation.images.base_0_rgb"
         # registry datasets carry a camera_rename map (dataset -> policy keys)
         reverse = {v: k for k, v in dict(spec.get("camera_rename") or {}).items()}
         camera = reverse.get(camera, camera)
+        cam_keys = [k for k in info_features if k.startswith("observation.images.")]
+        if camera not in cam_keys:
+            raise ValueError(
+                f"demo camera {self._demo_camera!r} (resolved to {camera!r} for "
+                f"dataset {spec['repo_id']}) is not in the dataset's image "
+                f"features {cam_keys} — demos must come from the camera the "
+                "policy was conditioned on during training"
+            )
+        logger.info("demo camera for %s: %s", spec["repo_id"], camera)
         eps = dataset.meta.episodes.to_pandas()
         episodes = {
             int(row["episode_index"]): (
@@ -213,12 +222,8 @@ class DemoPackBuilder:
             )
             frames[slot] = preprocess_demo_frames(raw).numpy()
 
-            rows = bundle["traj_table"][start:end]
-            states = torch.as_tensor(np.asarray(rows["observation.state"]), dtype=torch.float32)
-            actions = torch.as_tensor(np.asarray(rows["action"]), dtype=torch.float32)
-            s_idx = ICLDataset._sample_keyframe_indices(states.shape[0], self.traj_steps)
-            traj[slot] = bundle["normalizer"](states[s_idx], actions[s_idx]).numpy()
-            traj_ok[slot] = 1.0
+            # Rev 8: demos are video-only — traj stays zeros / traj_ok stays
+            # 0 on the wire (the encoder ignores both).
             if self._kp_cache is not None:
                 key = f"{int(ds_idx)}/{int(ep)}"
                 if key in self._kp_cache:

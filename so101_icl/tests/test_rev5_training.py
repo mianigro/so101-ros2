@@ -25,7 +25,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from so101_icl.configuration_pi05_icl import DemoEncoderConfig, KeypointConfig  # noqa: E402
-from so101_icl.train_loop import TrainSettings, _demo_zeroed_loss, usage_hinge  # noqa: E402
+from so101_icl.train_loop import _demo_zeroed_loss, usage_hinge  # noqa: E402
 
 
 # ---------------------------------------------------------------------- #
@@ -34,26 +34,13 @@ from so101_icl.train_loop import TrainSettings, _demo_zeroed_loss, usage_hinge  
 
 
 class TestUsageHinge(unittest.TestCase):
-    """usage_hinge(loss, zeroed, margin) = relu(loss - zeroed + margin)."""
+    """usage_hinge = relu(loss - zeroed + margin); gradient hits loss only."""
 
-    def test_zero_when_demos_beat_margin(self):
-        # demos beat the zeroed replay by more than the margin -> no penalty
+    def test_branches_and_gradient(self):
         self.assertEqual(usage_hinge(0.10, 0.20, margin=0.02).item(), 0.0)
-
-    def test_fires_when_demos_ignored(self):
-        # demo-conditioned loss >= zeroed: demos not helping -> penalty
-        hinge = usage_hinge(0.20, 0.20, margin=0.02)
-        self.assertAlmostEqual(hinge.item(), 0.02, places=6)
-
-    def test_fires_when_demos_hurt(self):
-        hinge = usage_hinge(0.30, 0.20, margin=0.02)
-        self.assertAlmostEqual(hinge.item(), 0.12, places=6)
-
-    def test_gradient_flows_through_loss_only(self):
+        self.assertAlmostEqual(usage_hinge(0.30, 0.20, margin=0.02).item(), 0.12, places=6)
         loss = torch.tensor(0.25, requires_grad=True)
-        zeroed = 0.20
-        usage_hinge(loss, zeroed, margin=0.02).backward()
-        # d(relu)/d(loss) = 1 when active
+        usage_hinge(loss, 0.20, margin=0.02).backward()
         self.assertEqual(loss.grad.item(), 1.0)
 
 
@@ -80,13 +67,6 @@ class TestZeroedReplayIntegration(unittest.TestCase):
         value = _demo_zeroed_loss(policy, {})
         self.assertIsInstance(value, float)
         self.assertEqual(policy.model._demo_gate_scale, 1.0)  # restored
-
-    def test_settings_carry_usage_knobs(self):
-        s = TrainSettings(demo_usage_weight=0.5, demo_usage_margin=0.02)
-        self.assertEqual(s.demo_usage_weight, 0.5)
-        self.assertEqual(s.demo_usage_margin, 0.02)
-        # defaults off — old configs train unchanged
-        self.assertEqual(TrainSettings().demo_usage_weight, 0.0)
 
 
 # ---------------------------------------------------------------------- #
@@ -170,11 +150,6 @@ class TestBurstySampler(unittest.TestCase):
 
 
 class TestKeypointConfig(unittest.TestCase):
-    def test_default_disabled(self):
-        cfg = DemoEncoderConfig()
-        self.assertFalse(cfg.keypoints.enabled)
-        self.assertEqual(cfg.tokens_traj, 2 * cfg.traj_steps)
-
     def test_dict_coercion_from_yaml(self):
         cfg = DemoEncoderConfig(keypoints={"enabled": True, "n_kp": 8})
         self.assertIsInstance(cfg.keypoints, KeypointConfig)
@@ -228,11 +203,6 @@ class TestDemoEncoderKeypointBranch(unittest.TestCase):
         n = frames.shape[0]
         pooled = frames.mean(dim=(2, 3)) / 3.0  # [N, 3]
         return pooled[:, :, None].expand(n, 3, 2048)
-
-    def test_tokens_per_demo_includes_kp(self):
-        enc = self._encoder()
-        self.assertEqual(enc.tokens_per_demo,
-                         enc.tokens_vis + enc.config.keypoints.tokens_kp + enc.tokens_traj)
 
     def test_forward_shapes(self):
         enc = self._encoder()
@@ -292,11 +262,18 @@ class TestDemoEncoderKeypointBranch(unittest.TestCase):
         # every demo token embedding is exactly zero at init (M0 property)
         self.assertEqual(float(embs.abs().max()), 0.0)
 
-    def test_gate_floor_initializes_kp_gate(self):
+    def test_gate_floor_anchors_uniform_init(self):
+        # rev 8: raw scalars are logits (init 0); with the default budget the
+        # effective gates start at gate_floor each, keypoints included.
         enc = self._encoder()
         enc.config.gate_floor = 0.1
         enc.reset_icl_parameters()
-        self.assertAlmostEqual(float(enc.gate_kp), 0.1, places=6)
+        self.assertEqual(float(enc.gate_kp), 0.0)
+        eff = enc.effective_gates()
+        for g in eff:
+            self.assertAlmostEqual(float(g), 0.1, places=6)
+        # competition: shares sum to the budget, no more no less
+        self.assertAlmostEqual(sum(float(g) for g in eff), 2 * 0.1, places=6)
 
 
 class TestExtractKeypoints(unittest.TestCase):

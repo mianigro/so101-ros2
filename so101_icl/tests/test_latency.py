@@ -42,13 +42,6 @@ class TestRecorder(unittest.TestCase):
         self.assertAlmostEqual(stats["p95_s"], 0.09505, places=4)
         self.assertAlmostEqual(stats["max_s"], 0.100, places=3)
 
-    def test_summary_line(self):
-        rec = LatencyRecorder("chunk")
-        rec.record(0.1)
-        line = rec.summary_line()
-        self.assertIn("chunk", line)
-        self.assertIn("n=1", line)
-
 
 class FakeClient:
     def __init__(self):

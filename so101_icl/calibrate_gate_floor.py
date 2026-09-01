@@ -77,8 +77,11 @@ with torch.no_grad():
     demo_rms = rms(embs[cam_tok_bare:cam_tok_bare + n_demo])
 
 print(f"token counts: camera={cam_tok_bare}, demo={n_demo}, language={n_lang}")
-print(f"RMS  camera={cam_rms:.4f}  language={lang_rms:.4f}  demo(gate=floor)={demo_rms:.4f}")
+print(f"RMS  camera={cam_rms:.4f}  language={lang_rms:.4f}  demo(effective gates)={demo_rms:.4f}")
 print(f"demo/camera loudness ratio: {demo_rms / cam_rms:.3f}")
-floor_now = stage["demo_encoder"]["gate_floor"]
+de = policy.model.demo_encoder.config
+eff = policy.model.demo_encoder.effective_gates()
+print("effective gates (vis[/kp]):", ", ".join(f"{g.item():.4f}" for g in eff))
+print(f"gate_budget: {de.gate_budget if de.gate_budget is not None else 'default (n_branches * gate_floor)'}")
 for frac in (0.2, 0.3, 0.5):
-    print(f"floor for demo@{frac:.0%} of camera tokens: {frac * cam_rms:.4f}  (current {floor_now})")
+    print(f"budget for demo@{frac:.0%} of camera tokens: {frac * cam_rms:.4f}")

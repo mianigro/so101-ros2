@@ -80,6 +80,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="registry task group (default: the registry's first)")
     parser.add_argument("--stats", type=Path, default=None,
                         help="stage_stats.json for trajectory normalization")
+    parser.add_argument("--demo-camera", default="observation.images.left_wrist_0_rgb",
+                        help="policy-side camera key demos are drawn from "
+                             "(must match the stage YAML the policy was trained with)")
     parser.add_argument("--conditions", default="full_icl,prompt_enriched,bare_prompt",
                         help="comma-separated subset of full_icl,prompt_enriched,bare_prompt")
     parser.add_argument("--trials", type=int, default=20,
@@ -142,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
     builder = DemoPackBuilder(
         args.registry, k=args.k, frames_per_demo=args.frames_per_demo,
-        k_max=4, stats_path=args.stats,
+        k_max=4, stats_path=args.stats, demo_camera=args.demo_camera,
     )
     transport = DemoTransportClient(args.demo_host, args.demo_port)
     group = builder.resolve_group(args.group)

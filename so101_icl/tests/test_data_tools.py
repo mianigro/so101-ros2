@@ -34,11 +34,11 @@ from so101_icl.data import (  # noqa: E402
     build_subset_file_list,
     build_task_registry,
     check_stats,
+    keypoint_cache_meta_path,
     load_stats_json,
     missing_quantiles,
     on_disk_episodes,
     open_local_dataset,
-    recompute_stats_command,
     specs_from_stage_config,
 )
 
@@ -107,7 +107,7 @@ class TestSpecsFromStageConfig(unittest.TestCase):
             specs[0].camera_rename["observation.images.exterior_1_left"],
             "observation.images.base_0_rgb",
         )
-        self.assertEqual(kwargs["holdout"], {"eval": 3, "test": 3})
+        self.assertEqual(kwargs["holdout"], {"eval": 6, "test": 6})
 
     def test_multi_repo_stage(self):
         stage = {
@@ -159,19 +159,33 @@ class TestSpecsFromStageConfig(unittest.TestCase):
             )
 
 
-class TestRecomputeCommand(unittest.TestCase):
-    def test_command_targets_full_dataset_dir_in_place(self):
-        cmd = recompute_stats_command("lerobot/droid_1.0.1", "~/cache/x")
-        joined = " ".join(cmd)
-        self.assertIn("--operation.overwrite=true", joined)
-        self.assertIn("droid_1.0.1", joined)
-        root_value = [c for c in cmd if c.startswith("--root=")][0]
-        self.assertTrue(root_value.endswith("droid_1.0.1"), root_value)
-        # --new_root must point back at the same dir or the handler copytrees
-        new_root = [c for c in cmd if c.startswith("--new_root=")][0]
-        self.assertEqual(
-            new_root.split("=", 1)[1], root_value.split("=", 1)[1]
-        )
+class TestClusterStrings(unittest.TestCase):
+    """Deterministic clustering core (rev 6) — synthetic embeddings, no model."""
+
+    def test_two_groups_and_singleton(self):
+        import numpy as np
+
+        from so101_icl.data import _cluster_strings
+
+        strings = ["put a in b", "put c in d", "grab e", "take f", "wave"]
+        emb = np.array([
+            [1.0, 0.0], [0.99, 0.14],   # group A (near-identical direction)
+            [0.0, 1.0], [0.14, 0.99],   # group B
+            [-1.0, 0.0],                # singleton, far from both
+        ], dtype=np.float32)
+        emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+        labels = _cluster_strings(strings, emb, threshold=0.85)
+        self.assertEqual(labels[0], labels[1])       # A together
+        self.assertEqual(labels[2], labels[3])       # B together
+        self.assertNotEqual(labels[0], labels[2])    # A vs B apart
+        self.assertNotIn(labels[4], (labels[0], labels[2]))  # singleton alone
+
+    def test_single_string_is_one_cluster(self):
+        import numpy as np
+
+        from so101_icl.data import _cluster_strings
+
+        self.assertEqual(_cluster_strings(["x"], np.array([[1.0, 0.0]])), [0])
 
 
 @unittest.skipUnless(LOCAL_PRESENT, "local so101_test dataset not on disk")
@@ -419,6 +433,77 @@ class TestNoHubDownload(unittest.TestCase):
         ):
             ds = open_local_dataset("local/so101_test", str(LOCAL_ROOT))
         self.assertGreater(len(ds.episodes), 0)
+
+
+class TestKeypointCacheMeta(unittest.TestCase):
+    """Camera-identity sidecar: refuse mismatched caches, warn on legacy."""
+
+    def _cache(self, tmp, meta=None):
+        import numpy as np
+
+        path = Path(tmp) / "kp_cache.npz"
+        np.savez_compressed(path, **{"0/0": np.zeros((6, 16, 131), np.float32)})
+        if meta is not None:
+            keypoint_cache_meta_path(path).write_text(json.dumps(meta))
+        return path
+
+    def test_mismatched_camera_refused(self):
+        import tempfile
+
+        from so101_icl.data import validate_keypoint_cache_camera
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._cache(tmp, meta={
+                "demo_camera": "observation.images.base_0_rgb",
+                "frames_per_demo": 6, "resolved": {},
+            })
+            with self.assertRaises(ValueError) as ctx:
+                validate_keypoint_cache_camera(
+                    path, "observation.images.left_wrist_0_rgb")
+            self.assertIn("built for demo camera", str(ctx.exception))
+
+    def test_matching_camera_passes(self):
+        import tempfile
+
+        from so101_icl.data import validate_keypoint_cache_camera
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._cache(tmp, meta={
+                "demo_camera": "observation.images.left_wrist_0_rgb",
+                "frames_per_demo": 6, "resolved": {},
+            })
+            self.assertTrue(validate_keypoint_cache_camera(
+                path, "observation.images.left_wrist_0_rgb"))
+
+    def test_legacy_cache_warns_but_loads(self):
+        import logging
+        import tempfile
+
+        from so101_icl.data import validate_keypoint_cache_camera
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._cache(tmp)  # no .meta.json sidecar
+            with self.assertLogs("so101_icl.data", level=logging.WARNING) as logs:
+                ok = validate_keypoint_cache_camera(
+                    path, "observation.images.left_wrist_0_rgb")
+            self.assertFalse(ok)
+            self.assertTrue(any("cannot verify" in m for m in logs.output))
+
+    def test_meta_written_by_precompute_helper(self):
+        import tempfile
+
+        from so101_icl.data import write_keypoint_cache_meta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kp.npz"
+            write_keypoint_cache_meta(
+                path, "observation.images.left_wrist_0_rgb", 12,
+                {0: "observation.images.wrist"})
+            meta = json.loads(keypoint_cache_meta_path(path).read_text())
+            self.assertEqual(
+                meta["demo_camera"], "observation.images.left_wrist_0_rgb")
+            self.assertEqual(meta["frames_per_demo"], 12)
+            self.assertEqual(meta["resolved"], {"0": "observation.images.wrist"})
 
 
 if __name__ == "__main__":

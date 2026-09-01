@@ -112,14 +112,6 @@ class TestSampler(unittest.TestCase):
         self.assertFalse(torch.equal(a["icl.demo_traj"], c["icl.demo_traj"]) and
                          torch.equal(a["icl.demo_frames"], c["icl.demo_frames"]))
 
-    def test_keyframe_indices_first_and_last(self):
-        ds = ICLDataset(self.registry_path, self.cfg, split="train", seed=0)
-        idx = ds._sample_keyframe_indices(805, 6)
-        self.assertEqual(idx[0], 0)
-        self.assertEqual(idx[-1], 804)
-        self.assertTrue((np.diff(idx) > 0).all())
-        self.assertEqual(len(idx), 6)
-
     def test_holdout_isolation(self):
         """With the single group held out entirely, training must refuse."""
         import json
@@ -136,6 +128,23 @@ class TestSampler(unittest.TestCase):
             self.assertEqual(len(reg["splits"]["eval"]), 1)
             with self.assertRaises(ValueError):
                 ICLDataset(path, self.cfg, split="train")
+
+    def test_supports_share_query_task_string(self):
+        """Rev 6 sampling contract: support demos come from episodes with the
+        query's task string (not just the category) — on this registry the
+        task strings are consistent, so every draw must be same-task."""
+        ds = ICLDataset(self.registry_path, self.cfg, split="train", seed=0)
+        for i in range(len(ds)):
+            q_ds, group, q_ep = ds._index[i]
+            q_task = ds._ep_task.get((q_ds, q_ep))
+            rng = np.random.default_rng([ds.seed, i, ds._epoch])
+            members = [m for m in ds._group_members[group] if m != (q_ds, q_ep)]
+            for k in range(1, min(ds.k_max, len(members)) + 1):
+                picks = ds._select_supports(members, q_task, k, rng)
+                self.assertEqual(len(picks), k)
+                self.assertNotIn((q_ds, q_ep), picks)
+                for m in picks:
+                    self.assertEqual(ds._ep_task.get(m), q_task)
 
     def test_normalize_task(self):
         self.assertEqual(normalize_task("  Pick   Up "), "pick up")

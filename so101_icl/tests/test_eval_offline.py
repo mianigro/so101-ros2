@@ -33,15 +33,13 @@ def _rows():
         ("F=4", 0.9, 2.0, 1.5),
         ("F=6", 0.7, 2.0, 1.5),
         ("F=8", 0.65, 2.0, 1.5),
-        ("traj=on", 0.7, 2.0, 1.5),
-        ("traj=off", 1.1, 2.0, 1.5),
     ]
 
 
 class TestOfflineReport(unittest.TestCase):
     def test_renders_all_ablation_rows(self):
         report = _offline_report(_rows(), n_k_runs=3, per_group={}, split_note=None)
-        for label in ("k=1", "k=4", "F=8", "traj=on", "traj=off"):
+        for label in ("k=1", "k=4", "F=8"):
             self.assertIn(f"| {label} |", report)
         self.assertIn("median demo/zeroed ratio (k ablation)", report)
 
@@ -62,14 +60,14 @@ class TestOfflineReport(unittest.TestCase):
 
 
 class TestOfflineCliPlumbing(unittest.TestCase):
-    """--frames/--traj flags resolve from the stage YAML when not given."""
+    """--frames flags resolve from the stage YAML when not given."""
 
     STAGE = """
 base_checkpoint: lerobot/pi05_base
 dataset: {demo_camera: observation.images.base_0_rgb}
 eval:
   offline_trials: 12
-  ablations: {k: [1, 2], frames: [4, 6], traj: [on, off]}
+  ablations: {k: [1, 2], frames: [4, 6]}
 """
 
     def test_flags_default_from_yaml(self):
@@ -84,7 +82,6 @@ eval:
             self.assertEqual(kwargs["trials"], 12)
             self.assertEqual(kwargs["ablate_k"], (1, 2))
             self.assertEqual(kwargs["ablate_frames"], (4, 6))
-            self.assertEqual(kwargs["ablate_traj"], (True, False))
 
     def test_cli_flags_override_yaml(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,11 +89,10 @@ eval:
             cfg.write_text(self.STAGE)
             with mock.patch("so101_icl.eval_icl.run_offline", return_value="report") as run:
                 main(["offline", "--adapter", "a", "--registry", "r", "--config", str(cfg),
-                      "--k", "3", "--frames", "8", "--traj", "off"])
+                      "--k", "3", "--frames", "8"])
             kwargs = run.call_args.kwargs
             self.assertEqual(kwargs["ablate_k"], (3,))
             self.assertEqual(kwargs["ablate_frames"], (8,))
-            self.assertEqual(kwargs["ablate_traj"], (False,))
 
 
 if __name__ == "__main__":

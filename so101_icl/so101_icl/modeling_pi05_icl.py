@@ -68,20 +68,6 @@ class PI05ICLCore(PI05Pytorch):
         # Extra multiplicative factor on the demo gates; set to 0.0 to compute
         # loss_demo_zeroed without touching the learned gate parameters.
         self._demo_gate_scale: float = 1.0
-        self._assert_vlm_attention_path()
-
-    def _assert_vlm_attention_path(self) -> None:
-        """Fail loudly if a lerobot bump moved the LoRA target modules."""
-        try:
-            lm = self.paligemma_with_expert.paligemma.model.language_model
-            _ = lm.layers[0].self_attn.q_proj
-        except AttributeError as e:
-            raise RuntimeError(
-                "pi05_icl: the VLM attention module path changed in this "
-                "lerobot version ('paligemma_with_expert.paligemma.model."
-                "language_model.layers[i].self_attn.*_proj'). Update "
-                "so101_icl/lora.py targets and this check."
-            ) from e
 
     # ------------------------------------------------------------------ #
     # Demo-pack lifecycle (ICL §2.4)                                     #

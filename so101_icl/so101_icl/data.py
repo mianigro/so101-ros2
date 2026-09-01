@@ -38,6 +38,7 @@ import json
 import logging
 import re
 import sys
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -120,6 +121,33 @@ def _episode_group_keys(spec: DatasetSpec, meta, only: set[int] | None = None) -
             if ep in wanted and ep not in keys:
                 keys[ep] = str(g)  # first frame decides
     return keys
+
+
+def _episode_task_strings(meta) -> dict[int, str]:
+    """Map episode_index -> normalized task string, from episodes metadata.
+
+    Reads the standard lerobot v3 ``tasks`` column (same source as the
+    registry's ``grouping_key: task`` path). Returns ``{}`` when the column
+    is missing or empty so callers fall back to group-level behavior.
+    """
+    try:
+        eps = meta.episodes.to_pandas()
+    except Exception:
+        return {}
+    if "tasks" not in eps.columns:
+        return {}
+    out: dict[int, str] = {}
+    for _, row in eps.iterrows():
+        tasks = row["tasks"] if isinstance(row["tasks"], list) else [row["tasks"]]
+        if not tasks:
+            continue
+        # Some DROID rows carry stringified empty lists ("['']") — reject
+        # anything without alphanumeric content, not just empty strings.
+        s = str(tasks[0])
+        if not any(ch.isalnum() for ch in s):
+            continue
+        out[int(row["episode_index"])] = normalize_task(s)
+    return out
 
 
 # ---------------------------------------------------------------------- #
@@ -568,6 +596,66 @@ class _DatasetBundle:
         )
 
 
+def keypoint_cache_meta_path(cache_path: Path | str) -> Path:
+    """Companion metadata file for a keypoint-cache npz."""
+    return Path(str(cache_path) + ".meta.json")
+
+
+def write_keypoint_cache_meta(
+    cache_path: Path | str,
+    demo_camera: str,
+    frames_per_demo: int,
+    resolved: dict[int, str],
+) -> None:
+    """Record which demo camera / frame budget a cache was built for.
+
+    The npz itself is keyed only by ``<ds_idx>/<episode>``, so without this
+    sidecar a cache built for a different ``demo_camera`` matches silently
+    (only the frame count was checked).
+    """
+    import json
+
+    meta = {
+        "demo_camera": demo_camera,
+        "frames_per_demo": int(frames_per_demo),
+        "resolved": {str(k): v for k, v in resolved.items()},
+    }
+    keypoint_cache_meta_path(cache_path).write_text(json.dumps(meta, indent=2))
+
+
+def validate_keypoint_cache_camera(
+    cache_path: Path | str, demo_camera: str
+) -> bool:
+    """Refuse a cache built for a different demo camera.
+
+    Returns True when camera identity was verified; warns (and returns
+    False) for legacy caches with no metadata rather than failing, so
+    pre-rev caches keep loading.
+    """
+    import json
+
+    meta_path = keypoint_cache_meta_path(cache_path)
+    if not meta_path.exists():
+        logger.warning(
+            "keypoint cache %s has no %s sidecar — cannot verify it was "
+            "built for demo camera %r; rebuild it with `icl_data "
+            "precompute-keypoints --from-config <stage.yaml>` to record "
+            "camera identity",
+            cache_path, meta_path.name, demo_camera,
+        )
+        return False
+    meta = json.loads(meta_path.read_text())
+    cached = meta.get("demo_camera")
+    if cached != demo_camera:
+        raise ValueError(
+            f"keypoint cache {cache_path} was built for demo camera "
+            f"{cached!r} but the stage uses {demo_camera!r} — keypoints "
+            "would silently mismatch the demo frames. Rebuild it: "
+            "`icl_data precompute-keypoints --from-config <stage.yaml>`"
+        )
+    return True
+
+
 class ICLDataset(Dataset):
     """Task-grouped support/query sampling over one or more LeRobot datasets.
 
@@ -576,10 +664,12 @@ class ICLDataset(Dataset):
     - query: random timestep of an episode, all cameras (renamed to policy
       keys, RAW [0,1] — the policy preprocessor owns the rest), raw state,
       ``chunk_size`` raw actions (edge-padded), task string;
-    - support: ``k`` OTHER episodes of the same task group, ``F``
-      keyframes each (uniform stride incl. first and last), trajectory
-      downsampled to ``S`` steps, normalized + padded, all padded to
-      ``k_max`` slots with a presence mask.
+    - support: ``k`` OTHER episodes sharing the query's task string
+      (preferred) or task group (fallback), ``F`` keyframes each (uniform
+      stride incl. first and last), trajectory downsampled to ``S`` steps,
+      normalized + padded, all padded to ``k_max`` slots with a presence
+      mask. Each episode is a query once per epoch and support for its
+      same-task siblings on other draws — the roles alternate.
     """
 
     def __init__(
@@ -588,9 +678,10 @@ class ICLDataset(Dataset):
         config,
         *,
         split: str = "train",
-        demo_camera: str = "observation.images.base_0_rgb",
+        demo_camera: str = "observation.images.left_wrist_0_rgb",
         seed: int = 0,
         keypoint_cache: Path | str | None = None,
+        cluster_cache: Path | str | None = None,
     ):
         self.registry = load_task_registry(registry_path)
         self.config = config
@@ -620,6 +711,16 @@ class ICLDataset(Dataset):
             cache = np.load(Path(keypoint_cache).expanduser())
             self._kp_cache = {k: cache[k] for k in cache.files}
             self._kp_cache_keys = frozenset(self._kp_cache.keys())
+            if self._kp_cache:
+                first = next(iter(self._kp_cache.values()))
+                if first.shape[0] != self.frames_per_demo:
+                    raise ValueError(
+                        f"keypoint cache {keypoint_cache} holds {first.shape[0]} "
+                        f"frames/demo but demo_encoder.frames_per_demo is "
+                        f"{self.frames_per_demo} — rebuild it: "
+                        "`icl_data precompute-keypoints --from-config <stage.yaml>`"
+                    )
+            validate_keypoint_cache_camera(keypoint_cache, demo_camera)
 
         self.bundles = [ _DatasetBundle(d, config) for d in self.registry["datasets"] ]
         group_eps = self.registry["splits"][split]
@@ -640,7 +741,52 @@ class ICLDataset(Dataset):
         # Demo camera resolved per bundle (dataset-side key).
         for b in self.bundles:
             key = b.reverse_rename.get(demo_camera, demo_camera)
+            cam_keys = [
+                k for k in b.dataset.meta.info["features"]
+                if k.startswith("observation.images.")
+            ]
+            if key not in cam_keys:
+                raise ValueError(
+                    f"demo camera {demo_camera!r} (resolved to {key!r} for dataset "
+                    f"{b.repo_id}) is not in the dataset's image features "
+                    f"{cam_keys} — demos must come from the camera the policy "
+                    "was conditioned on during training"
+                )
             b.demo_camera_key = key
+
+        # Same-task support preference (rev 6): a demo pack must show the
+        # QUERY'S task, not merely its category — with language dropped on
+        # half the batches the demos are the only task signal, and category
+        # grouping (DROID `task_category` values are collection LOCATIONS,
+        # and exact task strings are unique per episode) carries no task
+        # alignment. Task key resolution order: task-cluster id
+        # (`cluster_cache` sidecar from `icl_data cluster-tasks`) >
+        # normalized task string > none (category-wide fallback).
+        self._ep_task: dict[tuple[int, int], str] = {}
+        cluster_of: dict[str, int] = {}
+        if cluster_cache is not None:
+            cluster_of = {
+                k: int(v) for k, v in json.loads(
+                    Path(cluster_cache).expanduser().read_text()
+                ).items()
+            }
+        for ds_idx, b in enumerate(self.bundles):
+            for ep, task in _episode_task_strings(b.dataset.meta).items():
+                self._ep_task[(ds_idx, ep)] = task
+        if cluster_of:
+            hit = miss = 0
+            for key, cluster in cluster_of.items():
+                ds_idx_s, ep_s = key.split("/")
+                ds_idx, ep = int(ds_idx_s), int(ep_s)
+                if (ds_idx, ep) in self._ep_task:
+                    self._ep_task[(ds_idx, ep)] = f"#{cluster}"  # "#" avoids string collisions
+                    hit += 1
+                else:
+                    miss += 1
+            logger.info(
+                "task-cluster cache: %d episodes keyed by cluster, %d ignored "
+                "(no task string on disk)", hit, miss,
+            )
 
     def __len__(self):
         return len(self._index)
@@ -657,14 +803,35 @@ class ICLDataset(Dataset):
         idx[0], idx[-1] = 0, length - 1  # start and goal emphasis (ICL §4.4)
         return idx
 
-    def _load_traj(self, bundle: _DatasetBundle, ep: int) -> tuple[torch.Tensor, bool]:
-        start, end, _ = bundle.episodes[ep]
-        rows = bundle.traj_table[start:end]
-        states = torch.as_tensor(np.asarray(rows["observation.state"]), dtype=torch.float32)
-        actions = torch.as_tensor(np.asarray(rows["action"]), dtype=torch.float32)
-        s_idx = self._sample_keyframe_indices(states.shape[0], self.traj_steps)
-        traj = bundle.normalizer(states[s_idx], actions[s_idx])
-        return traj, True
+    def _select_supports(
+        self,
+        members: list[tuple[int, int]],
+        q_task: str | None,
+        k: int,
+        rng: np.random.Generator,
+    ) -> list[tuple[int, int]]:
+        """Pick ``k`` support episodes: same task string as the query first,
+        remainder from the rest of the category (rev 6).
+
+        ``q_task is None`` (episode has no resolvable task string) or a
+        category-wide tie keeps the original uniform selection.
+        """
+        same = [m for m in members if q_task and self._ep_task.get(m) == q_task]
+        if not same or len(same) == len(members):
+            if k < len(members):
+                return [members[j] for j in rng.choice(len(members), size=k, replace=False)]
+            return list(members)
+        rest = [m for m in members if m not in set(same)]
+        take_same = min(k, len(same))
+        picks = (
+            list(same)
+            if take_same == len(same)
+            else [same[j] for j in rng.choice(len(same), size=take_same, replace=False)]
+        )
+        fill = k - len(picks)
+        if fill:
+            picks += [rest[j] for j in rng.choice(len(rest), size=fill, replace=False)]
+        return picks
 
     def __getitem__(self, i: int) -> dict:
         rng = np.random.default_rng([self.seed, i, self._epoch])
@@ -672,10 +839,7 @@ class ICLDataset(Dataset):
         members = [m for m in self._group_members[group] if m != (q_ds, q_ep)]
         k = int(rng.choice(self.k_choices))
         k = min(k, len(members))
-        if k < len(members):
-            members = [
-                members[j] for j in rng.choice(len(members), size=k, replace=False)
-            ]
+        members = self._select_supports(members, self._ep_task.get((q_ds, q_ep)), k, rng)
 
         demo_frames = torch.zeros(
             self.k_max, self.frames_per_demo, 3, 224, 224, dtype=torch.float32
@@ -703,9 +867,8 @@ class ICLDataset(Dataset):
             )
             demo_frames[slot, : len(kf)] = preprocess_demo_frames(frames)
             demo_mask[slot] = True
-            traj, ok = self._load_traj(bundle, ep)
-            demo_traj[slot] = traj
-            demo_traj_ok[slot] = float(ok)
+            # Demos are video-only (rev 8): demo_traj stays zeros and
+            # demo_traj_ok stays 0 — the encoder ignores the fields.
             if emit_kp:
                 kp, kp_ok = self._load_demo_keypoints(ds_idx, ep)
                 demo_kp[slot] = kp
@@ -804,15 +967,21 @@ def extract_keypoints(frames_chw: torch.Tensor, max_kp: int = 16) -> np.ndarray:
 
 
 class BurstyGroupBatchSampler:
-    """Group-structured batch sampler: tasks arrive in bursts (rev 5).
+    """Task-structured batch sampler: tasks arrive in bursts (rev 5).
 
     GEN-1.5 / Chan et al. 2022: in-context learning emerges when the
     training distribution is "bursty" — a few tasks dominate and recur in
     contiguous runs — rather than uniformly shuffled. Each epoch this
-    sampler draws task groups with Zipfian popularity weights and emits
-    ``burst_length`` consecutive query episodes of the drawn group before
-    switching. Batches are group-coherent when ``burst_length == batch_size``
+    sampler draws tasks with Zipfian popularity weights and emits
+    ``burst_length`` consecutive query episodes of the drawn task before
+    switching. Batches are task-coherent when ``burst_length == batch_size``
     (the default pairing).
+
+    Rev 6: the burst unit is the FINEST task identity available — the
+    episode's task cluster (``ICLDataset._ep_task``, from the
+    ``cluster-tasks`` sidecar) when present, else the registry group. On
+    DROID this matters: groups are collection locations, so group-bursts
+    were kitchen-coherent but not task-coherent.
 
     Regenerates on every ``__iter__`` from ``dataset._epoch`` so the train
     loop's existing ``set_epoch`` call drives re-randomization; the
@@ -834,9 +1003,11 @@ class BurstyGroupBatchSampler:
         self.burst_length = max(1, int(burst_length))
         self.seed = int(seed)
         self.drop_last = bool(drop_last)
+        ep_task = getattr(dataset, "_ep_task", {})
         self.groups: dict[str, list[int]] = {}
-        for i, (_ds_idx, group, _ep) in enumerate(dataset._index):
-            self.groups.setdefault(group, []).append(i)
+        for i, (ds_idx, group, ep) in enumerate(dataset._index):
+            task = ep_task.get((ds_idx, ep), group)
+            self.groups.setdefault(task, []).append(i)
         names = sorted(self.groups)
         ranks = np.arange(1, len(names) + 1, dtype=np.float64)
         weights = 1.0 / np.power(ranks, float(zipf_exponent))
@@ -893,6 +1064,25 @@ class BurstyGroupBatchSampler:
 # ---------------------------------------------------------------------- #
 
 
+def _parse_dataset_tokens(tokens: list[str]) -> list[tuple[str, str]]:
+    """``--datasets`` tokens -> (repo_id, root) pairs.
+
+    Comma separates DATASETS (the README form: ``a,b,c``). A single token
+    may still pin a custom root — ``repo,/abs/path``, ``repo,~/path`` or
+    ``repo,rel`` (a part with no ``/`` is a root, never a repo id).
+    """
+    parts = [p for token in tokens for p in token.split(",") if p]
+    if len(parts) == 1:
+        return [(parts[0], "~/.cache/huggingface/lerobot")]
+    first, second = parts[0], parts[1]
+    looks_like_root = (
+        not second.strip() or second.startswith(("/", "~", ".")) or "/" not in second
+    )
+    if len(parts) == 2 and looks_like_root:
+        return [(first, second)]
+    return [(p, "~/.cache/huggingface/lerobot") for p in parts]
+
+
 def _cmd_build_registry(args) -> int:
     if not args.from_config and not args.datasets:
         raise SystemExit(
@@ -911,14 +1101,14 @@ def _cmd_build_registry(args) -> int:
         raise SystemExit("build-registry: --out is required with --datasets")
     specs = [
         DatasetSpec(
-            repo_id=spec.split(",")[0],
-            root=(spec.split(",")[1] if "," in spec else "~/.cache/huggingface/lerobot"),
+            repo_id=repo_id,
+            root=root,
             camera_rename=(
                 DROID_IMAGE_KEY_MAP if args.droid else dict(PI05_BASE_IMAGE_KEY_MAP)
             ),
             grouping_key=args.grouping_key,
         )
-        for spec in args.datasets
+        for repo_id, root in _parse_dataset_tokens(args.datasets)
     ]
     alias = json.loads(args.alias_map) if args.alias_map else {}
     build_task_registry(
@@ -933,21 +1123,140 @@ def _cmd_build_registry(args) -> int:
 
 def _cmd_check_stats(args) -> int:
     specs = [
-        DatasetSpec(
-            repo_id=spec.split(",")[0],
-            root=(spec.split(",")[1] if "," in spec else "~/.cache/huggingface/lerobot"),
-        )
-        for spec in args.datasets
+        DatasetSpec(repo_id=repo_id, root=root)
+        for repo_id, root in _parse_dataset_tokens(args.datasets)
     ]
     return check_stats(specs, fix=args.fix, assume_yes=args.yes)
 
 
 # ---------------------------------------------------------------------- #
-# Episode-range subset download                                          #
+# Task-intent clustering (rev 6: NLP grouping for stage-1 sampling)      #
 # ---------------------------------------------------------------------- #
+
+CLUSTER_MODEL = "BAAI/bge-large-en-v1.5"  # already in the HF cache
+CLUSTER_THRESHOLD = 0.85                  # min cosine sim for same-cluster
+
+
+def _embed_strings(strings: list[str], model_name: str = CLUSTER_MODEL,
+                   batch_size: int = 256) -> "np.ndarray":
+    """L2-normalized CLS embeddings for task strings (bge via transformers).
+
+    Uses the HF-cached model — no new dependency beyond transformers, and
+    CUDA when available (a few thousand strings embed in seconds).
+    """
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tok = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name).to(device).eval()
+    out = np.zeros((len(strings), model.config.hidden_size), dtype=np.float32)
+    with torch.no_grad():
+        for start in range(0, len(strings), batch_size):
+            batch = strings[start : start + batch_size]
+            enc = tok(batch, padding=True, truncation=True, max_length=64,
+                      return_tensors="pt").to(device)
+            hidden = model(**enc).last_hidden_state[:, 0]  # CLS pooling (bge)
+            out[start : start + len(batch)] = (
+                torch.nn.functional.normalize(hidden, dim=-1).cpu().numpy()
+            )
+    return out
+
+
+def _cluster_strings(strings: list[str], embeddings: "np.ndarray",
+                     threshold: float = CLUSTER_THRESHOLD) -> list[int]:
+    """Average-linkage agglomerative clustering on cosine distance.
+
+    Returns one integer label per string (labels are arbitrary but
+    deterministic for a given input order). Strings closer than
+    ``1 - threshold`` cosine end up together; singletons are fine — the
+    sampler falls back to the category for them.
+    """
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import pdist
+
+    if len(strings) <= 1:
+        return [0] * len(strings)
+    dist = pdist(embeddings, metric="cosine")
+    link = linkage(dist, method="average")
+    return fcluster(link, t=1.0 - threshold, criterion="distance").tolist()
+
+
+def _cmd_cluster_tasks(args) -> int:
+    """`icl_data cluster-tasks`: episode -> task-cluster id sidecar.
+
+    Clusters span collection locations (task intent, not scene), fixing the
+    two measured failures of DROID grouping: exact task strings are
+    essentially unique per episode (0.2% full-pack coverage) and
+    `task_category` values are addresses/labs, not tasks. Keys match the
+    keypoint-cache convention ``<ds_idx>/<ep>``.
+    """
+    if args.from_config:
+        import yaml
+
+        stage = yaml.safe_load(Path(args.from_config).read_text())
+        dataset_cfg = stage.get("dataset", {})
+        args.registry = args.registry or dataset_cfg.get("task_registry")
+        args.out = args.out or dataset_cfg.get(
+            "task_cluster_cache",
+            str(args.registry).rsplit(".", 1)[0] + "_clusters.json" if args.registry else None,
+        )
+        if not args.registry:
+            raise SystemExit("cluster-tasks: config has no dataset.task_registry")
+    reg = load_task_registry(args.registry)
+    out_path = Path(args.out) if args.out else (
+        Path(args.registry).with_name(Path(args.registry).stem + "_clusters.json")
+    )
+
+    # Collect strings via the on-disk datasets behind the registry.
+    ep_tasks: dict[str, str] = {}  # "ds_idx/ep" -> normalized task string
+    for ds_idx, ds_info in enumerate(reg["datasets"]):
+        ds = open_local_dataset(ds_info["repo_id"], ds_info.get("root", "~/.cache/huggingface/lerobot"))
+        for ep, task in _episode_task_strings(ds.meta).items():
+            ep_tasks[f"{ds_idx}/{ep}"] = task
+    if not ep_tasks:
+        raise SystemExit("cluster-tasks: no episode task strings resolved — nothing to cluster")
+
+    uniq = sorted(set(ep_tasks.values()))
+    logger.info("embedding %d unique task strings with %s", len(uniq), args.model)
+    emb = _embed_strings(uniq, args.model, args.batch_size)
+    labels = _cluster_strings(uniq, emb, args.threshold)
+    label_of = dict(zip(uniq, labels))
+
+    ep_cluster = {key: label_of[task] for key, task in ep_tasks.items()}
+    out_path.write_text(json.dumps(ep_cluster))
+
+    # Audit: what the sampler can now do with these clusters.
+    by_cluster = Counter(ep_cluster.values())
+    sizes = Counter(by_cluster.values())
+    n = len(ep_cluster)
+    full = sum(cnt for cnt in by_cluster.values() if cnt >= 5) / n  # k_max=4 + query
+    any_sibling = sum(cnt for cnt in by_cluster.values() if cnt >= 2) / n
+    inv = defaultdict(list)
+    for s, lab in label_of.items():
+        if len(inv[lab]) < 3:
+            inv[lab].append(s)
+    top = sorted(by_cluster.items(), key=lambda kv: -kv[1])[:8]
+    print(f"wrote {out_path}: {len(uniq)} strings -> {len(by_cluster)} clusters "
+          f"(threshold {args.threshold})")
+    print(f"episode coverage: full same-cluster pack {full:.1%} | >=1 sibling {any_sibling:.1%} "
+          f"(exact strings were 0.2% / 3.2%)")
+    print("cluster size histogram (size: count):",
+          dict(sorted(sizes.items())[:12]))
+    print("largest clusters:")
+    for lab, cnt in top:
+        print(f"  #{lab} ({cnt} eps): {inv[lab]}")
+    return 0
+
+
 
 DEFAULT_DATA_PATH = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 DEFAULT_VIDEO_PATH = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+
+
+# ---------------------------------------------------------------------- #
+# Episode-range subset download                                          #
+# ---------------------------------------------------------------------- #
 
 
 def _video_keys_of(episode: dict) -> list[str]:
@@ -1105,9 +1414,26 @@ def _cmd_precompute_keypoints(args) -> int:
 
     Extracts keypoints for the SAME uniform-stride demo keyframes
     :class:`ICLDataset` samples, per episode, into one compressed npz keyed
-    ``<ds_idx>/<episode>``. ``--frames-per-demo`` must match the stage
-    config's ``demo_encoder.frames_per_demo``.
+    ``<ds_idx>/<episode>``. ``--from-config <stage.yaml>`` derives registry,
+    demo camera, frame count and output path from the stage YAML (single
+    source of truth — the cache frame count must equal
+    ``demo_encoder.frames_per_demo`` or dataset loading refuses).
     """
+    if args.from_config:
+        import yaml
+
+        stage = yaml.safe_load(Path(args.from_config).read_text())
+        dataset_cfg = stage.get("dataset", {})
+        args.registry = args.registry or dataset_cfg.get("task_registry")
+        args.demo_camera = args.demo_camera or dataset_cfg.get(
+            "demo_camera", "observation.images.left_wrist_0_rgb"
+        )
+        args.frames_per_demo = stage.get("demo_encoder", {}).get(
+            "frames_per_demo", args.frames_per_demo
+        )
+        args.out = args.out or dataset_cfg.get("keypoint_cache")
+        if not args.registry:
+            raise SystemExit("precompute-keypoints: config has no dataset.task_registry")
     registry = load_task_registry(args.registry)
     frames_per_demo = int(args.frames_per_demo)
     max_kp = int(args.max_kp)
@@ -1142,6 +1468,10 @@ def _cmd_precompute_keypoints(args) -> int:
             out[key] = extract_keypoints(preprocess_demo_frames(frames), max_kp=max_kp)
     out_path = Path(args.out or str(args.registry).rsplit(".", 1)[0] + "_kp.npz")
     np.savez_compressed(out_path, **out)
+    write_keypoint_cache_meta(
+        out_path, args.demo_camera, frames_per_demo,
+        {idx: entry["camera"] for idx, entry in datasets.items()},
+    )
     logger.info(
         "keypoint cache: %d episodes x %d frames x %d kp -> %s",
         len(out), frames_per_demo, max_kp, out_path,
@@ -1208,16 +1538,38 @@ def main(argv=None) -> int:
     p.set_defaults(func=_cmd_smoke_local)
 
     p = sub.add_parser(
+        "cluster-tasks",
+        help="embed episode task strings and write a task-cluster sidecar "
+             "(rev 6: task-intent grouping for stage-1 sampling)",
+    )
+    p.add_argument("--from-config", default=None,
+                   help="stage YAML — derives registry and output sidecar from it "
+                        "(dataset.task_registry, dataset.task_cluster_cache)")
+    p.add_argument("--registry", default=None, help="task registry JSON")
+    p.add_argument("--out", default=None,
+                   help="output json (default: <registry stem>_clusters.json)")
+    p.add_argument("--model", default=CLUSTER_MODEL,
+                   help="HF sentence-embedding model (must be cached; default BAAI/bge-large-en-v1.5)")
+    p.add_argument("--threshold", type=float, default=CLUSTER_THRESHOLD,
+                   help="min cosine similarity for same-cluster (default 0.85)")
+    p.add_argument("--batch-size", type=int, default=256)
+    p.set_defaults(func=_cmd_cluster_tasks)
+
+    p = sub.add_parser(
         "precompute-keypoints",
         help="SIFT keypoint cache for registered demo episodes (keypoint branch, rev 5)",
     )
-    p.add_argument("--registry", required=True, help="task registry JSON")
+    p.add_argument("--from-config", default=None,
+                   help="stage YAML — derives registry/demo camera/frames/output "
+                        "from it (dataset.task_registry, dataset.demo_camera, "
+                        "demo_encoder.frames_per_demo, dataset.keypoint_cache)")
+    p.add_argument("--registry", default=None, help="task registry JSON")
     p.add_argument("--out", default=None,
                    help="output npz (default: <registry stem>_kp.npz)")
     p.add_argument("--frames-per-demo", type=int, default=6,
                    help="must match demo_encoder.frames_per_demo of the stage config")
     p.add_argument("--max-kp", type=int, default=16, help="keypoints per frame")
-    p.add_argument("--demo-camera", default="observation.images.base_0_rgb",
+    p.add_argument("--demo-camera", default="observation.images.left_wrist_0_rgb",
                    help="policy-side camera key (renamed back to the dataset key)")
     p.set_defaults(func=_cmd_precompute_keypoints)
 

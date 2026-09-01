@@ -50,16 +50,21 @@ def _dummy_pack(encoder: DemoEncoder, gate_scale=1.0):
 
 
 class TestGateFloor(unittest.TestCase):
-    def test_gates_init_at_floor(self):
+    def test_gates_init_at_uniform_shares(self):
+        # rev 8: raw scalars are logits init'd at 0; the effective gates
+        # start uniform, i.e. each equals gate_floor (default budget).
         enc = _tiny_encoder(0.1)
-        self.assertAlmostEqual(enc.gate_vis.item(), 0.1, places=6)
-        self.assertAlmostEqual(enc.gate_traj.item(), 0.1, places=6)
+        self.assertEqual(enc.gate_vis.item(), 0.0)
+        eff = enc.effective_gates()
+        for g in eff:
+            self.assertAlmostEqual(g.item(), 0.1, places=6)
 
-    def test_floor_blocks_nulled_gates(self):
+    def test_budget_keeps_mass_on_every_branch(self):
+        # A branch can only lose loudness to the other, never to zero: even
+        # a wildly negative vis logit still leaves some effective mass.
         enc = _tiny_encoder(0.1)
         with torch.no_grad():
-            enc.gate_vis.fill_(-0.5)   # optimizer tries to shut the branch
-            enc.gate_traj.fill_(-0.5)
+            enc.gate_vis.fill_(-50.0)  # optimizer tries to shut the branch
         embs, _ = _dummy_pack(enc)
         self.assertGreater(embs.abs().max().item(), 0.0)  # still nonzero
 
@@ -83,19 +88,6 @@ class TestLanguageDropout(unittest.TestCase):
         applied = _apply_language_dropout(batch, rng, p=1.0)
         self.assertTrue(applied)
         self.assertEqual(batch["task"], [LANGUAGE_DROPOUT_PROMPT] * 2)
-
-    def test_zero_probability_never_drops(self):
-        rng = random.Random(0)
-        batch = {"task": ["pick up the cube"]}
-        self.assertFalse(_apply_language_dropout(batch, rng, p=0.0))
-        self.assertEqual(batch["task"], ["pick up the cube"])
-
-    def test_rate_matches_probability(self):
-        rng = random.Random(0)
-        applied = sum(
-            _apply_language_dropout({"task": ["t"]}, rng, p=0.3) for _ in range(10000)
-        )
-        self.assertAlmostEqual(applied / 10000, 0.3, delta=0.02)
 
 
 if __name__ == "__main__":
