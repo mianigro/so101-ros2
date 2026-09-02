@@ -39,7 +39,7 @@ train:
   steps: 10000
   batch_per_gpu: 4      # 16 GB 4080s OOM at 8 during backward; accumulate instead
   grad_accum: 2         # effective batch = 4 * 2 * 2 GPUs = 16 (as before)
-  lr: 1.0e-4
+  lr: 5.0e-5
   warmup: 100
   grad_clip: 1.0
   gate_lr_mult: 75.0   # demo gates start at 0 and need a stronger push than the adapters.

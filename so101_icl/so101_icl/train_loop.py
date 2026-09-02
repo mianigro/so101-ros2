@@ -498,7 +498,7 @@ def run_training(
             record["usage_loss"] = last_usage
         if settings.language_dropout > 0:
             record["lang_dropout_rate"] = dropped / max(1, seen)
-        if step % settings.demo_zeroed_every == 0 or step == 1:
+        if step % settings.demo_zeroed_every == 0 and step != 1:
             policy.eval()
             record["loss_demo_zeroed"] = _demo_zeroed_loss(base_policy, batch, rng_state)
             record["demo_zeroed_ratio"] = record["loss"] / record["loss_demo_zeroed"]
