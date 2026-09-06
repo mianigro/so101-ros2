@@ -154,7 +154,6 @@ Short-hot per GEN-1.5's few-step evidence: 500 steps, lr 1e-4,
 checkpoint/validation every 50, initialized from stage-1 `best/`.
 `best/` is tracked on the held-out demo/zeroed ratio (same selection rule
 as stage 1); extend past 500 only while that ratio is still falling.
-Blocked on the teleop campaign (≥20 tasks × ≥20 demos).
 
 ## 5. Serving
 

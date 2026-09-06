@@ -870,7 +870,7 @@ class ICLDataset(Dataset):
             # Demos are video-only (rev 8): demo_traj stays zeros and
             # demo_traj_ok stays 0 — the encoder ignores the fields.
             if emit_kp:
-                kp, kp_ok = self._load_demo_keypoints(ds_idx, ep)
+                kp, kp_ok = self._load_demo_keypoints(ds_idx, ep, length, kf)
                 demo_kp[slot] = kp
                 demo_kp_ok[slot] = kp_ok
 
@@ -911,12 +911,19 @@ class ICLDataset(Dataset):
     # Keypoint demo features (rev 5, Keypoint Action Tokens style)        #
     # ------------------------------------------------------------------ #
 
-    def _load_demo_keypoints(self, ds_idx: int, ep: int) -> tuple[torch.Tensor, float]:
+    def _load_demo_keypoints(
+        self, ds_idx: int, ep: int, length: int | None = None,
+        kf: np.ndarray | None = None,
+    ) -> tuple[torch.Tensor, float]:
         """Cached SIFT keypoints for one demo episode: ``[F, K, kp_dim]``.
 
         Returns zeros + ok=0 when the episode is absent from the cache —
         the DemoEncoder masks that slot's keypoint branch; other demos in
-        the pack are unaffected.
+        the pack are unaffected. When ``kf`` is given and the cache holds a
+        different frame count (offline eval frames ablations), each wanted
+        keyframe index is mapped to the nearest cached row via the shared
+        deterministic ``_sample_keyframe_indices`` geometry — identity when
+        the counts match.
         """
         kp_cfg = self.config.demo_encoder.keypoints
         key = f"{ds_idx}/{ep}"
@@ -929,6 +936,15 @@ class ICLDataset(Dataset):
                 0.0,
             )
         arr = torch.from_numpy(self._kp_cache[key].astype(np.float32, copy=False))
+        if kf is not None and arr.shape[0] != self.frames_per_demo:
+            if length is None:
+                raise ValueError(
+                    "keypoint subsampling needs the episode length "
+                    "(frames_per_demo changed after cache build)"
+                )
+            cache_idx = self._sample_keyframe_indices(length, arr.shape[0])
+            rows = np.abs(cache_idx[:, None] - np.asarray(kf)[None, :]).argmin(axis=0)
+            arr = arr[rows]
         return arr, 1.0
 
 
